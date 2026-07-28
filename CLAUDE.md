@@ -101,7 +101,8 @@ Phase 3 swaps loopback for LAN + HMAC.
 Found while building against song @ HEAD on Linux GCC 13:
 
 1. `include/song/logging.hpp` needs `#include <cstdint>` (uint32_t; breaks
-   GCC 13 Linux build). One-line fix, patch in `patches/song-cstdint.patch`.
+   GCC 13 Linux build). Fixed upstream 7/28/2026 (song main 53fc6f1);
+   `patches/` retired.
 2. `logging.hpp` is not in the `song.hpp` umbrella header; consumers must
    include it separately.
 3. song is not add_subdirectory-friendly (test/ assumes top-level context).
