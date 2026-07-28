@@ -62,12 +62,12 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `tools/fake_claude.cpp` | Fake agent speaking genuine stream-json. Scenario-driven. |
 | `test/` | Unit tests per component + end-to-end echo integration. |
 
-fake-claude scenarios (`--scenario NAME`, plus `--chunks N` and `--delay-ms D`):
-`echo`, `chunks`, `tool_storm`, `giant_chunk`, `die_before_result`, `hang`,
-`bad_json`. CMake writes per-scenario savannahd configs (`cfg_echo.toml`,
-`cfg_tools.toml`, `cfg_badjson.toml`, `cfg_die.toml`, `cfg_hang.toml`) into the
-build dir at configure time; `test_integration_echo` runs against them, which is
-why it needs `WORKING_DIRECTORY` = build dir.
+fake-claude scenarios (`--scenario NAME`, plus `--chunks N`, `--delay-ms D`,
+`--giant-bytes N`): `echo`, `chunks`, `tool_storm`, `giant_chunk`,
+`die_before_result`, `hang`, `bad_json`, `utf8_split`. CMake writes
+per-scenario savannahd configs (`cfg_<name>.toml`) into the build dir at
+configure time; `test_integration_echo` runs against them, which is why it
+needs `WORKING_DIRECTORY` = build dir.
 
 ## Key patterns (learned from song itself)
 

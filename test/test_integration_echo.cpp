@@ -166,6 +166,20 @@ int main() {
         CHECK(r.result.find("\"is_error\":false") != std::string::npos);
     }
 
+    // ---- mid-UTF8 splits: a line split across pipe writes inside a 4-byte
+    //      codepoint, then a text block split across TEXT chunks inside a
+    //      2-byte codepoint. Concatenated text must be byte-identical. ----
+    {
+        ServiceManager mgr;
+        auto conn = connect_with_config(mgr, "cfg_utf8.toml", "utf8");
+        auto r = ask(conn, "unicode");
+        const std::string expected =
+            "roar \xF0\x9F\xA6\x81 savanna \xC3\xA9l\xC3\xA9phant";
+        CHECK(r.text == expected);
+        CHECK(r.chunk_count == 4);  // 3 TEXT (1 whole + 1 split pair), 1 RESULT
+        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+    }
+
     // ---- agent dies before result: synthetic error trailer ----
     {
         ServiceManager mgr;

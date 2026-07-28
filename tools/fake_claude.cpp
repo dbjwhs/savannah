@@ -19,6 +19,9 @@
 //   die_before_result emit init + one text chunk, exit(3) with no result
 //   hang              emit init, then sleep forever (tests timeout + cancel)
 //   bad_json          emit garbage lines between valid ones, then result
+//   utf8_split        one line flushed in two writes split inside a 4-byte
+//                     codepoint, then a text block split across two chunks
+//                     mid-codepoint, then result
 //
 // Unknown flags are swallowed so callers can pass the same argv shape they
 // would pass the real CLI.
@@ -142,6 +145,29 @@ int main(int argc, char** argv) {
         return 3;
     } else if (scenario == "hang") {
         for (;;) std::this_thread::sleep_for(std::chrono::seconds(3600));
+    } else if (scenario == "utf8_split") {
+        // Pipe-level split: one assistant line delivered in two raw writes
+        // whose boundary lands inside the 4-byte lion. The reader must frame
+        // on '\n', never on write boundaries.
+        const std::string lion = "\xF0\x9F\xA6\x81";
+        const std::string line =
+            R"({"type":"assistant","message":{"content":[{"type":"text",)"
+            R"("text":"roar )" + lion + R"( savanna"}]}})";
+        std::size_t cut = line.find(lion) + 2;  // two bytes into the lion
+        std::fwrite(line.data(), 1, cut, stdout);
+        std::fflush(stdout);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        std::fwrite(line.data() + cut, 1, line.size() - cut, stdout);
+        std::fputc('\n', stdout);
+        std::fflush(stdout);
+        // Chunk-level split: "elephant" with acute accents, cut inside the
+        // 2-byte e-acute. Each TEXT payload alone is invalid UTF-8; client
+        // concatenation restores the byte sequence.
+        const std::string eleph = " \xC3\xA9l\xC3\xA9phant";
+        std::size_t mid = eleph.find('\xC3', 2) + 1;  // inside second e-acute
+        emit_text(eleph.substr(0, mid));
+        emit_text(eleph.substr(mid));
+        emit_result(false);
     } else if (scenario == "bad_json") {
         emit_text("valid before garbage");
         emit("this is not json {{{");
