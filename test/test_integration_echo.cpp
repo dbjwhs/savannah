@@ -166,6 +166,19 @@ int main() {
         CHECK(r.result.find("\"is_error\":false") != std::string::npos);
     }
 
+    // ---- slow drip: 6 chunks with 150ms gaps (past the 100ms poll tick).
+    //      Neither the agent pump nor the stream client may give up between
+    //      chunks, and nothing may coalesce or drop. ----
+    {
+        ServiceManager mgr;
+        auto conn = connect_with_config(mgr, "cfg_drip.toml", "drip");
+        const std::string prompt = "abcdefghijklmnopqrstuvwx";  // 24 = 6 * 4
+        auto r = ask(conn, prompt);
+        CHECK(r.text == prompt);
+        CHECK(r.chunk_count == 7);  // 6 TEXT + 1 RESULT
+        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+    }
+
     // ---- mid-UTF8 splits: a line split across pipe writes inside a 4-byte
     //      codepoint, then a text block split across TEXT chunks inside a
     //      2-byte codepoint. Concatenated text must be byte-identical. ----
