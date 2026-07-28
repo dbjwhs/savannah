@@ -2,10 +2,11 @@
 
 **Claude-to-Claude agent mesh, built on [song](https://github.com/dbjwhs/song).**
 v0.3 (as-built) · July 28, 2026 · Dennis Jones + Claude
-Status: **Phases 1 and 2 complete** (solo node over pipes,
-giant-chunk/UTF-8/drip/stderr-noise/busy/cancel hardening, loopback TCP
-multi-client, `SAVANNAH_LIVE=1` drift check green against the live CLI
-7/28/2026; 6 test suites, live one skipped unless opted in).
+Status: **Phases 1 and 2 complete; Phase 3 built, solo-validated** (HMAC
+TCP serving, mDNS advertise as `_agent-song._tcp`, `savannah ls` and
+ask-by-name green on one machine 7/28/2026). Remaining Phase 3: the
+two-machine LAN acceptance run. 8 test suites; live-CLI and mDNS suites
+opt-in.
 
 > One-liner: Claude Code instances become discoverable peers on your network.
 > Any agent can ask any other agent for help, mid-task, on its own judgment.
@@ -135,8 +136,11 @@ late on purpose.
    multi-client landed as the test vehicle (and Phase 3 transport embryo).
    `SAVANNAH_LIVE=1` drift check runs the real CLI through the savannahd
    parse path; green against claude CLI on 7/28/2026, skipped in CI.
-3. **Two machines** — mDNS + HMAC, `savannah ls` shows both. Real-LAN only
-   (M4 + linux box); never in CI.
+3. **Two machines** — plumbing built and solo-validated 7/28/2026: HMAC
+   serving (right/wrong/no-key suite), mDNS advertise + self-discovery,
+   `savannah ls`, ask-by-name and --addr. Remaining: the acceptance run
+   with both machines in one `savannah ls` (M4 + linux box, real LAN,
+   never in CI).
 4. **THE PAYOFF: MCP shim** — Claude Code on A calls `ask_peer("linux-box",
    ...)` mid-conversation. Demo: A asks B to run B's test suite and
    summarize failures.
@@ -179,3 +183,13 @@ late on purpose.
   until HMAC) added ahead of Phase 3 because pipe mode dispatches
   sequentially, making NodeBusy and cancel-while-busy unreachable and
   untestable over pipes.
+- **7/28/2026 (Phase 3)** — Mesh plumbing landed. The mDNS self-test found
+  song finding 10: DNS-SD requires two-label service types, so the
+  `_agent._song._tcp` format from the original design could never register
+  (dns_sd BadParam); fixed upstream in song, mesh type is now
+  `_agent-song._tcp`. Decision: savannahd carries its own accept loop
+  (thread per client, capped at 32) because run_tcp_multi has no
+  SecureTransport hook (finding 11). Policy: `--tcp` alone binds loopback;
+  `--mdns` binds all interfaces and refuses to start without
+  mesh.hmac_key_file, so an advertised node always authenticates. HMAC is
+  authentication only, not encryption; TLS-PSK stays a later phase.

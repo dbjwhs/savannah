@@ -58,7 +58,7 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `src/stream_json.{hpp,cpp}` | claude stream-json events → `AgentChunk` mapping. |
 | `src/agent_process.{hpp,cpp}` | Spawn/supervise the headless agent, line pump, timeout, kill. |
 | `src/savannahd.cpp` | The node daemon: song runtime, dispatchers, single-flight. |
-| `cli/savannah_main.cpp` | Human remote control: `savannah <ask\|info\|status> <node>`. |
+| `cli/savannah_main.cpp` | Human remote control: `savannah ls`, `savannah <ask\|info\|status> <node>` (local pipes, or mesh via mDNS/--addr with --key). |
 | `tools/fake_claude.cpp` | Fake agent speaking genuine stream-json. Scenario-driven. |
 | `test/` | Unit tests per component + end-to-end echo integration. |
 
@@ -72,9 +72,13 @@ needs `WORKING_DIRECTORY` = build dir.
 
 Pipe mode (`runtime.run()`) dispatches one message at a time, so single-flight
 NodeBusy and cancel-while-busy can only fire over concurrent connections:
-`savannahd --tcp PORT` serves loopback TCP via `run_tcp_multi` (port 0 = OS
-picks; prints `SAVANNAHD_TCP_PORT=N` on stdout). `test_tcp_flight` uses it.
-Phase 3 swaps loopback for LAN + HMAC.
+`savannahd --tcp PORT` serves TCP with savannahd's own accept loop (thread per
+client, capped 32; run_tcp_multi lacks a security hook, finding 11). Port 0 =
+OS picks; prints `SAVANNAHD_TCP_PORT=N` on stdout. With `mesh.hmac_key_file`
+every client is HMAC-wrapped (SecureTransport). `--mdns` additionally
+advertises as `_agent-song._tcp` and binds all interfaces, so it hard-requires
+the key. `test_tcp_flight` and `test_secure` run in CI; `test_mdns` is opt-in
+via `SAVANNAH_MDNS=1` (advertises on the real network).
 
 ## Key patterns (learned from song itself)
 
