@@ -193,6 +193,35 @@ int main() {
         CHECK(wait_status(conn_b, "idle"));
     }
 
+    // ---- cancel: kills the in-flight ask (cancelled trailer), reports
+    //      whether anything was cancelled, and leaves the node usable ----
+    {
+        auto conn_a = connect(d.port);
+        auto conn_b = connect(d.port);
+
+        Streamed flight_result;
+        std::thread flight([&] { flight_result = ask(conn_a, "never ends"); });
+        CHECK(wait_status(conn_b, "busy"));
+
+        CHECK(cancel(conn_b) == true);
+        flight.join();
+        CHECK(flight_result.result.find("\"is_error\":true") !=
+              std::string::npos);
+        CHECK(flight_result.result.find("cancelled") != std::string::npos);
+        CHECK(wait_status(conn_b, "idle"));
+
+        // Nothing in flight anymore: cancel is a no-op reporting false.
+        CHECK(cancel(conn_b) == false);
+
+        // The gate cleared: a fresh ask runs (and times out on the hang
+        // scenario with its own trailer, not a busy rejection).
+        auto again = ask(conn_b, "runs again", /*timeout_ms=*/500);
+        CHECK(again.result.find("\"is_error\":true") != std::string::npos);
+        CHECK(again.result.find("timeout") != std::string::npos);
+        CHECK(again.result.find("busy") == std::string::npos);
+        CHECK(wait_status(conn_a, "idle"));
+    }
+
     if (g_failures == 0) std::printf("test_tcp_flight: all passed\n");
     return g_failures == 0 ? 0 : 1;
 }
