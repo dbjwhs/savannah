@@ -2,10 +2,10 @@
 
 **Claude-to-Claude agent mesh, built on [song](https://github.com/dbjwhs/song).**
 v0.3 (as-built) · July 28, 2026 · Dennis Jones + Claude
-Status: **Phase 1 complete; Phase 2 complete except the live drift check**
-(solo node over pipes, giant-chunk/UTF-8/drip/stderr-noise/busy/cancel
-hardening, loopback TCP multi-client, 5/5 test suites green). Remaining
-Phase 2: `SAVANNAH_LIVE=1` drift check.
+Status: **Phases 1 and 2 complete** (solo node over pipes,
+giant-chunk/UTF-8/drip/stderr-noise/busy/cancel hardening, loopback TCP
+multi-client, `SAVANNAH_LIVE=1` drift check green against the live CLI
+7/28/2026; 6 test suites, live one skipped unless opted in).
 
 > One-liner: Claude Code instances become discoverable peers on your network.
 > Any agent can ask any other agent for help, mid-task, on its own judgment.
@@ -128,12 +128,13 @@ late on purpose.
 
 1. ✅ **Solo node** — CLI → savannahd → fake-claude over local pipes.
    Done 7/27/2026: 4 suites green, -Werror clean, GCC 13.
-2. **Streaming hardening** — done 7/28/2026 except the drift check: giant
-   chunks (512 KiB split around song's 1 MB string cap), mid-UTF8 splits at
-   pipe and chunk layer, slow drip past the poll tick, stderr floods past
-   pipe capacity, single-flight busy, cancel-while-busy; `savannahd --tcp`
-   loopback multi-client landed as the test vehicle (and Phase 3 transport
-   embryo). Remaining: `SAVANNAH_LIVE=1` schema-drift test.
+2. ✅ **Streaming hardening** — done 7/28/2026: giant chunks (512 KiB split
+   around song's 1 MB string cap), mid-UTF8 splits at pipe and chunk layer,
+   slow drip past the poll tick, stderr floods past pipe capacity,
+   single-flight busy, cancel-while-busy; `savannahd --tcp` loopback
+   multi-client landed as the test vehicle (and Phase 3 transport embryo).
+   `SAVANNAH_LIVE=1` drift check runs the real CLI through the savannahd
+   parse path; green against claude CLI on 7/28/2026, skipped in CI.
 3. **Two machines** — mDNS + HMAC, `savannah ls` shows both. Real-LAN only
    (M4 + linux box); never in CI.
 4. **THE PAYOFF: MCP shim** — Claude Code on A calls `ask_peer("linux-box",

@@ -25,8 +25,8 @@ roadmap, append-only decision log). One-liners:
 - `-Wall -Wextra -Werror` clean or it is not done.
 - Tests are the definition of done. Unit + integration for every component.
   Integration tests run against `fake-claude`, never the real CLI (deterministic,
-  zero tokens). Live-schema check runs behind `SAVANNAH_LIVE=1` only (planned,
-  not yet implemented).
+  zero tokens). The live-schema check (`test_live_schema`) runs the real CLI
+  behind `SAVANNAH_LIVE=1` only; without it, ctest reports it Skipped.
 - Zero new dependencies. libsong + POSIX + platform crypto. The TOML-subset and
   JSON-subset parsers are hand-written in this repo on purpose.
 - Honest limitations: every README/doc states what does NOT work. No overclaiming.
@@ -124,7 +124,8 @@ Found while building against song @ HEAD on Linux GCC 13:
 ## stream-json contract (pinned subset)
 
 `fake-claude` and `src/stream_json.cpp` both implement exactly this subset; if
-the real CLI drifts, the planned `SAVANNAH_LIVE=1` test will catch it:
+the real CLI drifts, `SAVANNAH_LIVE=1 ctest -R test_live_schema` catches it
+(fails live while fake-claude suites stay green):
 
 - `{"type":"system","subtype":"init",...}` → ignored
 - `{"type":"assistant","message":{"content":[{"type":"text","text":...} |

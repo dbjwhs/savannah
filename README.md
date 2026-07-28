@@ -48,9 +48,10 @@ Stated on purpose; this list shrinks phase by phase (see `DESIGN.md`).
   loopback only until auth lands.
 - No MCP shim, so no `ask_peer` from a real Claude Code session yet
   (Phase 4: the payoff).
-- Not yet exercised against the real `claude` CLI in CI. fake-claude pins
-  the stream-json subset; a `SAVANNAH_LIVE=1` drift check is planned (the
-  last piece of Phase 2).
+- The real `claude` CLI is never exercised in CI. fake-claude pins the
+  stream-json subset; run `SAVANNAH_LIVE=1 ctest --test-dir build -R
+  test_live_schema` manually to check the live CLI against it (one tiny
+  prompt, burns a few tokens; skipped otherwise).
 - v1 is stateless: every ask is a fresh `claude -p`, no sessions.
 - Single-flight per node. Cancel is SIGKILL, not cooperative.
 - No cross-node file transfer: prompt out, text back.
