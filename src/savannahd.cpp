@@ -22,8 +22,11 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "agent_process.hpp"
@@ -192,6 +195,66 @@ void unary_dispatcher(u16 method_id, Buffer& request, Buffer& response) {
     }
 }
 
+// One TCP client: mirrors song's ServiceRuntime::client_loop (init confirm,
+// magic check, shutdown, init_ack) minus objects/subscriptions, which
+// savannahd does not use. Runs over any Transport, so HMAC comes for free
+// by handing it a SecureTransport. song wishlist: a security hook on
+// run_tcp_multi would make this loop unnecessary.
+void serve_client(song::ServiceRuntime& runtime, song::Transport& transport) {
+    runtime.send_init_confirmation_transport(transport);
+    std::unordered_set<song::i32> tracked;
+    for (;;) {
+        Buffer msg;
+        if (!transport.receive(msg, -1)) return;  // disconnect
+        auto hdr = song::wire::decode_header(msg);
+        if (hdr.magic != song::wire::kMagic) return;
+        if (hdr.type == song::wire::MsgType::shutdown) return;
+        if (hdr.type == song::wire::MsgType::init_ack) continue;
+        runtime.handle_message(hdr, msg, transport, tracked);
+    }
+}
+
+// Accept loop, thread per client. An empty key serves plaintext (loopback
+// testing); with a key every connection is wrapped in SecureTransport and a
+// bad or missing HMAC tag throws on first receive, dropping the client
+// before it reaches a dispatcher.
+[[noreturn]] void serve_tcp(song::ServiceRuntime& runtime,
+                            song::TcpListener& listener,
+                            const std::string& key) {
+    constexpr int kMaxClients = 32;
+    auto active = std::make_shared<std::atomic<int>>(0);
+    for (;;) {
+        std::unique_ptr<song::TcpTransport> tcp;
+        try {
+            tcp = listener.accept(-1);
+        } catch (const std::exception& e) {
+            song::Log::warn(std::string("accept: ") + e.what());
+            continue;
+        }
+        if (!tcp) continue;
+        if (active->load() >= kMaxClients) {
+            tcp->close();  // bounded like run_tcp_multi: drop, do not queue
+            continue;
+        }
+        ++*active;
+        std::thread([&runtime, key, active,
+                     t = std::move(tcp)]() mutable {
+            std::unique_ptr<song::Transport> transport = std::move(t);
+            if (!key.empty()) {
+                transport = std::make_unique<song::SecureTransport>(
+                    std::move(transport), song::SecurityConfig(key));
+            }
+            try {
+                serve_client(runtime, *transport);
+            } catch (const std::exception& e) {
+                song::Log::warn(std::string("client dropped: ") + e.what());
+            }
+            transport->close();
+            --*active;
+        }).detach();
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -239,14 +302,24 @@ int main(int argc, char** argv) {
     song::Log::debug("savannahd up: node=" + g_config.name +
                " agent=" + g_config.agent_cmd);
     if (tcp) {
-        // Loopback only until Phase 3 lands HMAC; port 0 = OS-assigned.
-        // The marker line on stdout is the contract test harnesses parse.
+        // Loopback only, HMAC optional here; --mdns (LAN exposure) is what
+        // requires the key. Port 0 = OS-assigned. The marker line on stdout
+        // is the contract test harnesses parse.
+        std::string key;
+        if (!g_config.hmac_key_file.empty()) {
+            try {
+                key = savannah::load_hmac_key(g_config.hmac_key_file);
+            } catch (const std::exception& e) {
+                song::Log::error(std::string("savannahd: ") + e.what());
+                return 2;
+            }
+        }
         song::TcpListener listener;
         listener.listen(static_cast<song::u16>(tcp_port), 128, "127.0.0.1");
         std::printf("SAVANNAHD_TCP_PORT=%u\n",
                     static_cast<unsigned>(listener.bound_port()));
         std::fflush(stdout);
-        runtime.run_tcp_multi(listener);
+        serve_tcp(runtime, listener, key);
     }
     runtime.run();
 }

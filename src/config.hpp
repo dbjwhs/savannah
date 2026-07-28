@@ -81,4 +81,9 @@ struct NodeConfig {
     static NodeConfig from(const Config& cfg);
 };
 
+/// Read an HMAC key file: raw bytes, one trailing newline tolerated.
+/// Throws ConfigError if unreadable or shorter than 32 bytes (song's
+/// kMinKeySize; a weaker mesh key is a misconfiguration, not a choice).
+std::string load_hmac_key(const std::string& path);
+
 }  // namespace savannah

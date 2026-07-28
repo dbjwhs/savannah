@@ -105,6 +105,12 @@ add_test(NAME test_tcp_flight COMMAND test_tcp_flight
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(test_tcp_flight PROPERTIES TIMEOUT 60)
 
+add_executable(test_secure test/test_secure.cpp)
+target_link_libraries(test_secure PRIVATE savannah_core)
+add_test(NAME test_secure COMMAND test_secure
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(test_secure PROPERTIES TIMEOUT 60)
+
 # Integration test fixtures: per-scenario savannahd configs pointing at
 # fake-claude. Generated at configure time into the build dir.
 set(FAKE ${CMAKE_CURRENT_BINARY_DIR}/fake-claude)
@@ -128,5 +134,25 @@ scenario_config(giant giant_chunk ", \"--giant-bytes\", \"4194304\"")
 scenario_config(utf8 utf8_split "")
 scenario_config(drip chunks ", \"--chunks\", \"6\", \"--delay-ms\", \"150\"")
 scenario_config(noise stderr_noise "")
+
+# HMAC fixtures: deterministic 32+ byte keys and a secured echo node config.
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test.key
+     "savannah-test-hmac-key-0123456789abcdef")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test_wrong.key
+     "savannah-WRONG-hmac-key-0123456789abcdef")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_secure.toml
+"[node]
+name = \"secure-node\"
+workspace = \"/tmp\"
+tags = [\"test\", \"secure\"]
+
+[agent]
+cmd = \"${FAKE}\"
+args = [\"--scenario\", \"echo\"]
+timeout_ms = 30000
+
+[mesh]
+hmac_key_file = \"test.key\"
+")
 scenario_config(die die_before_result "")
 scenario_config(hang hang "")

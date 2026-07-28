@@ -230,4 +230,19 @@ NodeConfig NodeConfig::from(const Config& cfg) {
     return nc;
 }
 
+std::string load_hmac_key(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw ConfigError("cannot open key file " + path, 0);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    std::string key = ss.str();
+    if (!key.empty() && key.back() == '\n') key.pop_back();
+    if (key.size() < 32) {
+        throw ConfigError("hmac key in " + path +
+                              " is shorter than 32 bytes",
+                          0);
+    }
+    return key;
+}
+
 }  // namespace savannah
