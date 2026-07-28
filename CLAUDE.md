@@ -121,6 +121,14 @@ Found while building against song @ HEAD on Linux GCC 13:
    `stream_end` during unwind, then the catch sends the error reply. Streaming
    clients stop at `stream_end` and never read the error: the failure looks
    like a clean empty stream. Wishlist: error-before-stream_end in runtime.cpp.
+10. `make_service_type`'s old `_type._song._tcp` form was three DNS labels;
+    dns_sd rejects it (kDNSServiceErr_BadParam, RFC 6763 wants `_app._proto`),
+    so mDNS registration had never actually worked. Fixed upstream 7/28/2026
+    (song main 4dcc542): the format is now `_type-song._tcp`; savannah's mesh
+    type is `_agent-song._tcp`. Keep type names to 10 chars (RFC 6335).
+11. `run_tcp_multi` has no security hook, so a service cannot serve
+    SecureTransport clients through it; savannahd carries its own accept
+    loop mirroring client_loop. Wishlist: transport-wrapping hook.
 
 ## stream-json contract (pinned subset)
 

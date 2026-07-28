@@ -111,6 +111,12 @@ add_test(NAME test_secure COMMAND test_secure
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(test_secure PROPERTIES TIMEOUT 60)
 
+add_executable(test_mdns test/test_mdns.cpp)
+target_link_libraries(test_mdns PRIVATE savannah_core)
+add_test(NAME test_mdns COMMAND test_mdns
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(test_mdns PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
 # Integration test fixtures: per-scenario savannahd configs pointing at
 # fake-claude. Generated at configure time into the build dir.
 set(FAKE ${CMAKE_CURRENT_BINARY_DIR}/fake-claude)
@@ -145,6 +151,20 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_secure.toml
 name = \"secure-node\"
 workspace = \"/tmp\"
 tags = [\"test\", \"secure\"]
+
+[agent]
+cmd = \"${FAKE}\"
+args = [\"--scenario\", \"echo\"]
+timeout_ms = 30000
+
+[mesh]
+hmac_key_file = \"test.key\"
+")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_mdns.toml
+"[node]
+name = \"savannah-mdns-selftest\"
+workspace = \"/tmp\"
+tags = [\"test\", \"mdns\"]
 
 [agent]
 cmd = \"${FAKE}\"

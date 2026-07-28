@@ -260,14 +260,18 @@ void serve_client(song::ServiceRuntime& runtime, song::Transport& transport) {
 int main(int argc, char** argv) {
     std::string config_path;
     bool tcp = false;
+    bool mdns = false;
     long tcp_port = 0;
     if (const char* env = std::getenv("SAVANNAHD_CONFIG")) config_path = env;
-    for (int i = 1; i + 1 < argc; ++i) {
-        if (std::string(argv[i]) == "--config") config_path = argv[i + 1];
-        if (std::string(argv[i]) == "--tcp") {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--config" && i + 1 < argc) {
+            config_path = argv[i + 1];
+        }
+        if (std::string(argv[i]) == "--tcp" && i + 1 < argc) {
             tcp = true;
             tcp_port = std::strtol(argv[i + 1], nullptr, 10);
         }
+        if (std::string(argv[i]) == "--mdns") mdns = true;
     }
     if (config_path.empty()) {
         song::Log::error("savannahd: no config (set SAVANNAHD_CONFIG or --config)");
@@ -302,9 +306,10 @@ int main(int argc, char** argv) {
     song::Log::debug("savannahd up: node=" + g_config.name +
                " agent=" + g_config.agent_cmd);
     if (tcp) {
-        // Loopback only, HMAC optional here; --mdns (LAN exposure) is what
-        // requires the key. Port 0 = OS-assigned. The marker line on stdout
-        // is the contract test harnesses parse.
+        // --tcp alone binds loopback (HMAC optional there). --mdns is LAN
+        // exposure: it binds all interfaces and therefore refuses to run
+        // without a key. Port 0 = OS-assigned. The marker line on stdout is
+        // the contract test harnesses parse.
         std::string key;
         if (!g_config.hmac_key_file.empty()) {
             try {
@@ -314,8 +319,33 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
+        if (mdns && key.empty()) {
+            song::Log::error(
+                "savannahd: --mdns requires mesh.hmac_key_file "
+                "(refusing unauthenticated LAN exposure)");
+            return 2;
+        }
         song::TcpListener listener;
-        listener.listen(static_cast<song::u16>(tcp_port), 128, "127.0.0.1");
+        listener.listen(static_cast<song::u16>(tcp_port), 128,
+                        mdns ? "" : "127.0.0.1");
+
+        std::unique_ptr<song::Discovery> discovery;
+        song::ServiceRegistration registration;
+        if (mdns) {
+            discovery = song::create_discovery();
+            if (!discovery || !discovery->is_available()) {
+                song::Log::error("savannahd: mDNS not available");
+                return 2;
+            }
+            registration = song::ServiceRegistration(
+                *discovery, g_config.name, savannah_wire::kMeshServiceType,
+                listener.bound_port());
+            if (!registration.is_registered()) {
+                song::Log::error("savannahd: mDNS registration failed");
+                return 2;
+            }
+        }
+
         std::printf("SAVANNAHD_TCP_PORT=%u\n",
                     static_cast<unsigned>(listener.bound_port()));
         std::fflush(stdout);

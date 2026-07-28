@@ -19,4 +19,7 @@ namespace savannah_wire {
 // Manual:    streaming twin for ask().
 inline constexpr song::u16 kService_AgentNode_Stream = 2;
 
+// mDNS short type; song expands it to _agent._song._tcp (DESIGN.md section 2).
+inline constexpr const char* kMeshServiceType = "agent";
+
 }  // namespace savannah_wire

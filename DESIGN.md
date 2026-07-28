@@ -47,7 +47,7 @@ Savannah stress-tests the thesis and feeds a wishlist back into song
 
 **Layer 1 — song mesh (substrate).** Each machine runs `savannahd`, a C++20
 daemon exposing that machine's agent as a song service (`AgentNode`). Nodes
-register via mDNS (`_agent._song._tcp`), stream responses, carry HMAC auth,
+register via mDNS (`_agent-song._tcp`), stream responses, carry HMAC auth,
 and inherit song's process supervision: agents are flaky long-running
 processes, and crash containment + restart is exactly the right tool.
 
