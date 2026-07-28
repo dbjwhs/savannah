@@ -107,6 +107,12 @@ Found while building against song @ HEAD on Linux GCC 13:
 6. `is_stream` is parsed but ignored by codegen (proxies come out unary).
    Streaming is hand-wired via `call_streaming` + generated method ids.
 7. Streaming dispatchers shadow unary dispatchers per service id (see above).
+8. `encode_string` throws over `kMaxStringSize` (1 MB, buffer.hpp). savannahd
+   splits big TEXT payloads into 512 KiB chunks (`kMaxChunkPayload`).
+9. When a stream dispatcher throws, the StreamWriter destructor sends
+   `stream_end` during unwind, then the catch sends the error reply. Streaming
+   clients stop at `stream_end` and never read the error: the failure looks
+   like a clean empty stream. Wishlist: error-before-stream_end in runtime.cpp.
 
 ## stream-json contract (pinned subset)
 
@@ -117,6 +123,9 @@ the real CLI drifts, the planned `SAVANNAH_LIVE=1` test will catch it:
 - `{"type":"assistant","message":{"content":[{"type":"text","text":...} |
   {"type":"tool_use","name":...,"input":{...}}]}}` → TEXT chunk per text block,
   TOOL_EVENT chunk per tool_use ("name: first-string-arg, truncated")
+- A text block over 512 KiB arrives as multiple TEXT chunks (song's 1 MB
+  string cap; finding 8). Clients concatenate TEXT payloads; split points can
+  land mid-UTF8 and concatenation restores the byte sequence.
 - `{"type":"user",...}` (tool results) → ignored in v1
 - `{"type":"result","total_cost_usd":...,"duration_ms":...,"num_turns":...,
   "is_error":...}` → RESULT chunk, compact JSON trailer

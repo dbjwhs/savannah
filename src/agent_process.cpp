@@ -78,52 +78,63 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
         if (child_running) kill(pid, SIGKILL);
     };
 
-    for (;;) {
-        if (cancel_flag.load(std::memory_order_relaxed)) {
-            out.killed = true;
-            kill_child();
-            break;
-        }
-        std::int64_t elapsed = ms_since(start);
-        if (elapsed >= timeout_ms) {
-            out.timed_out = true;
-            kill_child();
-            break;
+    // The sink can throw (a stream write to a vanished client, an encode
+    // refusal). The child must still be killed and reaped on that path or
+    // it lingers forever blocked on a full pipe.
+    try {
+        for (;;) {
+            if (cancel_flag.load(std::memory_order_relaxed)) {
+                out.killed = true;
+                kill_child();
+                break;
+            }
+            std::int64_t elapsed = ms_since(start);
+            if (elapsed >= timeout_ms) {
+                out.timed_out = true;
+                kill_child();
+                break;
+            }
+
+            struct pollfd pfd{};
+            pfd.fd = fds[0];
+            pfd.events = POLLIN;
+            // Wake at least every 100ms so cancel/timeout stay responsive.
+            std::int64_t remaining = timeout_ms - elapsed;
+            int wait_ms = static_cast<int>(remaining < 100 ? remaining : 100);
+            int rc = poll(&pfd, 1, wait_ms);
+            if (rc < 0) {
+                if (errno == EINTR) continue;
+                kill_child();
+                break;
+            }
+            if (rc == 0) continue;  // poll tick: re-check cancel/timeout
+
+            ssize_t n = read(fds[0], buf, sizeof buf);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                kill_child();
+                break;
+            }
+            if (n == 0) break;  // EOF: child closed stdout
+
+            carry.append(buf, static_cast<std::size_t>(n));
+            std::size_t nl;
+            while ((nl = carry.find('\n')) != std::string::npos) {
+                std::string line = carry.substr(0, nl);
+                carry.erase(0, nl + 1);
+                mapper.feed_line(line);
+            }
         }
 
-        struct pollfd pfd{};
-        pfd.fd = fds[0];
-        pfd.events = POLLIN;
-        // Wake at least every 100ms so cancel/timeout stay responsive.
-        std::int64_t remaining = timeout_ms - elapsed;
-        int wait_ms = static_cast<int>(remaining < 100 ? remaining : 100);
-        int rc = poll(&pfd, 1, wait_ms);
-        if (rc < 0) {
-            if (errno == EINTR) continue;
-            kill_child();
-            break;
-        }
-        if (rc == 0) continue;  // poll tick: re-check cancel/timeout
-
-        ssize_t n = read(fds[0], buf, sizeof buf);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            kill_child();
-            break;
-        }
-        if (n == 0) break;  // EOF: child closed stdout
-
-        carry.append(buf, static_cast<std::size_t>(n));
-        std::size_t nl;
-        while ((nl = carry.find('\n')) != std::string::npos) {
-            std::string line = carry.substr(0, nl);
-            carry.erase(0, nl + 1);
-            mapper.feed_line(line);
-        }
+        // Trailing partial line (agent died mid-write): still worth feeding.
+        if (!carry.empty()) mapper.feed_line(carry);
+    } catch (...) {
+        kill(pid, SIGKILL);
+        close(fds[0]);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        throw;
     }
-
-    // Trailing partial line (agent died mid-write): still worth feeding.
-    if (!carry.empty()) mapper.feed_line(carry);
 
     close(fds[0]);
 

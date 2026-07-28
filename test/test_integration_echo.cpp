@@ -45,6 +45,7 @@ struct Streamed {
     std::vector<std::string> tools;
     std::string result;
     int chunk_count = 0;
+    std::size_t max_payload = 0;
 };
 
 Streamed ask(ServiceConnection& conn, const std::string& prompt,
@@ -65,6 +66,7 @@ Streamed ask(ServiceConnection& conn, const std::string& prompt,
     while (reader.next()) {
         auto c = sw::decode_AgentChunk(reader.chunk());
         ++out.chunk_count;
+        if (c.payload.size() > out.max_payload) out.max_payload = c.payload.size();
         switch (c.kind) {
             case 0: out.text += c.payload; break;
             case 1: out.tools.push_back(c.payload); break;
@@ -145,6 +147,22 @@ int main() {
         auto r = ask(conn, "resilience");
         CHECK(r.text.find("valid before garbage") != std::string::npos);
         CHECK(r.text.find("valid after garbage") != std::string::npos);
+        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+    }
+
+    // ---- giant chunk: a 4 MiB text block survives the line pump and the
+    //      wire intact. song's encode_string caps at 1 MB, so savannahd must
+    //      split it: 8 TEXT chunks of 512 KiB, then the RESULT trailer. ----
+    {
+        constexpr std::size_t kGiant = 4194304;    // matches cfg_giant.toml
+        constexpr std::size_t kSplit = 512 * 1024; // savannahd kMaxChunkPayload
+        ServiceManager mgr;
+        auto conn = connect_with_config(mgr, "cfg_giant.toml", "giant");
+        auto r = ask(conn, "big");
+        CHECK(r.text.size() == kGiant);
+        CHECK(r.text.find_first_not_of('x') == std::string::npos);
+        CHECK(r.chunk_count == static_cast<int>(kGiant / kSplit) + 1);
+        CHECK(r.max_payload <= kSplit);
         CHECK(r.result.find("\"is_error\":false") != std::string::npos);
     }
 

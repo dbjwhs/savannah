@@ -72,15 +72,42 @@ std::vector<std::string> build_agent_argv(const std::string& prompt,
     return argv;
 }
 
+// song's encode_string refuses anything over kMaxStringSize (1 MB), so a
+// giant agent text block must be split across multiple TEXT chunks; the
+// client concatenates TEXT payloads already (that is the stream contract).
+// Split points may land mid-UTF8; concatenation restores the byte sequence.
+// Non-TEXT chunks are bounded by construction (RESULT is a compact trailer,
+// TOOL_EVENT is truncated at kToolSummaryMax); truncate defensively rather
+// than split so "exactly one RESULT chunk" always holds.
+constexpr std::size_t kMaxChunkPayload = 512 * 1024;
+
 void write_chunk(StreamWriter& writer, savannah::ChunkKind kind,
                  const std::string& payload) {
-    sw::AgentChunk chunk;
-    chunk.kind = static_cast<i32>(kind);
-    chunk.payload = payload;
-    Buffer buf;
-    sw::encode_AgentChunk(buf, chunk);
-    writer.write(buf);
+    auto emit = [&](std::string slice) {
+        sw::AgentChunk chunk;
+        chunk.kind = static_cast<i32>(kind);
+        chunk.payload = std::move(slice);
+        Buffer buf;
+        sw::encode_AgentChunk(buf, chunk);
+        writer.write(buf);
+    };
+    if (payload.size() <= kMaxChunkPayload) {
+        emit(payload);
+    } else if (kind != savannah::ChunkKind::Text) {
+        emit(payload.substr(0, kMaxChunkPayload));
+    } else {
+        for (std::size_t off = 0; off < payload.size();
+             off += kMaxChunkPayload) {
+            emit(payload.substr(off, kMaxChunkPayload));
+        }
+    }
 }
+
+// Clears the single-flight gate even when handle_ask unwinds on an
+// exception (a stream write failure must not brick the node as "busy").
+struct FlightGuard {
+    ~FlightGuard() { g_busy.store(false); }
+};
 
 void handle_ask(Buffer& request, StreamWriter& writer) {
     std::string prompt = song::decode_string(request);
@@ -98,6 +125,7 @@ void handle_ask(Buffer& request, StreamWriter& writer) {
         g_busy.store(true);
         g_cancel.store(false);
     }
+    FlightGuard flight;
 
     std::int64_t timeout =
         opts.timeout_ms > 0 ? static_cast<std::int64_t>(opts.timeout_ms)
@@ -119,8 +147,6 @@ void handle_ask(Buffer& request, StreamWriter& writer) {
                     savannah::ChunkMapper::synthetic_error_result(
                         reason, outcome.exit_code));
     }
-
-    g_busy.store(false);
 }
 
 void stream_dispatcher(u16 method_id, Buffer& request, StreamWriter& writer) {
