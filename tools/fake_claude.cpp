@@ -22,6 +22,8 @@
 //   utf8_split        one line flushed in two writes split inside a 4-byte
 //                     codepoint, then a text block split across two chunks
 //                     mid-codepoint, then result
+//   stderr_noise      flood stderr with 128 KiB blobs (past pipe capacity)
+//                     between valid stdout lines, then result
 //
 // Unknown flags are swallowed so callers can pass the same argv shape they
 // would pass the real CLI.
@@ -167,6 +169,19 @@ int main(int argc, char** argv) {
         std::size_t mid = eleph.find('\xC3', 2) + 1;  // inside second e-acute
         emit_text(eleph.substr(0, mid));
         emit_text(eleph.substr(mid));
+        emit_result(false);
+    } else if (scenario == "stderr_noise") {
+        // Loud agent: stderr is a separate channel savannahd inherits
+        // rather than pipes. Each blob exceeds pipe capacity (64 KiB), so
+        // if savannahd ever pipes stderr without draining it, this child
+        // blocks mid-write and the scenario times out instead of passing.
+        const std::string blob(128 * 1024, '#');
+        for (int i = 0; i < 2; ++i) {
+            std::fwrite(blob.data(), 1, blob.size(), stderr);
+            std::fflush(stderr);
+            emit_text("still fine " + std::to_string(i) + " ");
+            nap();
+        }
         emit_result(false);
     } else if (scenario == "bad_json") {
         emit_text("valid before garbage");

@@ -64,7 +64,8 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 
 fake-claude scenarios (`--scenario NAME`, plus `--chunks N`, `--delay-ms D`,
 `--giant-bytes N`): `echo`, `chunks`, `tool_storm`, `giant_chunk`,
-`die_before_result`, `hang`, `bad_json`, `utf8_split`. CMake writes
+`die_before_result`, `hang`, `bad_json`, `utf8_split`, `stderr_noise`.
+CMake writes
 per-scenario savannahd configs (`cfg_<name>.toml`) into the build dir at
 configure time; `test_integration_echo` runs against them, which is why it
 needs `WORKING_DIRECTORY` = build dir.

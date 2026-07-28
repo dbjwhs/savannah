@@ -13,6 +13,9 @@
 
 #include <song/song.hpp>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -190,6 +193,29 @@ int main() {
             "roar \xF0\x9F\xA6\x81 savanna \xC3\xA9l\xC3\xA9phant";
         CHECK(r.text == expected);
         CHECK(r.chunk_count == 4);  // 3 TEXT (1 whole + 1 split pair), 1 RESULT
+        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+    }
+
+    // ---- stderr noise: 128 KiB blobs on stderr between valid lines must
+    //      not corrupt, stall, or deadlock the stream. Our own stderr is
+    //      parked on /dev/null around the spawn so savannahd's children
+    //      inherit it and the noise stays out of test output. ----
+    {
+        int saved_stderr = dup(STDERR_FILENO);
+        int devnull = open("/dev/null", O_WRONLY);
+        CHECK(saved_stderr >= 0 && devnull >= 0);
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+
+        ServiceManager mgr;
+        auto conn = connect_with_config(mgr, "cfg_noise.toml", "noise");
+        auto r = ask(conn, "loud");
+
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+
+        CHECK(r.text == "still fine 0 still fine 1 ");
+        CHECK(r.chunk_count == 3);  // 2 TEXT + 1 RESULT
         CHECK(r.result.find("\"is_error\":false") != std::string::npos);
     }
 

@@ -2,10 +2,10 @@
 
 **Claude-to-Claude agent mesh, built on [song](https://github.com/dbjwhs/song).**
 v0.3 (as-built) · July 28, 2026 · Dennis Jones + Claude
-Status: **Phase 1 complete; Phase 2 core complete** (solo node over pipes,
-giant-chunk/UTF-8/busy/cancel hardening, loopback TCP multi-client,
-5/5 test suites green). Remaining Phase 2: slow drip, stderr noise,
-`SAVANNAH_LIVE=1` drift check.
+Status: **Phase 1 complete; Phase 2 complete except the live drift check**
+(solo node over pipes, giant-chunk/UTF-8/drip/stderr-noise/busy/cancel
+hardening, loopback TCP multi-client, 5/5 test suites green). Remaining
+Phase 2: `SAVANNAH_LIVE=1` drift check.
 
 > One-liner: Claude Code instances become discoverable peers on your network.
 > Any agent can ask any other agent for help, mid-task, on its own judgment.
@@ -100,7 +100,7 @@ Claude Code (A)                          Claude Code (B)
 |---|---|---|---|
 | `savannahd` | C++20 | song service; forks headless agent; stream-json → typed chunks; single-flight; timeout/cancel/kill | ✅ Phase 1 |
 | `savannah` CLI | C++20 | human remote control + test harness: ask/info/status | ✅ Phase 1 (local pipes) |
-| `fake-claude` | C++20 | deterministic stream-json stand-in, 8 scenarios incl. hang/die/garbage/giant/utf8-split | ✅ Phase 1+2 |
+| `fake-claude` | C++20 | deterministic stream-json stand-in, 9 scenarios incl. hang/die/garbage/giant/utf8-split/stderr-flood | ✅ Phase 1+2 |
 | config (TOML subset) | C++20 | hand-written; tables, strings, ints, bools, string arrays; nothing more on purpose | ✅ Phase 1 |
 | JSON (subset) | C++20 | hand-written; full value model, \uXXXX + surrogates; exists to read stream-json | ✅ Phase 1 |
 | `peer` MCP shim | Python | list_peers / ask_peer / peer_status over song | Phase 4 |
@@ -128,11 +128,12 @@ late on purpose.
 
 1. ✅ **Solo node** — CLI → savannahd → fake-claude over local pipes.
    Done 7/27/2026: 4 suites green, -Werror clean, GCC 13.
-2. **Streaming hardening** — core done 7/28/2026: giant chunks (512 KiB
-   split around song's 1 MB string cap), mid-UTF8 splits at pipe and chunk
-   layer, single-flight busy, cancel-while-busy; `savannahd --tcp` loopback
-   multi-client landed as the test vehicle (and Phase 3 transport embryo).
-   Remaining: slow drip, stderr noise, `SAVANNAH_LIVE=1` schema-drift test.
+2. **Streaming hardening** — done 7/28/2026 except the drift check: giant
+   chunks (512 KiB split around song's 1 MB string cap), mid-UTF8 splits at
+   pipe and chunk layer, slow drip past the poll tick, stderr floods past
+   pipe capacity, single-flight busy, cancel-while-busy; `savannahd --tcp`
+   loopback multi-client landed as the test vehicle (and Phase 3 transport
+   embryo). Remaining: `SAVANNAH_LIVE=1` schema-drift test.
 3. **Two machines** — mDNS + HMAC, `savannah ls` shows both. Real-LAN only
    (M4 + linux box); never in CI.
 4. **THE PAYOFF: MCP shim** — Claude Code on A calls `ask_peer("linux-box",
