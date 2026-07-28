@@ -1,0 +1,58 @@
+// agent.song - Savannah AgentNode contract, v1
+// Claude-to-Claude agent mesh on the song substrate.
+// v1 is deliberately stateless: every ask() is a fresh headless agent run.
+//
+// NOTE (songc workarounds, see CLAUDE.md "song wishlist"):
+//  - doc comments must be single-line (multi-line loses /// in codegen)
+//  - AgentChunk.kind is i32, not enum ChunkKind (enum codecs not emitted yet)
+//    kind values: 0 = TEXT, 1 = TOOL_EVENT, 2 = RESULT
+
+namespace savannah;
+
+/// One chunk of a streamed ask() response; kind: 0 TEXT, 1 TOOL_EVENT, 2 RESULT
+struct AgentChunk {
+    i32    kind;
+    string payload;
+}
+
+/// Static identity of a node, returned by info()
+struct AgentInfo {
+    string   name;
+    string   model;
+    string   workspace;
+    string[] tags;
+    u32      protocol_ver;
+}
+
+/// Options for a single ask; v1 requires fresh_context = true
+struct AskOptions {
+    u32    timeout_ms;
+    bool   fresh_context;
+    string system_hint;
+}
+
+/// Node is already running an ask (v1 is single-flight)
+error NodeBusy {
+    string current_ask_id;
+}
+
+/// The underlying agent process failed before producing a result
+error AgentFailed {
+    string reason;
+    i32    exit_code;
+}
+
+/// A single machine agent, exposed on the mesh
+service AgentNode {
+    /// Static identity and capabilities of this node
+    info() -> AgentInfo;
+
+    /// Run one stateless prompt; AgentChunk stream ends after a RESULT chunk
+    stream ask(string prompt, AskOptions opts) -> AgentChunk throws NodeBusy;
+
+    /// Cancel the in-flight ask, if any; true if something was cancelled
+    cancel() -> bool;
+
+    /// Returns idle or busy; v2 promotes this to a class property with push
+    status() -> string;
+}
