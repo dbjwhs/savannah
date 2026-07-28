@@ -69,6 +69,12 @@ per-scenario savannahd configs (`cfg_<name>.toml`) into the build dir at
 configure time; `test_integration_echo` runs against them, which is why it
 needs `WORKING_DIRECTORY` = build dir.
 
+Pipe mode (`runtime.run()`) dispatches one message at a time, so single-flight
+NodeBusy and cancel-while-busy can only fire over concurrent connections:
+`savannahd --tcp PORT` serves loopback TCP via `run_tcp_multi` (port 0 = OS
+picks; prints `SAVANNAHD_TCP_PORT=N` on stdout). `test_tcp_flight` uses it.
+Phase 3 swaps loopback for LAN + HMAC.
+
 ## Key patterns (learned from song itself)
 
 - **Streaming is hand-wired, backup.song-style.** songc parses the `stream`

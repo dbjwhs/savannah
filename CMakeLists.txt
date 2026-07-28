@@ -93,6 +93,12 @@ add_test(NAME test_integration_echo COMMAND test_integration_echo
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(test_integration_echo PROPERTIES TIMEOUT 60)
 
+add_executable(test_tcp_flight test/test_tcp_flight.cpp)
+target_link_libraries(test_tcp_flight PRIVATE savannah_core)
+add_test(NAME test_tcp_flight COMMAND test_tcp_flight
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(test_tcp_flight PROPERTIES TIMEOUT 60)
+
 # Integration test fixtures: per-scenario savannahd configs pointing at
 # fake-claude. Generated at configure time into the build dir.
 set(FAKE ${CMAKE_CURRENT_BINARY_DIR}/fake-claude)

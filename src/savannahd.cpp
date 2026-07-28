@@ -4,6 +4,10 @@
 // savannahd — one machine's agent, exposed as a song service.
 //
 // Phase 1: launched by ServiceManager over local pipes (stdin/stdout wire).
+// With --tcp PORT it serves concurrent clients over loopback TCP instead
+// (run_tcp_multi, thread per client). Pipe mode dispatches sequentially, so
+// single-flight NodeBusy and cancel-while-busy only ever fire in TCP mode;
+// that is also why their tests need it. Phase 3 swaps loopback for LAN+HMAC.
 // Config comes from $SAVANNAHD_CONFIG or --config. The agent command comes
 // from config, which is how tests substitute fake-claude for the real CLI:
 // production code has zero test hooks.
@@ -16,6 +20,7 @@
 #include <song/logging.hpp>  // not in the umbrella header (song wishlist)
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -191,9 +196,15 @@ void unary_dispatcher(u16 method_id, Buffer& request, Buffer& response) {
 
 int main(int argc, char** argv) {
     std::string config_path;
+    bool tcp = false;
+    long tcp_port = 0;
     if (const char* env = std::getenv("SAVANNAHD_CONFIG")) config_path = env;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--config") config_path = argv[i + 1];
+        if (std::string(argv[i]) == "--tcp") {
+            tcp = true;
+            tcp_port = std::strtol(argv[i + 1], nullptr, 10);
+        }
     }
     if (config_path.empty()) {
         song::Log::error("savannahd: no config (set SAVANNAHD_CONFIG or --config)");
@@ -227,6 +238,15 @@ int main(int argc, char** argv) {
 
     song::Log::debug("savannahd up: node=" + g_config.name +
                " agent=" + g_config.agent_cmd);
+    if (tcp) {
+        // Loopback only until Phase 3 lands HMAC; port 0 = OS-assigned.
+        // The marker line on stdout is the contract test harnesses parse.
+        song::TcpListener listener;
+        listener.listen(static_cast<song::u16>(tcp_port), 128, "127.0.0.1");
+        std::printf("SAVANNAHD_TCP_PORT=%u\n",
+                    static_cast<unsigned>(listener.bound_port()));
+        std::fflush(stdout);
+        runtime.run_tcp_multi(listener);
+    }
     runtime.run();
-    return 0;
 }
