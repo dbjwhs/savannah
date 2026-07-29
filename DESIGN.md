@@ -2,11 +2,11 @@
 
 **Claude-to-Claude agent mesh, built on [song](https://github.com/dbjwhs/song).**
 v0.3 (as-built) · July 28, 2026 · Dennis Jones + Claude
-Status: **Phases 1 through 3 complete.** Two-machine acceptance ran
-7/29/2026: macOS arm64 and Ubuntu 26.04 x86_64 in one `savannah ls`,
-HMAC-authenticated asks in both directions over the real LAN, keyless
-clients rejected. 8 test suites on both platforms; live-CLI and mDNS
-suites opt-in.
+Status: **Phases 1 through 4 complete.** Two-machine acceptance ran
+7/29/2026 (both platforms in one `savannah ls`, bidirectional HMAC asks);
+the peer MCP shim landed the same day and completed the payoff loop live:
+MCP tool call on the mac, answer streamed back from the linux node.
+9 test suites; live-CLI and mDNS suites opt-in.
 
 > One-liner: Claude Code instances become discoverable peers on your network.
 > Any agent can ask any other agent for help, mid-task, on its own judgment.
@@ -141,9 +141,11 @@ late on purpose.
    both directions with HMAC, keyless clients dropped. Bring-up findings
    upstreamed to song same day; macOS gotcha recorded in README (the
    application firewall silently eats inbound for unapproved binaries).
-4. **THE PAYOFF: MCP shim** — Claude Code on A calls `ask_peer("linux-box",
-   ...)` mid-conversation. Demo: A asks B to run B's test suite and
-   summarize failures.
+4. ✅ **THE PAYOFF: MCP shim** — landed 7/29/2026. `shim/peer.py`, MCP
+   stdio server, stdlib-only Python, wraps the savannah CLI (discovery,
+   HMAC, streaming stay on the tested C++ paths). Live loop verified:
+   MCP `ask_peer("dbj-devone", ...)` from the mac answered by the linux
+   node. `.mcp.json` registers it for Claude Code sessions in this repo.
 5. **Patterns** — reviewer pair (author node + clean-context reviewer),
    tag fan-out ("all idle nodes tagged cpp"), file transfer via song's
    datacopy pattern.
@@ -203,3 +205,11 @@ late on purpose.
   the TCP handshake in-kernel but never delivers connections to unapproved
   binaries; looks like a client-side read timeout while loopback works.
   Allow savannahd via socketfilterfw, and re-allow after rebuilds.
+- **7/29/2026 (Phase 4)** — Decision: the peer shim wraps the savannah CLI
+  via subprocess instead of speaking song natively. song's Python runtime
+  is unary-only (no streaming, no SecureTransport, no discovery), and
+  reimplementing those in Python would fork the wire logic; the CLI hop
+  keeps one implementation of everything hard. The MCP layer itself is
+  hand-written stdlib (newline-delimited JSON-RPC 2.0), keeping the
+  zero-dependency rule intact. v2: generated Python bindings once song's
+  Python runtime learns streaming and HMAC. Payoff loop verified live.

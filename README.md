@@ -35,6 +35,15 @@ Claude Code (A)                          Claude Code (B)
   multiple clients (thread per client). Single-flight is enforced: a second
   ask while one is in flight gets an immediate `busy` error trailer;
   `cancel` kills the in-flight agent and frees the node.
+- **`ask_peer` from stock Claude Code** (Phase 4): `shim/peer.py` is an
+  MCP stdio server in pure stdlib Python giving any MCP client three
+  tools: `list_peers`, `ask_peer(name, prompt)`, `peer_status(name)`.
+  It shells out to the `savannah` CLI, so discovery, HMAC, and streaming
+  ride the tested C++ paths. This repo's `.mcp.json` registers it
+  automatically for Claude Code sessions started here (build first, and
+  point `SAVANNAH_KEY` at your mesh key); elsewhere:
+  `claude mcp add peer -e SAVANNAH_BIN=/path/build/savannah -e
+  SAVANNAH_KEY=/path/mesh.key -- python3 /path/shim/peer.py`
 - **A real two-machine mesh** (Phase 3, acceptance run on a live LAN:
   macOS arm64 + Ubuntu 26.04 x86_64): with a shared key,
   `savannahd --tcp PORT --mdns` authenticates every client via HMAC-SHA256
@@ -54,8 +63,9 @@ Claude Code (A)                          Claude Code (B)
 
 Stated on purpose; this list shrinks phase by phase (see `DESIGN.md`).
 
-- No MCP shim, so no `ask_peer` from a real Claude Code session yet
-  (Phase 4: the payoff).
+- The shim wraps the CLI rather than speaking song natively: song's
+  Python runtime is unary-only today (no streaming, no HMAC), so
+  generated Python bindings are the v2 path.
 - The real `claude` CLI is never exercised in CI. fake-claude pins the
   stream-json subset; run `SAVANNAH_LIVE=1 ctest --test-dir build -R
   test_live_schema` manually to check the live CLI against it (one tiny

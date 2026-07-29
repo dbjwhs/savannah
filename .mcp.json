@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "peer": {
+      "command": "python3",
+      "args": ["shim/peer.py"],
+      "env": {
+        "SAVANNAH_BIN": "build/savannah",
+        "SAVANNAH_KEY": "build/mesh.key"
+      }
+    }
+  }
+}

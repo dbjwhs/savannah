@@ -8,9 +8,9 @@ Read `idl/agent.song` first; it is the contract everything else serves.
 Every machine runs `savannahd`, a C++20 daemon exposing that machine's headless
 Claude (`claude -p --output-format stream-json`) as a song service (`AgentNode`),
 discoverable over mDNS, streamed, HMAC-authenticated, process-supervised.
-An MCP shim (`peer`, Python, lives in `shim/` when it lands) gives stock Claude
-Code three tools: `list_peers`, `ask_peer`, `peer_status`. The model decides when
-to delegate. No forking Claude Code.
+The MCP shim (`shim/peer.py`, stdlib-only Python, wraps the savannah CLI)
+gives stock Claude Code three tools: `list_peers`, `ask_peer`, `peer_status`.
+The model decides when to delegate. No forking Claude Code.
 
 Design doc of record: `DESIGN.md` in this repo (architecture, rationale,
 roadmap, append-only decision log). One-liners:
@@ -60,6 +60,8 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `src/savannahd.cpp` | The node daemon: song runtime, dispatchers, single-flight. |
 | `cli/savannah_main.cpp` | Human remote control: `savannah ls`, `savannah <ask\|info\|status> <node>` (local pipes, or mesh via mDNS/--addr with --key). |
 | `tools/fake_claude.cpp` | Fake agent speaking genuine stream-json. Scenario-driven. |
+| `shim/peer.py` | MCP stdio server (stdlib-only) wrapping the CLI: list_peers/ask_peer/peer_status. |
+| `tools/fake_savannah.py` | Fake savannah CLI for shim tests (canned ls/ask/status). |
 | `test/` | Unit tests per component + end-to-end echo integration. |
 
 fake-claude scenarios (`--scenario NAME`, plus `--chunks N`, `--delay-ms D`,
