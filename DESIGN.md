@@ -2,11 +2,11 @@
 
 **Claude-to-Claude agent mesh, built on [song](https://github.com/dbjwhs/song).**
 v0.3 (as-built) · July 28, 2026 · Dennis Jones + Claude
-Status: **Phases 1 and 2 complete; Phase 3 built, solo-validated** (HMAC
-TCP serving, mDNS advertise as `_agent-song._tcp`, `savannah ls` and
-ask-by-name green on one machine 7/28/2026). Remaining Phase 3: the
-two-machine LAN acceptance run. 8 test suites; live-CLI and mDNS suites
-opt-in.
+Status: **Phases 1 through 3 complete.** Two-machine acceptance ran
+7/29/2026: macOS arm64 and Ubuntu 26.04 x86_64 in one `savannah ls`,
+HMAC-authenticated asks in both directions over the real LAN, keyless
+clients rejected. 8 test suites on both platforms; live-CLI and mDNS
+suites opt-in.
 
 > One-liner: Claude Code instances become discoverable peers on your network.
 > Any agent can ask any other agent for help, mid-task, on its own judgment.
@@ -136,11 +136,11 @@ late on purpose.
    multi-client landed as the test vehicle (and Phase 3 transport embryo).
    `SAVANNAH_LIVE=1` drift check runs the real CLI through the savannahd
    parse path; green against claude CLI on 7/28/2026, skipped in CI.
-3. **Two machines** — plumbing built and solo-validated 7/28/2026: HMAC
-   serving (right/wrong/no-key suite), mDNS advertise + self-discovery,
-   `savannah ls`, ask-by-name and --addr. Remaining: the acceptance run
-   with both machines in one `savannah ls` (M4 + linux box, real LAN,
-   never in CI).
+3. ✅ **Two machines** — acceptance ran 7/29/2026 (M4 mac + dbj-devone,
+   Ubuntu 26.04 GCC 15): both nodes in one `savannah ls`, asks green in
+   both directions with HMAC, keyless clients dropped. Bring-up findings
+   upstreamed to song same day; macOS gotcha recorded in README (the
+   application firewall silently eats inbound for unapproved binaries).
 4. **THE PAYOFF: MCP shim** — Claude Code on A calls `ask_peer("linux-box",
    ...)` mid-conversation. Demo: A asks B to run B's test suite and
    summarize failures.
@@ -193,3 +193,13 @@ late on purpose.
   `--mdns` binds all interfaces and refuses to start without
   mesh.hmac_key_file, so an advertised node always authenticates. HMAC is
   authentication only, not encryption; TLS-PSK stays a later phase.
+- **7/29/2026 (Phase 3 acceptance)** — Two-machine run green: mac + Ubuntu
+  26.04 in one `savannah ls`, bidirectional HMAC asks, keyless rejected.
+  Bring-up found and upstreamed two more song fixes: runtime_test missing
+  <algorithm> under GCC 15, and the Avahi implementation's includes nested
+  inside namespace song (the Linux mDNS path had never compiled anywhere;
+  no prior build host had Avahi headers). savannah now mirrors song's
+  optional avahi-client link dependency. Field note: macOS ALF completes
+  the TCP handshake in-kernel but never delivers connections to unapproved
+  binaries; looks like a client-side read timeout while loopback works.
+  Allow savannahd via socketfilterfw, and re-allow after rebuilds.

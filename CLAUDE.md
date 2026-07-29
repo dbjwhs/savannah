@@ -136,6 +136,14 @@ Found while building against song @ HEAD on Linux GCC 13:
     SecureTransport clients through it. Fixed upstream 7/28/2026 (6714339):
     `runtime.set_transport_wrapper(...)` wraps every accepted client;
     savannahd uses it and its hand-rolled accept loop is gone.
+12. `runtime_test.cpp` used `std::find` without `<algorithm>`; GCC 15
+    libstdc++ dropped the transitive include. Fixed upstream 7/29/2026
+    (5746063).
+13. The Avahi discovery implementation did its includes inside
+    `namespace song` (song::std) and had never compiled anywhere: no build
+    host had Avahi headers until dbj-devone. Fixed upstream 7/29/2026
+    (6e8ba10). savannah's CMake now mirrors song's optional avahi-client
+    link dependency.
 
 ## stream-json contract (pinned subset)
 

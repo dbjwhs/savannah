@@ -35,13 +35,14 @@ Claude Code (A)                          Claude Code (B)
   multiple clients (thread per client). Single-flight is enforced: a second
   ask while one is in flight gets an immediate `busy` error trailer;
   `cancel` kills the in-flight agent and frees the node.
-- **Mesh plumbing, validated on one machine** (Phase 3, LAN acceptance
-  pending): with a shared key, `savannahd --tcp PORT --mdns` authenticates
-  every client via HMAC-SHA256 and advertises the node as
-  `_agent-song._tcp`. `savannah ls` browses the mesh, and
-  `savannah ask <name> --key FILE` resolves a node by name (or `--addr
-  HOST:PORT` directly) and streams the answer back. Wrong or missing keys
-  are rejected before any dispatcher runs.
+- **A real two-machine mesh** (Phase 3, acceptance run on a live LAN:
+  macOS arm64 + Ubuntu 26.04 x86_64): with a shared key,
+  `savannahd --tcp PORT --mdns` authenticates every client via HMAC-SHA256
+  and advertises the node as `_agent-song._tcp`. `savannah ls` shows every
+  node on the network, and `savannah ask <name> --key FILE` resolves a
+  node by name (or `--addr HOST:PORT` directly) and streams the answer
+  back, in either direction. Wrong or missing keys are rejected before
+  any dispatcher runs.
 - **Deterministic tests, zero tokens**: everything above is covered by
   seven test suites driven by `fake-claude`, a scenario-driven stand-in
   that speaks the exact stream-json subset savannahd parses. `ctest` runs
@@ -53,10 +54,6 @@ Claude Code (A)                          Claude Code (B)
 
 Stated on purpose; this list shrinks phase by phase (see `DESIGN.md`).
 
-- The two-machine acceptance run (both nodes in one `savannah ls`, ask
-  across the LAN) has not happened yet; all Phase 3 plumbing is so far
-  validated on a single machine. `--tcp` alone binds loopback; `--mdns`
-  binds all interfaces and refuses to start without an HMAC key.
 - No MCP shim, so no `ask_peer` from a real Claude Code session yet
   (Phase 4: the payoff).
 - The real `claude` CLI is never exercised in CI. fake-claude pins the
@@ -146,8 +143,23 @@ Then from anywhere on the LAN:
 ```
 
 `--mdns` refuses to start without a key: advertised nodes always
-authenticate. Traffic is HMAC-authenticated, not encrypted (TLS-PSK is a
-later phase); treat the mesh as LAN-trust.
+authenticate. `--tcp` alone binds loopback; `--mdns` binds all interfaces.
+Traffic is HMAC-authenticated, not encrypted (TLS-PSK is a later phase);
+treat the mesh as LAN-trust.
+
+macOS gotcha: the application firewall silently swallows inbound
+connections to unapproved binaries. The TCP handshake completes in the
+kernel, savannahd never sees the connection, and remote clients report a
+read timeout while loopback works fine. Allow it once (and again after
+rebuilds, since the binary is unsigned):
+
+```bash
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $PWD/build/savannahd
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp $PWD/build/savannahd
+```
+
+Linux needs `libavahi-client-dev` (and a running avahi-daemon) at build
+time for mDNS; without it song builds with discovery disabled.
 
 ## Layout
 
