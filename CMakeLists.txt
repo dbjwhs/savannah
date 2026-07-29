@@ -127,6 +127,19 @@ add_test(NAME test_mdns COMMAND test_mdns
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(test_mdns PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 
+# MCP shim test: real MCP frames against shim/peer.py backed by the fake
+# CLI. Pure stdlib Python; skipped only if no interpreter is found.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_shim COMMAND ${Python3_EXECUTABLE}
+             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_shim.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/shim/peer.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_savannah.py)
+    set_tests_properties(test_shim PROPERTIES TIMEOUT 60)
+else()
+    message(STATUS "Python3 not found - shim test disabled")
+endif()
+
 # Integration test fixtures: per-scenario savannahd configs pointing at
 # fake-claude. Generated at configure time into the build dir.
 set(FAKE ${CMAKE_CURRENT_BINARY_DIR}/fake-claude)
