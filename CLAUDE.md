@@ -72,10 +72,10 @@ needs `WORKING_DIRECTORY` = build dir.
 
 Pipe mode (`runtime.run()`) dispatches one message at a time, so single-flight
 NodeBusy and cancel-while-busy can only fire over concurrent connections:
-`savannahd --tcp PORT` serves TCP with savannahd's own accept loop (thread per
-client, capped 32; run_tcp_multi lacks a security hook, finding 11). Port 0 =
-OS picks; prints `SAVANNAHD_TCP_PORT=N` on stdout. With `mesh.hmac_key_file`
-every client is HMAC-wrapped (SecureTransport). `--mdns` additionally
+`savannahd --tcp PORT` serves TCP via `run_tcp_multi` (thread per client).
+Port 0 = OS picks; prints `SAVANNAHD_TCP_PORT=N` on stdout. With
+`mesh.hmac_key_file` every client is HMAC-wrapped via
+`runtime.set_transport_wrapper` (finding 11, fixed). `--mdns` additionally
 advertises as `_agent-song._tcp` and binds all interfaces, so it hard-requires
 the key. `test_tcp_flight` and `test_secure` run in CI; `test_mdns` is opt-in
 via `SAVANNAH_MDNS=1` (advertises on the real network).
@@ -108,10 +108,10 @@ Found while building against song @ HEAD on Linux GCC 13:
    GCC 13 Linux build). Fixed upstream 7/28/2026 (song main 53fc6f1);
    `patches/` retired.
 2. `logging.hpp` is not in the `song.hpp` umbrella header; consumers must
-   include it separately.
+   include it separately. Fixed upstream 7/28/2026 (b51a93f).
 3. song is not add_subdirectory-friendly (test/ assumes top-level context).
-   savannah links the prebuilt `libsong.a` instead. Fix: gate test/examples/
-   sing/fuzz on `PROJECT_IS_TOP_LEVEL`.
+   savannah links the prebuilt `libsong.a` instead (still fine). Fixed
+   upstream 7/28/2026 (4e989ed): subdirs gate on top-level context.
 4. Multi-line `///` doc comments in IDL lose the `///` on continuation lines
    in generated code (syntax errors). Workaround: single-line docs only.
 5. Enums referenced in structs generate calls to `encode_<Enum>`/`decode_<Enum>`
@@ -124,15 +124,18 @@ Found while building against song @ HEAD on Linux GCC 13:
 9. When a stream dispatcher throws, the StreamWriter destructor sends
    `stream_end` during unwind, then the catch sends the error reply. Streaming
    clients stop at `stream_end` and never read the error: the failure looks
-   like a clean empty stream. Wishlist: error-before-stream_end in runtime.cpp.
+   like a clean empty stream. Fixed upstream 7/28/2026 (cfb6af6):
+   `StreamWriter::abort()` + error-as-terminator in both dispatch paths.
+   Clients now see a thrown ServiceError carrying the dispatcher's message.
 10. `make_service_type`'s old `_type._song._tcp` form was three DNS labels;
     dns_sd rejects it (kDNSServiceErr_BadParam, RFC 6763 wants `_app._proto`),
     so mDNS registration had never actually worked. Fixed upstream 7/28/2026
     (song main 4dcc542): the format is now `_type-song._tcp`; savannah's mesh
     type is `_agent-song._tcp`. Keep type names to 10 chars (RFC 6335).
 11. `run_tcp_multi` has no security hook, so a service cannot serve
-    SecureTransport clients through it; savannahd carries its own accept
-    loop mirroring client_loop. Wishlist: transport-wrapping hook.
+    SecureTransport clients through it. Fixed upstream 7/28/2026 (6714339):
+    `runtime.set_transport_wrapper(...)` wraps every accepted client;
+    savannahd uses it and its hand-rolled accept loop is gone.
 
 ## stream-json contract (pinned subset)
 
