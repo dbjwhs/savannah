@@ -46,6 +46,16 @@ elseif(UNIX)
         set_property(TARGET song APPEND PROPERTY
             INTERFACE_LINK_LIBRARIES OpenSSL::Crypto)
     endif()
+    # Mirror song's optional Avahi dependency: when libsong.a was built with
+    # SONG_HAS_AVAHI, its discovery code references avahi-client symbols.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(AVAHI QUIET avahi-client)
+        if(AVAHI_FOUND)
+            set_property(TARGET song APPEND PROPERTY
+                INTERFACE_LINK_LIBRARIES ${AVAHI_LINK_LIBRARIES})
+        endif()
+    endif()
 endif()
 
 # ---- IDL code generation ---------------------------------------------------
