@@ -9,7 +9,11 @@
 //
 // Usage: fake-claude [claude-ish flags, ignored] -p <prompt>
 //                    [--scenario NAME] [--chunks N] [--delay-ms D]
-//                    [--giant-bytes N]
+//                    [--giant-bytes N] [--initial-delay-ms D]
+//
+// --initial-delay-ms sleeps BEFORE any output, modeling a real agent's
+// thinking time ahead of its first token (real claude routinely takes
+// longer than song's old 5s per-chunk ceiling; see savannah finding 14).
 //
 // Scenarios:
 //   echo              one text chunk: the prompt verbatim, then result (default)
@@ -88,6 +92,7 @@ int main(int argc, char** argv) {
     long chunks = 4;
     long delay_ms = 0;
     long giant_bytes = 1 << 20;
+    long initial_delay_ms = 0;
 
     std::vector<std::string> args(argv + 1, argv + argc);
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -104,6 +109,8 @@ int main(int argc, char** argv) {
             next(delay_ms);
         } else if (args[i] == "--giant-bytes") {
             next(giant_bytes);
+        } else if (args[i] == "--initial-delay-ms") {
+            next(initial_delay_ms);
         } else if (args[i] == "--output-format" && i + 1 < args.size()) {
             ++i;  // swallow value, claude-compat
         }
@@ -115,6 +122,11 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         }
     };
+
+    if (initial_delay_ms > 0) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(initial_delay_ms));
+    }
 
     emit_init();
 

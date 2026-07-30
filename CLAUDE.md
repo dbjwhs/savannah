@@ -146,6 +146,17 @@ Found while building against song @ HEAD on Linux GCC 13:
     host had Avahi headers until dbj-devone. Fixed upstream 7/29/2026
     (6e8ba10). savannah's CMake now mirrors song's optional avahi-client
     link dependency.
+14. `call_streaming` hardcoded a 5000 ms per-chunk receive timeout, killing
+    any ask whose first token took over five seconds. Invisible with
+    fake-claude (instant); fatal with the real CLI on every nontrivial
+    prompt. Found by the dbj-devone Claude session using the mesh. Fixed
+    upstream 7/30/2026 (6bc974f): chunk_timeout_ms is a parameter. Size it
+    to the agent (ask timeout + margin), never the wire.
+15. `call_streaming` buffered every chunk until stream_end, so consumers
+    saw nothing until completion: streaming without the streaming. Fixed
+    upstream in the same commit: the incremental overload takes a per-chunk
+    handler; the eager StreamReader form is now a collector built on it.
+    The CLI and integration tests use the incremental form.
 
 ## stream-json contract (pinned subset)
 

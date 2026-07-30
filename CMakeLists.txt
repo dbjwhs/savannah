@@ -163,6 +163,7 @@ scenario_config(giant giant_chunk ", \"--giant-bytes\", \"4194304\"")
 scenario_config(utf8 utf8_split "")
 scenario_config(drip chunks ", \"--chunks\", \"6\", \"--delay-ms\", \"150\"")
 scenario_config(noise stderr_noise "")
+scenario_config(slow echo ", \"--initial-delay-ms\", \"6000\"")
 
 # HMAC fixtures: deterministic 32+ byte keys and a secured echo node config.
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test.key

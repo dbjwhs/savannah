@@ -101,9 +101,10 @@ cd build
 ./savannah info local --config cfg_echo.toml
 ```
 
-TEXT chunks stream to stdout verbatim; tool events and the result trailer
-(cost, duration, turns, is_error) go to stderr. Exit code 0 iff the ask
-succeeded, so it pipes cleanly.
+TEXT chunks stream to stdout verbatim AS THEY ARRIVE (live progress, not
+buffered-until-done); tool events and the result trailer (cost, duration,
+turns, is_error) go to stderr. Exit code 0 iff the ask succeeded, so it
+pipes cleanly.
 
 ## Point it at the real thing
 

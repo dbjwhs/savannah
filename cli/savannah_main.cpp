@@ -181,7 +181,11 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
         return 0;
     }
 
-    // ask
+    // ask, streamed live: chunks print as they arrive (song's incremental
+    // call_streaming). The chunk timeout is sized to the AGENT, not the
+    // wire: between chunks a thinking agent can legitimately be silent for
+    // its whole timeout budget, and savannahd guarantees a RESULT trailer
+    // within it, so client budget = agent timeout + margin.
     sw::AskOptions opts;
     opts.timeout_ms = cli.timeout_ms;
     opts.fresh_context = true;
@@ -191,31 +195,37 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
     encode_string(args, cli.prompt);
     sw::encode_AskOptions(args, opts);
 
-    auto reader = conn.call_streaming(
-        savannah_wire::kService_AgentNode_Stream,
-        sw::kMethod_AgentNode_ask, args);
+    constexpr u32 kDefaultAgentTimeoutMs = 300000;  // savannahd's default
+    constexpr u32 kMarginMs = 30000;
+    u32 agent_budget =
+        cli.timeout_ms ? cli.timeout_ms : kDefaultAgentTimeoutMs;
+
     bool ok = false;
-    while (reader.next()) {
-        Buffer& chunk = reader.chunk();
-        auto c = sw::decode_AgentChunk(chunk);
-        switch (c.kind) {
-            case 0:  // TEXT
-                std::cout << c.payload;
-                std::cout.flush();
-                break;
-            case 1:  // TOOL_EVENT
-                std::cerr << "[tool] " << c.payload << "\n";
-                break;
-            case 2:  // RESULT
-                std::cerr << "\n[result] " << c.payload << "\n";
-                ok = c.payload.find("\"is_error\":false") !=
-                     std::string::npos;
-                break;
-            default:
-                std::cerr << "[?] unknown chunk kind " << c.kind << "\n";
-                break;
-        }
-    }
+    conn.call_streaming(
+        savannah_wire::kService_AgentNode_Stream,
+        sw::kMethod_AgentNode_ask, args,
+        [&ok](Buffer& chunk) {
+            auto c = sw::decode_AgentChunk(chunk);
+            switch (c.kind) {
+                case 0:  // TEXT
+                    std::cout << c.payload;
+                    std::cout.flush();
+                    break;
+                case 1:  // TOOL_EVENT
+                    std::cerr << "[tool] " << c.payload << "\n";
+                    break;
+                case 2:  // RESULT
+                    std::cerr << "\n[result] " << c.payload << "\n";
+                    ok = c.payload.find("\"is_error\":false") !=
+                         std::string::npos;
+                    break;
+                default:
+                    std::cerr << "[?] unknown chunk kind " << c.kind
+                              << "\n";
+                    break;
+            }
+        },
+        static_cast<int>(agent_budget + kMarginMs));
     std::cout.flush();
     return ok ? 0 : 1;
 }

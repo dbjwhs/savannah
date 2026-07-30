@@ -62,21 +62,27 @@ Streamed ask(ServiceConnection& conn, const std::string& prompt,
     song::encode_string(args, prompt);
     sw::encode_AskOptions(args, opts);
 
-    auto reader = conn.call_streaming(
-        savannah_wire::kService_AgentNode_Stream,
-        sw::kMethod_AgentNode_ask, args);
+    // Incremental streaming (song finding 14/15 fix): chunks decode as
+    // they arrive, and the chunk timeout is sized to the agent, not the
+    // wire. 30s here comfortably covers the slow-start scenario.
     Streamed out;
-    while (reader.next()) {
-        auto c = sw::decode_AgentChunk(reader.chunk());
-        ++out.chunk_count;
-        if (c.payload.size() > out.max_payload) out.max_payload = c.payload.size();
-        switch (c.kind) {
-            case 0: out.text += c.payload; break;
-            case 1: out.tools.push_back(c.payload); break;
-            case 2: out.result = c.payload; break;
-            default: break;
-        }
-    }
+    conn.call_streaming(
+        savannah_wire::kService_AgentNode_Stream,
+        sw::kMethod_AgentNode_ask, args,
+        [&out](Buffer& chunk) {
+            auto c = sw::decode_AgentChunk(chunk);
+            ++out.chunk_count;
+            if (c.payload.size() > out.max_payload) {
+                out.max_payload = c.payload.size();
+            }
+            switch (c.kind) {
+                case 0: out.text += c.payload; break;
+                case 1: out.tools.push_back(c.payload); break;
+                case 2: out.result = c.payload; break;
+                default: break;
+            }
+        },
+        /*chunk_timeout_ms=*/30000);
     return out;
 }
 
@@ -130,6 +136,17 @@ int main() {
         // Second ask on the same node: single-flight state resets cleanly.
         auto r2 = ask(conn, "again");
         CHECK(r2.text == "again");
+    }
+
+    // ---- slow first token: six seconds of silence before any output,
+    //      modeling a real agent thinking. song's old hardcoded 5s
+    //      per-chunk ceiling killed exactly this ask (finding 14). ----
+    {
+        ServiceManager mgr;
+        auto conn = connect_with_config(mgr, "cfg_slow.toml", "slow");
+        auto r = ask(conn, "worth the wait");
+        CHECK(r.text == "worth the wait");
+        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
     }
 
     // ---- tool storm: TOOL_EVENT chunks arrive typed ----
