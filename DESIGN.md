@@ -213,6 +213,13 @@ late on purpose.
   hand-written stdlib (newline-delimited JSON-RPC 2.0), keeping the
   zero-dependency rule intact. v2: generated Python bindings once song's
   Python runtime learns streaming and HMAC. Payoff loop verified live.
+- **7/30/2026 (flagship demo)** — Both nodes now run the real claude CLI
+  (tags carry real-claude; tools Bash/Read/Glob/Grep). The roadmap's
+  Phase 4 demo executed literally: the mac asked dbj-devone to run its
+  own test suite; the remote agent ran ctest, reported 9/9, and explained
+  the two opt-in skips, in 15.5 s for USD 0.15. Streaming fix (findings
+  14/15) proved out the same day: real first-token latency of 5 to 10 s
+  is routine and now survives.
 - **7/30/2026** — Deployment posture: Linux nodes run savannahd as a user
   systemd service with lingering (survives reboots, restarts on crash, no
   login needed). Ephemeral ports on every start are fine on purpose: mDNS
