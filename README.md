@@ -131,7 +131,11 @@ max_concurrent = 1          # v1: must be 1 (single-flight)
 ```
 
 Each node uses its own Anthropic auth and burns its own tokens; the RESULT
-trailer reports what the ask cost.
+trailer reports what the ask cost. Read cost_usd for what it is: a local
+estimate at standard API list rates, computed by the claude CLI. Under a
+subscription login (Pro/Max) nothing is billed per ask; usage draws down
+the plan's shared allowance instead, and every node logged into the same
+account drains one pool. Under an API key it approximates the real charge.
 
 ## Mesh mode (two machines)
 
