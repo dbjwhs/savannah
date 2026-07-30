@@ -213,3 +213,8 @@ late on purpose.
   hand-written stdlib (newline-delimited JSON-RPC 2.0), keeping the
   zero-dependency rule intact. v2: generated Python bindings once song's
   Python runtime learns streaming and HMAC. Payoff loop verified live.
+- **7/30/2026** — Deployment posture: Linux nodes run savannahd as a user
+  systemd service with lingering (survives reboots, restarts on crash, no
+  login needed). Ephemeral ports on every start are fine on purpose: mDNS
+  re-advertises, nothing pins. Unit recorded in README. macOS analog
+  (launchd) not written yet.

@@ -134,6 +134,22 @@ trailer reports what the ask cost.
 
 ## Mesh mode (two machines)
 
+What it looks like once two nodes are up (a Mac and an Ubuntu box on one
+LAN, July 2026):
+
+```
+$ ./savannah ls
+dbj-mac 127.0.0.1:59959
+dbj-devone 10.0.0.208:36749
+
+$ ./savannah ask dbj-devone "playground warmup check" --key mesh.key
+playground warmup check
+[result] {"cost_usd":0.00042,"duration_ms":1234,"is_error":false,"num_turns":1}
+```
+
+Asks work in both directions; a node with no key, or the wrong key, is
+dropped before any dispatcher runs.
+
 Generate one shared key, give it to every node, and start each daemon
 advertised:
 
@@ -170,6 +186,40 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp $PWD/build/sav
 
 Linux needs `libavahi-client-dev` (and a running avahi-daemon) at build
 time for mDNS; without it song builds with discovery disabled.
+
+### Run a node as a service (Linux)
+
+A mesh node should survive reboots and crashes without anyone logged in.
+A user systemd unit does it; no root beyond one lingering grant:
+
+```ini
+# ~/.config/systemd/user/savannahd.service
+[Unit]
+Description=savannah agent node (AgentNode on the song mesh)
+
+[Service]
+WorkingDirectory=%h/ng/dbjwhs/savannah/build
+Environment=SAVANNAHD_CONFIG=node.toml
+ExecStart=%h/ng/dbjwhs/savannah/build/savannahd --tcp 0 --mdns
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now savannahd
+loginctl enable-linger $USER      # start at boot, no login required
+
+systemctl --user status savannahd     # inspect
+journalctl --user -u savannahd -f     # logs (port marker, client drops)
+```
+
+The port is OS-assigned on every start; peers find the node through mDNS,
+so nothing needs pinning. macOS nodes have no equivalent yet (a launchd
+plist would be the analog); the daemon there is started by hand.
 
 ## Layout
 
