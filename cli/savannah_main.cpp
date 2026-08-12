@@ -42,6 +42,13 @@ int usage() {
     std::cerr <<
         "usage: savannah ls [--timeout-ms N]\n"
         "       savannah <ask|info|status> <node> [\"prompt\"]\n"
+        "       savannah task new    <node> --title T [--prompt P]\n"
+        "                                   [--worktree] [--workdir DIR]\n"
+        "       savannah task ls     <node>\n"
+        "       savannah task status <node> <id>\n"
+        "       savannah task send   <node> <id> \"prompt\"\n"
+        "       savannah task tail   <node> <id>\n"
+        "       savannah task cancel <node> <id>\n"
         "               [--config PATH] [--timeout-ms N]\n"
         "               [--addr HOST:PORT] [--key FILE]\n"
         "\"local\" spawns ./savannahd over pipes; any other node is resolved\n"
@@ -57,20 +64,53 @@ struct Cli {
     std::string addr;
     std::string key_file;
     u32 timeout_ms = 0;
+
+    // `task` subcommands: `savannah task <sub> <node> [id] [prompt] [flags]`
+    std::string task_sub;      // new | ls | status | send | tail | cancel
+    std::string task_id;
+    std::string task_title;    // --title (task new)
+    std::string task_workdir;  // --workdir (task new)
+    bool task_worktree = false;  // --worktree (task new)
 };
+
+bool task_sub_valid(const std::string& s) {
+    return s == "new" || s == "ls" || s == "status" || s == "send" ||
+           s == "tail" || s == "cancel";
+}
 
 bool parse_cli(int argc, char** argv, Cli& c) {
     if (argc < 2) return false;
     c.cmd = argv[1];
-    int i = 2;
-    if (c.cmd != "ls") {
-        if (argc < 3) return false;
-        c.node = argv[2];
-        i = 3;
-        if (c.cmd == "ask") {
-            if (argc < 4) return false;
-            c.prompt = argv[3];
-            i = 4;
+    int i;
+    if (c.cmd == "task") {
+        // task <sub> <node> [id] [prompt]
+        if (argc < 4) return false;
+        c.task_sub = argv[2];
+        c.node = argv[3];
+        i = 4;
+        // subcommands that operate on an existing task take a positional id
+        // (and `send` also a positional prompt).
+        bool needs_id = (c.task_sub == "status" || c.task_sub == "send" ||
+                         c.task_sub == "tail" || c.task_sub == "cancel");
+        if (needs_id) {
+            if (i >= argc) return false;
+            c.task_id = argv[i++];
+            if (c.task_sub == "send") {
+                if (i >= argc) return false;
+                c.prompt = argv[i++];
+            }
+        }
+    } else {
+        i = 2;
+        if (c.cmd != "ls") {
+            if (argc < 3) return false;
+            c.node = argv[2];
+            i = 3;
+            if (c.cmd == "ask") {
+                if (argc < 4) return false;
+                c.prompt = argv[3];
+                i = 4;
+            }
         }
     }
     for (; i < argc; ++i) {
@@ -82,10 +122,19 @@ bool parse_cli(int argc, char** argv, Cli& c) {
             c.addr = argv[++i];
         } else if (std::strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
             c.key_file = argv[++i];
+        } else if (std::strcmp(argv[i], "--title") == 0 && i + 1 < argc) {
+            c.task_title = argv[++i];
+        } else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) {
+            c.prompt = argv[++i];
+        } else if (std::strcmp(argv[i], "--workdir") == 0 && i + 1 < argc) {
+            c.task_workdir = argv[++i];
+        } else if (std::strcmp(argv[i], "--worktree") == 0) {
+            c.task_worktree = true;
         } else {
             return false;
         }
     }
+    if (c.cmd == "task") return task_sub_valid(c.task_sub);
     return c.cmd == "ls" || c.cmd == "ask" || c.cmd == "info" ||
            c.cmd == "status";
 }
@@ -156,7 +205,92 @@ ServiceConnection connect_remote(const Cli& cli) {
     return conn;
 }
 
+// Shared chunk sink for ask and task tail (same stream contract): TEXT ->
+// stdout verbatim, TOOL_EVENT/RESULT -> stderr. Sets ok from the RESULT trailer.
+void print_chunk(const sw::AgentChunk& c, bool& ok) {
+    switch (c.kind) {
+        case 0:  // TEXT
+            std::cout << c.payload;
+            std::cout.flush();
+            break;
+        case 1:  // TOOL_EVENT
+            std::cerr << "[tool] " << c.payload << "\n";
+            break;
+        case 2:  // RESULT
+            std::cerr << "\n[result] " << c.payload << "\n";
+            ok = c.payload.find("\"is_error\":false") != std::string::npos;
+            break;
+        default:
+            std::cerr << "[?] unknown chunk kind " << c.kind << "\n";
+            break;
+    }
+}
+
+void print_task(const sw::TaskInfo& t) {
+    std::cout << t.id << "  " << t.state << "  turns=" << t.turns
+              << "  \"" << t.title << "\"";
+    if (!t.worktree.empty()) std::cout << "  " << t.worktree;
+    std::cout << "\n";
+    if (!t.last_line.empty()) std::cout << "    " << t.last_line << "\n";
+}
+
+int run_task(ServiceConnection& conn, const Cli& cli) {
+    sw::AgentNodeProxy proxy(conn);
+    const std::string& sub = cli.task_sub;
+
+    if (sub == "new") {
+        if (cli.task_title.empty()) {
+            std::cerr << "savannah task new: --title is required\n";
+            return 2;
+        }
+        sw::TaskSpec spec;
+        spec.title = cli.task_title;
+        spec.prompt = cli.prompt;  // --prompt; empty = create idle, drive later
+        spec.workdir = cli.task_workdir;
+        spec.make_worktree = cli.task_worktree;
+        spec.timeout_ms = cli.timeout_ms;
+        print_task(proxy.task_new(spec));
+        return 0;
+    }
+    if (sub == "ls") {
+        sw::TaskList list = proxy.task_list();
+        if (list.tasks.empty()) {
+            std::cerr << "(no tasks)\n";
+            return 0;
+        }
+        for (const auto& t : list.tasks) print_task(t);
+        return 0;
+    }
+    if (sub == "status") {
+        print_task(proxy.task_status(cli.task_id));
+        return 0;
+    }
+    if (sub == "send") {
+        bool ok = proxy.task_send(cli.task_id, cli.prompt);
+        std::cerr << (ok ? "sent\n" : "not sent (task busy or gone)\n");
+        return ok ? 0 : 1;
+    }
+    if (sub == "cancel") {
+        bool ok = proxy.task_cancel(cli.task_id);
+        std::cerr << (ok ? "cancelled\n" : "no such task\n");
+        return ok ? 0 : 1;
+    }
+    // tail: replay the transcript, then follow the live turn to its RESULT.
+    constexpr u32 kDefaultAgentTimeoutMs = 300000;
+    constexpr u32 kMarginMs = 30000;
+    u32 budget = cli.timeout_ms ? cli.timeout_ms : kDefaultAgentTimeoutMs;
+    bool ok = false;
+    proxy.task_output(
+        cli.task_id,
+        [&ok](sw::AgentChunk& c) { print_chunk(c, ok); },
+        static_cast<int>(budget + kMarginMs));
+    std::cout.flush();
+    return ok ? 0 : 1;
+}
+
 int run_command(ServiceConnection& conn, const Cli& cli) {
+    if (cli.cmd == "task") return run_task(conn, cli);
+
     if (cli.cmd == "info") {
         Buffer req;
         Buffer resp = conn.call(sw::kService_AgentNode,
@@ -202,26 +336,7 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
     sw::AgentNodeProxy proxy(conn);
     proxy.ask(
         cli.prompt, opts,
-        [&ok](sw::AgentChunk& c) {
-            switch (c.kind) {
-                case 0:  // TEXT
-                    std::cout << c.payload;
-                    std::cout.flush();
-                    break;
-                case 1:  // TOOL_EVENT
-                    std::cerr << "[tool] " << c.payload << "\n";
-                    break;
-                case 2:  // RESULT
-                    std::cerr << "\n[result] " << c.payload << "\n";
-                    ok = c.payload.find("\"is_error\":false") !=
-                         std::string::npos;
-                    break;
-                default:
-                    std::cerr << "[?] unknown chunk kind " << c.kind
-                              << "\n";
-                    break;
-            }
-        },
+        [&ok](sw::AgentChunk& c) { print_chunk(c, ok); },
         static_cast<int>(agent_budget + kMarginMs));
     std::cout.flush();
     return ok ? 0 : 1;
