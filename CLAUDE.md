@@ -182,12 +182,17 @@ Found while exploring song's object/class system during Phase 5 planning
     main c5497a3): a shared `recv_reply` demuxes interleaved notifications to
     their callbacks and keeps waiting for the real reply. A conductor no
     longer needs a dedicated notification connection.
-19. song objects die with the creating connection; a second client cannot
-    re-acquire an object by id, and there is no ownership check on object
-    ids. Left as a stated limitation, not fixed: the Task Mesh keeps
-    authoritative state in savannahd's own long-lived table and treats song
-    objects as ephemeral live-status views, so it routes around this by
-    design (see the Phase 5 plan's substrate pivot).
+19. song objects are creator-scoped, not durably shared. The registry is
+    shared across TCP clients (a known id is callable from any connection),
+    but an object is refcounted to its creating connection and deleted when
+    that connection drops even if another client holds the id, so there is no
+    reliable handoff or reconnect-and-reacquire; object ids also carry no
+    ownership check. Left as a STATED SHORTCOMING, not fixed (decision A,
+    2026-08-12, revisit later): the Task Mesh keeps authoritative state in
+    savannahd's own long-lived table and treats song objects as ephemeral
+    live-status views, so it routes around this by design (see the Phase 5
+    plan's substrate pivot). The real fix, when we return to it, is
+    refcount-scoped lifetime + per-object ownership.
 20. Codegen never emitted `register_factory`, and generated `prop_set` never
     called `notify_property` -- both had to be hand-written. Fixed upstream
     8/12/2026 (song main 7e29245): generated setters now notify, and a
