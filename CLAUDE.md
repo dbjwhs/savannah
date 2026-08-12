@@ -84,13 +84,17 @@ via `SAVANNAH_MDNS=1` (advertises on the real network).
 
 ## Key patterns (learned from song itself)
 
-- **Streaming is hand-wired, backup.song-style.** songc parses the `stream`
-  modifier but codegen does not yet emit streaming proxies (`is_stream` is unused
-  in codegen.cpp). Client side: `conn.call_streaming(kService_AgentNode,
-  kMethod_AgentNode_ask, args)` → `StreamReader`; decode each Buffer chunk with
+- **Streaming is currently hand-wired, backup.song-style** (but no longer has
+  to be). Client side: `conn.call_streaming(kService_AgentNode_Stream,
+  kMethod_AgentNode_ask, args, on_chunk, timeout)`; decode each Buffer chunk with
   generated `decode_AgentChunk`. Service side:
   `runtime.register_stream_dispatcher` + `encode_AgentChunk` into
-  `StreamWriter::write`. **song wishlist #1: teach codegen about `is_stream`.**
+  `StreamWriter::write`. **song wishlist #1 is now done** (song main 316ccf4,
+  finding 6): codegen honors `is_stream` and emits exactly this shape from the
+  IDL -- a `call_streaming` proxy, a `StreamWriter&` interface, and a
+  `dispatch_<Name>_stream` on `kService_<Name>_Stream`. savannah can delete its
+  hand-wired streaming (and `wire_ids.hpp`'s `kService_AgentNode_Stream`) and
+  adopt the generated form; not yet done.
 - **Properties are class-level in songc**, not service-level. `status()` is a
   polled method in v1. v2: promote the agent to a song class with a `status`
   property to get push via subscription fan-out. **song wishlist #2.**
@@ -122,8 +126,13 @@ Found while building against song @ HEAD on Linux GCC 13:
    codegen emits scalar + array enum codecs (enum travels as its underlying
    integer). `AgentChunk.kind` can drop its `i32`-on-the-wire workaround and use
    the real enum whenever we choose to; the workaround is no longer forced.
-6. `is_stream` is parsed but ignored by codegen (proxies come out unary).
-   Streaming is hand-wired via `call_streaming` + generated method ids.
+6. `is_stream` was parsed but ignored by codegen (proxies came out unary), so
+   streaming was hand-wired via `call_streaming` + generated method ids. Fixed
+   upstream 8/12/2026 (song main 316ccf4): codegen emits streaming proxies -- a
+   client `call_streaming` proxy on `kService_<Name>_Stream`, a `StreamWriter&`
+   service interface, and a `dispatch_<Name>_stream`. savannah can adopt the
+   generated form and drop its hand-wiring (not yet done). Closes song
+   wishlist #1.
 7. Streaming dispatchers shadow unary dispatchers per service id (see above).
 8. `encode_string` throws over `kMaxStringSize` (1 MB, buffer.hpp). savannahd
    splits big TEXT payloads into 512 KiB chunks (`kMaxChunkPayload`).
