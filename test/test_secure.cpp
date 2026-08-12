@@ -115,7 +115,7 @@ std::string ask_text(ServiceConnection& conn, const std::string& prompt) {
     song::encode_string(args, prompt);
     sw::encode_AskOptions(args, opts);
     auto reader = conn.call_streaming(
-        savannah_wire::kService_AgentNode_Stream,
+        sw::kService_AgentNode_Stream,
         sw::kMethod_AgentNode_ask, args);
     std::string text;
     bool saw_ok_result = false;

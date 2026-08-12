@@ -191,21 +191,18 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
     opts.fresh_context = true;
     opts.system_hint = "";
 
-    Buffer args;
-    encode_string(args, cli.prompt);
-    sw::encode_AskOptions(args, opts);
-
     constexpr u32 kDefaultAgentTimeoutMs = 300000;  // savannahd's default
     constexpr u32 kMarginMs = 30000;
     u32 agent_budget =
         cli.timeout_ms ? cli.timeout_ms : kDefaultAgentTimeoutMs;
 
+    // The generated streaming proxy (song finding 6) encodes the args, calls
+    // over kService_AgentNode_Stream, and hands each chunk back already decoded.
     bool ok = false;
-    conn.call_streaming(
-        savannah_wire::kService_AgentNode_Stream,
-        sw::kMethod_AgentNode_ask, args,
-        [&ok](Buffer& chunk) {
-            auto c = sw::decode_AgentChunk(chunk);
+    sw::AgentNodeProxy proxy(conn);
+    proxy.ask(
+        cli.prompt, opts,
+        [&ok](sw::AgentChunk& c) {
             switch (c.kind) {
                 case 0:  // TEXT
                     std::cout << c.payload;

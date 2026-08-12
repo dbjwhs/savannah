@@ -67,7 +67,7 @@ Streamed ask(ServiceConnection& conn, const std::string& prompt,
     // wire. 30s here comfortably covers the slow-start scenario.
     Streamed out;
     conn.call_streaming(
-        savannah_wire::kService_AgentNode_Stream,
+        sw::kService_AgentNode_Stream,
         sw::kMethod_AgentNode_ask, args,
         [&out](Buffer& chunk) {
             auto c = sw::decode_AgentChunk(chunk);

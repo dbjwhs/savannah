@@ -1,23 +1,19 @@
 // MIT License
 // Copyright (c) 2026 Dennis B Jones
 //
-// wire_ids.hpp — service-id split for streaming.
+// wire_ids.hpp — mesh service type.
 //
-// song dispatches by service id, and a stream dispatcher on an id shadows
-// the unary dispatcher entirely (runtime.cpp checks stream first, returns).
-// Convention from song's own backup example: streaming methods live on their
-// own service id. songc cannot express this split yet (song wishlist), so
-// the extra id lives here, adjacent to the generated header.
+// The streaming service-id split (kService_AgentNode_Stream) used to live here
+// because songc could not express it. As of song main 316ccf4 (finding 6)
+// codegen emits kService_AgentNode_Stream and the streaming dispatchers from
+// the IDL `stream` modifier, so the split is gone from here; only the mDNS
+// type name remains.
 
 #pragma once
 
 #include <song/types.hpp>
 
 namespace savannah_wire {
-
-// Generated: kService_AgentNode = 1 (unary: info, cancel, status).
-// Manual:    streaming twin for ask().
-inline constexpr song::u16 kService_AgentNode_Stream = 2;
 
 // mDNS short type; song expands it to _agent._song._tcp (DESIGN.md section 2).
 inline constexpr const char* kMeshServiceType = "agent";

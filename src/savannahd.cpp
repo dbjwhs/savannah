@@ -132,127 +132,106 @@ struct FlightGuard {
     ~FlightGuard() { g_busy.store(false); }
 };
 
-void handle_ask(Buffer& request, StreamWriter& writer) {
-    std::string prompt = song::decode_string(request);
-    sw::AskOptions opts = sw::decode_AskOptions(request);
+// The node's service implementation. The generated dispatchers
+// (dispatch_AgentNode / dispatch_AgentNode_stream) decode arguments and route
+// method ids to these overrides; the single-flight gate, agent supervision, and
+// task supervisor live here. Streaming methods (ask, task_output) write chunks
+// to the StreamWriter and are routed through the generated stream dispatcher on
+// kService_AgentNode_Stream (song finding 6: this wiring is now generated).
+class AgentNodeImpl : public sw::IAgentNode {
+public:
+    sw::AgentInfo info() override {
+        sw::AgentInfo info;
+        info.name = g_config.name;
+        info.model = "unknown";  // v1: node does not probe the agent
+        info.workspace = g_config.workspace;
+        info.tags = g_config.tags;
+        info.protocol_ver = 1;
+        return info;
+    }
 
-    // Single-flight gate.
-    {
-        std::lock_guard<std::mutex> lock(g_flight_mutex);
-        if (g_busy.load()) {
+    void ask(const std::string& prompt, const sw::AskOptions& opts,
+             StreamWriter& writer) override {
+        // Single-flight gate.
+        {
+            std::lock_guard<std::mutex> lock(g_flight_mutex);
+            if (g_busy.load()) {
+                write_chunk(writer, savannah::ChunkKind::Result,
+                            savannah::ChunkMapper::synthetic_error_result(
+                                "busy", 0));
+                return;
+            }
+            g_busy.store(true);
+            g_cancel.store(false);
+        }
+        FlightGuard flight;
+
+        std::int64_t timeout =
+            opts.timeout_ms > 0 ? static_cast<std::int64_t>(opts.timeout_ms)
+                                : g_config.timeout_ms;
+
+        savannah::AgentProcess proc;
+        auto outcome = proc.run(
+            build_agent_argv(prompt, opts), timeout, g_cancel,
+            [&](const savannah::Chunk& c) {
+                write_chunk(writer, c.kind, c.payload);
+            });
+
+        if (!outcome.saw_result) {
+            std::string reason = !outcome.spawned ? "spawn failed"
+                                 : outcome.timed_out ? "timeout"
+                                 : outcome.killed    ? "cancelled"
+                                                     : "died before result";
             write_chunk(writer, savannah::ChunkKind::Result,
                         savannah::ChunkMapper::synthetic_error_result(
-                            "busy", 0));
-            return;
+                            reason, outcome.exit_code));
         }
-        g_busy.store(true);
-        g_cancel.store(false);
     }
-    FlightGuard flight;
 
-    std::int64_t timeout =
-        opts.timeout_ms > 0 ? static_cast<std::int64_t>(opts.timeout_ms)
-                            : g_config.timeout_ms;
+    bool cancel() override {
+        bool was_busy = g_busy.load();
+        if (was_busy) g_cancel.store(true);
+        return was_busy;
+    }
 
-    savannah::AgentProcess proc;
-    auto outcome = proc.run(
-        build_agent_argv(prompt, opts), timeout, g_cancel,
-        [&](const savannah::Chunk& c) {
+    std::string status() override {
+        return g_busy.load() ? "busy" : "idle";
+    }
+
+    sw::TaskInfo task_new(const sw::TaskSpec& spec) override {
+        savannah::TaskCreate c;
+        c.title = spec.title;
+        c.prompt = spec.prompt;
+        c.workdir = spec.workdir;
+        c.make_worktree = spec.make_worktree;
+        c.timeout_ms = spec.timeout_ms;
+        return to_wire(g_tasks->create(c));
+    }
+
+    sw::TaskList task_list() override {
+        sw::TaskList out;
+        for (const auto& v : g_tasks->list()) out.tasks.push_back(to_wire(v));
+        return out;
+    }
+
+    bool task_send(const std::string& id, const std::string& prompt) override {
+        return g_tasks->send(id, prompt);
+    }
+
+    sw::TaskInfo task_status(const std::string& id) override {
+        return to_wire(g_tasks->status(id));
+    }
+
+    void task_output(const std::string& id, StreamWriter& writer) override {
+        g_tasks->tail(id, [&](const savannah::Chunk& c) {
             write_chunk(writer, c.kind, c.payload);
         });
-
-    if (!outcome.saw_result) {
-        std::string reason = !outcome.spawned ? "spawn failed"
-                             : outcome.timed_out ? "timeout"
-                             : outcome.killed    ? "cancelled"
-                                                 : "died before result";
-        write_chunk(writer, savannah::ChunkKind::Result,
-                    savannah::ChunkMapper::synthetic_error_result(
-                        reason, outcome.exit_code));
     }
-}
 
-void handle_task_output(Buffer& request, StreamWriter& writer) {
-    std::string id = song::decode_string(request);
-    g_tasks->tail(id, [&](const savannah::Chunk& c) {
-        write_chunk(writer, c.kind, c.payload);
-    });
-}
-
-void stream_dispatcher(u16 method_id, Buffer& request, StreamWriter& writer) {
-    if (method_id == sw::kMethod_AgentNode_ask) {
-        handle_ask(request, writer);
-        return;
+    bool task_cancel(const std::string& id) override {
+        return g_tasks->cancel(id);
     }
-    if (method_id == sw::kMethod_AgentNode_task_output) {
-        handle_task_output(request, writer);
-        return;
-    }
-    throw std::runtime_error("unknown streaming method: " +
-                             std::to_string(method_id));
-}
-
-void unary_dispatcher(u16 method_id, Buffer& request, Buffer& response) {
-    switch (method_id) {
-        case sw::kMethod_AgentNode_info: {
-            sw::AgentInfo info;
-            info.name = g_config.name;
-            info.model = "unknown";  // v1: node does not probe the agent
-            info.workspace = g_config.workspace;
-            info.tags = g_config.tags;
-            info.protocol_ver = 1;
-            sw::encode_AgentInfo(response, info);
-            break;
-        }
-        case sw::kMethod_AgentNode_cancel: {
-            bool was_busy = g_busy.load();
-            if (was_busy) g_cancel.store(true);
-            song::encode_bool(response, was_busy);
-            break;
-        }
-        case sw::kMethod_AgentNode_status: {
-            song::encode_string(response, g_busy.load() ? "busy" : "idle");
-            break;
-        }
-        case sw::kMethod_AgentNode_task_new: {
-            sw::TaskSpec spec = sw::decode_TaskSpec(request);
-            savannah::TaskCreate c;
-            c.title = spec.title;
-            c.prompt = spec.prompt;
-            c.workdir = spec.workdir;
-            c.make_worktree = spec.make_worktree;
-            c.timeout_ms = spec.timeout_ms;
-            sw::encode_TaskInfo(response, to_wire(g_tasks->create(c)));
-            break;
-        }
-        case sw::kMethod_AgentNode_task_list: {
-            sw::TaskList out;
-            for (const auto& v : g_tasks->list()) out.tasks.push_back(to_wire(v));
-            sw::encode_TaskList(response, out);
-            break;
-        }
-        case sw::kMethod_AgentNode_task_send: {
-            std::string id = song::decode_string(request);
-            std::string prompt = song::decode_string(request);
-            song::encode_bool(response, g_tasks->send(id, prompt));
-            break;
-        }
-        case sw::kMethod_AgentNode_task_status: {
-            std::string id = song::decode_string(request);
-            sw::encode_TaskInfo(response, to_wire(g_tasks->status(id)));
-            break;
-        }
-        case sw::kMethod_AgentNode_task_cancel: {
-            std::string id = song::decode_string(request);
-            song::encode_bool(response, g_tasks->cancel(id));
-            break;
-        }
-        default:
-            (void)request;
-            throw std::runtime_error("unknown method: " +
-                                     std::to_string(method_id));
-    }
-}
+};
 
 }  // namespace
 
@@ -288,10 +267,18 @@ int main(int argc, char** argv) {
     g_tasks = std::make_unique<savannah::TaskSupervisor>(g_config);
 
     song::ServiceRuntime runtime;
+    AgentNodeImpl node;
+    // Register the generated dispatchers (song finding 6): they decode arguments
+    // and route method ids to AgentNodeImpl. Streaming methods live on the
+    // generated kService_AgentNode_Stream, resolved ahead of the unary id.
     runtime.register_dispatcher(sw::kService_AgentNode,
-                                unary_dispatcher);
-    runtime.register_stream_dispatcher(
-        savannah_wire::kService_AgentNode_Stream, stream_dispatcher);
+        [&node](u16 m, Buffer& req, Buffer& resp) {
+            sw::dispatch_AgentNode(node, m, req, resp);
+        });
+    runtime.register_stream_dispatcher(sw::kService_AgentNode_Stream,
+        [&node](u16 m, Buffer& req, StreamWriter& w) {
+            sw::dispatch_AgentNode_stream(node, m, req, w);
+        });
 
     runtime.register_method(sw::kService_AgentNode,
                             sw::kMethod_AgentNode_info);
@@ -299,7 +286,7 @@ int main(int argc, char** argv) {
                             sw::kMethod_AgentNode_cancel);
     runtime.register_method(sw::kService_AgentNode,
                             sw::kMethod_AgentNode_status);
-    runtime.register_method(savannah_wire::kService_AgentNode_Stream,
+    runtime.register_method(sw::kService_AgentNode_Stream,
                             sw::kMethod_AgentNode_ask,
                             song::wire::MethodFlags::streaming);
     runtime.register_method(sw::kService_AgentNode,
@@ -312,7 +299,7 @@ int main(int argc, char** argv) {
                             sw::kMethod_AgentNode_task_status);
     runtime.register_method(sw::kService_AgentNode,
                             sw::kMethod_AgentNode_task_cancel);
-    runtime.register_method(savannah_wire::kService_AgentNode_Stream,
+    runtime.register_method(sw::kService_AgentNode_Stream,
                             sw::kMethod_AgentNode_task_output,
                             song::wire::MethodFlags::streaming);
     runtime.set_capability(song::wire::Capability::streaming);

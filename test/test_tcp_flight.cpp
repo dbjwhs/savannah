@@ -122,7 +122,7 @@ Streamed ask(ServiceConnection& conn, const std::string& prompt,
     sw::encode_AskOptions(args, opts);
 
     auto reader = conn.call_streaming(
-        savannah_wire::kService_AgentNode_Stream,
+        sw::kService_AgentNode_Stream,
         sw::kMethod_AgentNode_ask, args);
     Streamed out;
     while (reader.next()) {

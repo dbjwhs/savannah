@@ -155,7 +155,7 @@ std::string task_output(ServiceConnection& conn, const std::string& id) {
     Buffer args;
     song::encode_string(args, id);
     std::string text;
-    conn.call_streaming(savannah_wire::kService_AgentNode_Stream,
+    conn.call_streaming(sw::kService_AgentNode_Stream,
                         sw::kMethod_AgentNode_task_output, args,
                         [&](Buffer& chunk) {
                             auto c = sw::decode_AgentChunk(chunk);
