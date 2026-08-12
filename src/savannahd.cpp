@@ -31,6 +31,7 @@
 #include "config.hpp"
 #include "savannah.hpp"  // generated from idl/agent.song
 #include "stream_json.hpp"
+#include "task_supervisor.hpp"
 #include "wire_ids.hpp"
 
 // No `using namespace song`: our project namespace is also `savannah`, and
@@ -44,6 +45,22 @@ using song::i32;
 namespace {
 
 savannah::NodeConfig g_config;
+
+// Task workers (persistent, resumable sessions). Constructed in main once
+// g_config is loaded; null until then.
+std::unique_ptr<savannah::TaskSupervisor> g_tasks;
+
+sw::TaskInfo to_wire(const savannah::TaskView& v) {
+    sw::TaskInfo info;
+    info.id = v.id;
+    info.title = v.title;
+    info.state = v.state;
+    info.worktree = v.worktree;
+    info.session_id = v.session_id;
+    info.turns = v.turns;
+    info.last_line = v.last_line;
+    return info;
+}
 
 // Single-flight state.
 std::mutex g_flight_mutex;          // held only for state transitions
@@ -155,9 +172,20 @@ void handle_ask(Buffer& request, StreamWriter& writer) {
     }
 }
 
+void handle_task_output(Buffer& request, StreamWriter& writer) {
+    std::string id = song::decode_string(request);
+    g_tasks->tail(id, [&](const savannah::Chunk& c) {
+        write_chunk(writer, c.kind, c.payload);
+    });
+}
+
 void stream_dispatcher(u16 method_id, Buffer& request, StreamWriter& writer) {
     if (method_id == sw::kMethod_AgentNode_ask) {
         handle_ask(request, writer);
+        return;
+    }
+    if (method_id == sw::kMethod_AgentNode_task_output) {
+        handle_task_output(request, writer);
         return;
     }
     throw std::runtime_error("unknown streaming method: " +
@@ -184,6 +212,39 @@ void unary_dispatcher(u16 method_id, Buffer& request, Buffer& response) {
         }
         case sw::kMethod_AgentNode_status: {
             song::encode_string(response, g_busy.load() ? "busy" : "idle");
+            break;
+        }
+        case sw::kMethod_AgentNode_task_new: {
+            sw::TaskSpec spec = sw::decode_TaskSpec(request);
+            savannah::TaskCreate c;
+            c.title = spec.title;
+            c.prompt = spec.prompt;
+            c.workdir = spec.workdir;
+            c.make_worktree = spec.make_worktree;
+            c.timeout_ms = spec.timeout_ms;
+            sw::encode_TaskInfo(response, to_wire(g_tasks->create(c)));
+            break;
+        }
+        case sw::kMethod_AgentNode_task_list: {
+            sw::TaskList out;
+            for (const auto& v : g_tasks->list()) out.tasks.push_back(to_wire(v));
+            sw::encode_TaskList(response, out);
+            break;
+        }
+        case sw::kMethod_AgentNode_task_send: {
+            std::string id = song::decode_string(request);
+            std::string prompt = song::decode_string(request);
+            song::encode_bool(response, g_tasks->send(id, prompt));
+            break;
+        }
+        case sw::kMethod_AgentNode_task_status: {
+            std::string id = song::decode_string(request);
+            sw::encode_TaskInfo(response, to_wire(g_tasks->status(id)));
+            break;
+        }
+        case sw::kMethod_AgentNode_task_cancel: {
+            std::string id = song::decode_string(request);
+            song::encode_bool(response, g_tasks->cancel(id));
             break;
         }
         default:
@@ -224,6 +285,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    g_tasks = std::make_unique<savannah::TaskSupervisor>(g_config);
+
     song::ServiceRuntime runtime;
     runtime.register_dispatcher(sw::kService_AgentNode,
                                 unary_dispatcher);
@@ -238,6 +301,19 @@ int main(int argc, char** argv) {
                             sw::kMethod_AgentNode_status);
     runtime.register_method(savannah_wire::kService_AgentNode_Stream,
                             sw::kMethod_AgentNode_ask,
+                            song::wire::MethodFlags::streaming);
+    runtime.register_method(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_new);
+    runtime.register_method(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_list);
+    runtime.register_method(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_send);
+    runtime.register_method(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_status);
+    runtime.register_method(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_cancel);
+    runtime.register_method(savannah_wire::kService_AgentNode_Stream,
+                            sw::kMethod_AgentNode_task_output,
                             song::wire::MethodFlags::streaming);
     runtime.set_capability(song::wire::Capability::streaming);
 

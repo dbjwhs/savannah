@@ -30,7 +30,8 @@ std::int64_t ms_since(Clock::time_point start) {
 AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
                                std::int64_t timeout_ms,
                                const std::atomic<bool>& cancel_flag,
-                               ChunkMapper::Sink sink) {
+                               ChunkMapper::Sink sink,
+                               const std::string& cwd) {
     AgentOutcome out;
     if (argv.empty()) return out;
 
@@ -53,6 +54,9 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
             close(devnull);
+        }
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
+            _exit(126);  // worktree vanished; surfaces as spawn-ish failure
         }
         std::vector<char*> cargv;
         cargv.reserve(argv.size() + 1);

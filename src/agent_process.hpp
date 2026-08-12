@@ -31,10 +31,13 @@ public:
     /// Run `argv` (argv[0] = binary), stream chunks into `sink`.
     /// Blocks until the child is done or timeout_ms expires.
     /// `cancel_flag` checked between reads; when set, child gets SIGKILL.
+    /// `cwd`, if non-empty, is the child's working directory (chdir before
+    /// exec) — task workers run inside their git worktree this way.
     AgentOutcome run(const std::vector<std::string>& argv,
                      std::int64_t timeout_ms,
                      const std::atomic<bool>& cancel_flag,
-                     ChunkMapper::Sink sink);
+                     ChunkMapper::Sink sink,
+                     const std::string& cwd = "");
 };
 
 }  // namespace savannah

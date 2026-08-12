@@ -42,6 +42,31 @@ error AgentFailed {
     i32    exit_code;
 }
 
+/// Request to create a task worker (a persistent, resumable claude session)
+struct TaskSpec {
+    string title;         // human label
+    string prompt;        // first turn; empty = create idle, drive later
+    string workdir;       // base dir; worktree is carved under it when make_worktree
+    bool   make_worktree; // git worktree add for isolation (coding tasks)
+    u32    timeout_ms;    // per-turn agent timeout; 0 = node default
+}
+
+/// Snapshot of one task worker
+struct TaskInfo {
+    string id;         // supervisor-assigned task id
+    string title;
+    string state;      // idle | running | done | failed | cancelled
+    string worktree;   // cwd the worker runs in (worktree or workdir)
+    string session_id; // claude session uuid (stable across turns)
+    u32    turns;      // turns driven so far
+    string last_line;  // last TEXT line, for at-a-glance status
+}
+
+/// task_list() result; array wrapped in a struct (songc-safe, see findings)
+struct TaskList {
+    TaskInfo[] tasks;
+}
+
 /// A single machine agent, exposed on the mesh
 service AgentNode {
     /// Static identity and capabilities of this node
@@ -55,4 +80,22 @@ service AgentNode {
 
     /// Returns idle or busy; v2 promotes this to a class property with push
     status() -> string;
+
+    /// Create a task worker; runs spec.prompt as turn 1 if non-empty
+    task_new(TaskSpec spec) -> TaskInfo;
+
+    /// All task workers on this node
+    task_list() -> TaskList;
+
+    /// Drive one more turn on a task (async); false if the task is busy or gone
+    task_send(string id, string prompt) -> bool;
+
+    /// Snapshot one task
+    task_status(string id) -> TaskInfo;
+
+    /// Tail a task: replays its transcript, then follows the live turn to RESULT
+    stream task_output(string id) -> AgentChunk;
+
+    /// Cancel a task: kill any running turn, prune its worktree; true if it existed
+    task_cancel(string id) -> bool;
 }

@@ -89,6 +89,7 @@ void emit_result(bool is_error) {
 int main(int argc, char** argv) {
     std::string scenario = "echo";
     std::string prompt = "hello";
+    std::string session_id;  // --session-id (first turn) or --resume (later)
     long chunks = 4;
     long delay_ms = 0;
     long giant_bytes = 1 << 20;
@@ -111,6 +112,9 @@ int main(int argc, char** argv) {
             next(giant_bytes);
         } else if (args[i] == "--initial-delay-ms") {
             next(initial_delay_ms);
+        } else if ((args[i] == "--session-id" || args[i] == "--resume") &&
+                   i + 1 < args.size()) {
+            session_id = args[++i];
         } else if (args[i] == "--output-format" && i + 1 < args.size()) {
             ++i;  // swallow value, claude-compat
         }
@@ -130,7 +134,30 @@ int main(int argc, char** argv) {
 
     emit_init();
 
-    if (scenario == "echo") {
+    if (scenario == "session") {
+        // Persistent-session stand-in: a per-session turn counter kept in a
+        // temp file keyed by session id. Each invocation increments it, so a
+        // test can prove savannahd threads the same id across turns and that
+        // "context" (the counter) carries when the supervisor resumes.
+        const char* tmp = std::getenv("TMPDIR");
+        std::string dir = tmp && *tmp ? tmp : "/tmp";
+        std::string path = dir + "/fake-claude-session-" +
+                           (session_id.empty() ? "none" : session_id) + ".count";
+        long turn = 0;
+        if (std::FILE* f = std::fopen(path.c_str(), "r")) {
+            if (std::fscanf(f, "%ld", &turn) != 1) turn = 0;
+            std::fclose(f);
+        }
+        ++turn;
+        if (std::FILE* f = std::fopen(path.c_str(), "w")) {
+            std::fprintf(f, "%ld\n", turn);
+            std::fclose(f);
+        }
+        std::string tag = session_id.empty() ? "no-session"
+                                             : session_id.substr(0, 8);
+        emit_text("turn " + std::to_string(turn) + " [" + tag + "]: " + prompt);
+        emit_result(false);
+    } else if (scenario == "echo") {
         emit_text(prompt);
         emit_result(false);
     } else if (scenario == "chunks") {
