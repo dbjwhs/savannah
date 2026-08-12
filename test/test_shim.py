@@ -72,7 +72,9 @@ def main():
 
     r = shim.request("tools/list")
     names = sorted(t["name"] for t in r["result"]["tools"])
-    check(names == ["ask_peer", "list_peers", "peer_status"], "tool names")
+    check(names == ["ask_peer", "list_peers", "peer_status", "task_cancel",
+                    "task_list", "task_new", "task_output", "task_send",
+                    "task_status"], "tool names")
     for t in r["result"]["tools"]:
         check("inputSchema" in t and "description" in t,
               f"schema for {t['name']}")
@@ -109,6 +111,42 @@ def main():
     check(r["result"]["content"][0]["text"] == "idle", "status idle")
     r = shim.call_tool("peer_status", {"name": "busy-node"})
     check(r["result"]["content"][0]["text"] == "busy", "status busy")
+
+    # ---- task_new ----
+    r = shim.call_tool("task_new",
+                       {"name": "dbj-devone", "title": "demo", "prompt": "hi"})
+    check(r["result"]["isError"] is False, "task_new not error")
+    check("t-0001" in r["result"]["content"][0]["text"], "task_new returns id")
+
+    # ---- task_list ----
+    r = shim.call_tool("task_list", {"name": "dbj-devone"})
+    check("t-0001" in r["result"]["content"][0]["text"], "task_list shows task")
+
+    # ---- task_status ----
+    r = shim.call_tool("task_status", {"name": "dbj-devone", "id": "t-0001"})
+    check("idle" in r["result"]["content"][0]["text"], "task_status idle")
+
+    # ---- task_send: accepted, and refused for a missing task ----
+    r = shim.call_tool("task_send",
+                       {"name": "dbj-devone", "id": "t-0001", "prompt": "more"})
+    check(r["result"]["isError"] is False, "task_send ok")
+    check("sent" in r["result"]["content"][0]["text"], "task_send sent")
+    r = shim.call_tool("task_send",
+                       {"name": "dbj-devone", "id": "t-404", "prompt": "x"})
+    check(r["result"]["isError"] is True, "task_send missing is error")
+
+    # ---- task_output: replays transcript + result trailer ----
+    r = shim.call_tool("task_output", {"name": "dbj-devone", "id": "t-0001"})
+    check(r["result"]["isError"] is False, "task_output ok")
+    check("hello" in r["result"]["content"][0]["text"], "task_output replays")
+    check('"is_error":false' in r["result"]["content"][1]["text"],
+          "task_output trailer")
+
+    # ---- task_cancel: ok, and error for a missing task ----
+    r = shim.call_tool("task_cancel", {"name": "dbj-devone", "id": "t-0001"})
+    check("cancelled" in r["result"]["content"][0]["text"], "task_cancel ok")
+    r = shim.call_tool("task_cancel", {"name": "dbj-devone", "id": "t-404"})
+    check(r["result"]["isError"] is True, "task_cancel missing is error")
 
     # ---- protocol errors ----
     r = shim.call_tool("no_such_tool", {})

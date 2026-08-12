@@ -2,11 +2,20 @@
 # MIT License
 # Copyright (c) 2026 Dennis B Jones
 #
-# peer - the savannah MCP shim. Gives stock Claude Code three tools:
+# peer - the savannah MCP shim. Gives stock Claude Code these tools:
 #
 #   list_peers()                    -> nodes on the mesh (mDNS browse)
 #   ask_peer(name, prompt, ...)     -> one stateless ask, streamed remotely
 #   peer_status(name)               -> "idle" or "busy"
+#   task_new(name, title, ...)      -> create a persistent task worker
+#   task_list(name)                 -> workers on a node
+#   task_status(name, id)           -> snapshot one worker
+#   task_send(name, id, prompt)     -> drive one more turn
+#   task_output(name, id)           -> tail a worker (replay + follow)
+#   task_cancel(name, id)           -> kill a worker, prune its worktree
+#
+# ask_peer is one-shot; the task_* tools drive persistent, resumable worker
+# sessions on a peer node (Phase 5a), so a master session can orchestrate many.
 #
 # Implementation: a Model Context Protocol stdio server in pure stdlib
 # Python that shells out to the savannah CLI, which carries the tested
@@ -94,6 +103,158 @@ TOOLS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "task_new",
+        "description": (
+            "Create a persistent, resumable task worker on a peer node: a "
+            "long-lived Claude session you drive turn by turn, unlike ask_peer "
+            "which is one-shot. If prompt is given it runs as turn 1. Use "
+            "worktree for coding tasks so the worker gets an isolated git "
+            "worktree. Returns the new task's id and state. Drive it with "
+            "task_send, watch it with task_output, end it with task_cancel."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Human label for the task",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "First turn; omit to create idle and drive "
+                                   "later with task_send",
+                },
+                "worktree": {
+                    "type": "boolean",
+                    "description": "Carve a git worktree for isolation "
+                                   "(coding tasks)",
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Base directory the worker runs in",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Per-turn agent timeout in milliseconds",
+                },
+            },
+            "required": ["name", "title"],
+        },
+    },
+    {
+        "name": "task_list",
+        "description": (
+            "List the task workers on a peer node with their id, state, turn "
+            "count, and last line."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                }
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "task_status",
+        "description": "Snapshot one task worker on a peer node by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Task id from task_new or task_list",
+                },
+            },
+            "required": ["name", "id"],
+        },
+    },
+    {
+        "name": "task_send",
+        "description": (
+            "Drive one more turn on a task worker: send it a follow-up prompt. "
+            "The turn runs asynchronously; use task_output to watch it. Returns "
+            "whether the turn was accepted (a busy or finished task refuses)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Task id from task_new or task_list",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The follow-up prompt for this turn",
+                },
+            },
+            "required": ["name", "id", "prompt"],
+        },
+    },
+    {
+        "name": "task_output",
+        "description": (
+            "Tail a task worker: replays its transcript so far, then follows "
+            "the live turn to its result trailer. Bounded by the current turn, "
+            "so it returns once the turn completes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Task id from task_new or task_list",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Max wait for the current turn in "
+                                   "milliseconds",
+                },
+            },
+            "required": ["name", "id"],
+        },
+    },
+    {
+        "name": "task_cancel",
+        "description": (
+            "Cancel a task worker: kill any running turn and prune its "
+            "worktree. Returns whether the task existed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Task id from task_new or task_list",
+                },
+            },
+            "required": ["name", "id"],
+        },
+    },
 ]
 
 
@@ -177,10 +338,84 @@ def tool_peer_status(args):
     return [text_block(proc.stdout.strip())], False
 
 
+def tool_task_new(args):
+    cli = ["task", "new", args["name"], "--title", args["title"]]
+    if args.get("prompt"):
+        cli += ["--prompt", args["prompt"]]
+    if args.get("worktree"):
+        cli += ["--worktree"]
+    if args.get("workdir"):
+        cli += ["--workdir", args["workdir"]]
+    if args.get("timeout_ms"):
+        cli += ["--timeout-ms", str(int(args["timeout_ms"]))]
+    proc = run_cli(cli + key_args(), timeout_s=30)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "task new failed")
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_task_list(args):
+    proc = run_cli(["task", "ls", args["name"]] + key_args(), timeout_s=30)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "task ls failed")
+    out = proc.stdout.strip()
+    return [text_block(out or proc.stderr.strip() or "(no tasks)")], False
+
+
+def tool_task_status(args):
+    proc = run_cli(
+        ["task", "status", args["name"], args["id"]] + key_args(),
+        timeout_s=30)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "task status failed")
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_task_send(args):
+    proc = run_cli(
+        ["task", "send", args["name"], args["id"], args["prompt"]]
+        + key_args(), timeout_s=30)
+    msg = proc.stdout.strip() or proc.stderr.strip()
+    return [text_block(msg or "")], proc.returncode != 0
+
+
+def tool_task_output(args):
+    timeout_ms = int(args.get("timeout_ms", ASK_TIMEOUT_MS))
+    cli = ["task", "tail", args["name"], args["id"],
+           "--timeout-ms", str(timeout_ms)] + key_args()
+    proc = run_cli(cli, timeout_s=timeout_ms / 1000 + SUBPROCESS_MARGIN_S)
+    trailer = parse_result_trailer(proc.stderr)
+    blocks = []
+    if proc.stdout:
+        blocks.append(text_block(proc.stdout))
+    if trailer is not None:
+        blocks.append(text_block(
+            "result: " + json.dumps(trailer, separators=(",", ":"))))
+    is_error = proc.returncode != 0
+    if is_error and not blocks:
+        blocks.append(
+            text_block(proc.stderr.strip() or f"tail {args['id']} failed"))
+    return blocks, is_error
+
+
+def tool_task_cancel(args):
+    proc = run_cli(
+        ["task", "cancel", args["name"], args["id"]] + key_args(),
+        timeout_s=30)
+    msg = proc.stdout.strip() or proc.stderr.strip()
+    return [text_block(msg or "")], proc.returncode != 0
+
+
 HANDLERS = {
     "list_peers": tool_list_peers,
     "ask_peer": tool_ask_peer,
     "peer_status": tool_peer_status,
+    "task_new": tool_task_new,
+    "task_list": tool_task_list,
+    "task_status": tool_task_status,
+    "task_send": tool_task_send,
+    "task_output": tool_task_output,
+    "task_cancel": tool_task_cancel,
 }
 
 

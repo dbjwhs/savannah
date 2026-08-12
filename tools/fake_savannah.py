@@ -44,6 +44,41 @@ def main():
               '"is_error":false,"num_turns":1}', file=sys.stderr)
         return 0
 
+    # task <sub> <node> [id] [prompt] [flags]. Canned, deterministic; id
+    # "t-404" is the not-found task so send/cancel can exercise the error path.
+    if cmd == "task":
+        sub, node = args[1], args[2]
+        if sub == "new":
+            title = args[args.index("--title") + 1] if "--title" in args else ""
+            print(f't-0001  running  turns=0  "{title}"  /tmp/wt')
+            return 0
+        if sub == "ls":
+            print('t-0001  idle  turns=1  "demo"  /tmp/wt')
+            print("    turn 1: hello")
+            return 0
+        tid = args[3] if len(args) > 3 else ""
+        if sub == "status":
+            print(f'{tid}  idle  turns=1  "demo"  /tmp/wt')
+            return 0
+        if sub == "send":
+            if tid == "t-404":
+                print("not sent (task busy or gone)", file=sys.stderr)
+                return 1
+            print("sent", file=sys.stderr)
+            return 0
+        if sub == "tail":
+            sys.stdout.write("turn 1: hello\n")
+            print('\n[result] {"cost_usd":0.00042,"duration_ms":1234,'
+                  '"is_error":false,"num_turns":1}', file=sys.stderr)
+            return 0
+        if sub == "cancel":
+            if tid == "t-404":
+                print("no such task", file=sys.stderr)
+                return 1
+            print("cancelled", file=sys.stderr)
+            return 0
+        return 2
+
     return 2
 
 
