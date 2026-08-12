@@ -162,6 +162,38 @@ Found while building against song @ HEAD on Linux GCC 13:
     handler; the eager StreamReader form is now a collector built on it.
     The CLI and integration tests use the incremental form.
 
+Found while exploring song's object/class system during Phase 5 planning
+(the substrate the Task Mesh's live-status channel will use):
+
+16. Object method dispatch mis-dispatched: `call_object()` stamped the frame
+    `MsgType::call`, so the server decoded an object-method frame as a plain
+    service-call header and `Object::dispatch()` was never reached. Fixed
+    upstream 8/12/2026 (song main f9b7a27): new `MsgType::object_call` (0x11)
+    + decode-and-dispatch in both server paths, with an e2e round-trip test.
+17. Property push works over TCP only; the pipe path (`run()`) dropped
+    `prop_subscribe` silently (fan-out needs a Transport target; a raw stdout
+    fd has none). Made loud upstream 8/12/2026 (song main c5497a3):
+    `handle_message_fd` logs a warning naming the cause and pointing at
+    `--tcp`. Push over pipes would need an fd-subscriber model; savannah uses
+    TCP for push by design.
+18. Calls and subscriptions on one `ServiceConnection` were mutually
+    destructive: an unsolicited `prop_notify` arriving mid-call tripped the
+    sequence-id check and killed the call. Fixed upstream 8/12/2026 (song
+    main c5497a3): a shared `recv_reply` demuxes interleaved notifications to
+    their callbacks and keeps waiting for the real reply. A conductor no
+    longer needs a dedicated notification connection.
+19. song objects die with the creating connection; a second client cannot
+    re-acquire an object by id, and there is no ownership check on object
+    ids. Left as a stated limitation, not fixed: the Task Mesh keeps
+    authoritative state in savannahd's own long-lived table and treats song
+    objects as ephemeral live-status views, so it routes around this by
+    design (see the Phase 5 plan's substrate pivot).
+20. Codegen never emitted `register_factory`, and generated `prop_set` never
+    called `notify_property` -- both had to be hand-written. Fixed upstream
+    8/12/2026 (song main 7e29245): generated setters now notify, and a
+    `register_<Name><Impl>(ServiceRuntime&)` template decodes constructor
+    args and builds the concrete Impl.
+
 ## stream-json contract (pinned subset)
 
 `fake-claude` and `src/stream_json.cpp` both implement exactly this subset; if
