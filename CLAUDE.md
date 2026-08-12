@@ -9,7 +9,8 @@ Every machine runs `savannahd`, a C++20 daemon exposing that machine's headless
 Claude (`claude -p --output-format stream-json`) as a song service (`AgentNode`),
 discoverable over mDNS, streamed, HMAC-authenticated, process-supervised.
 The MCP shim (`shim/peer.py`, stdlib-only Python, wraps the savannah CLI)
-gives stock Claude Code three tools: `list_peers`, `ask_peer`, `peer_status`.
+gives stock Claude Code `list_peers`, `ask_peer`, `peer_status`, and the
+`task_*` tools that drive persistent worker sessions on peer nodes (Phase 5a).
 The model decides when to delegate. No forking Claude Code.
 
 Design doc of record: `DESIGN.md` in this repo (architecture, rationale,
@@ -58,9 +59,9 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `src/stream_json.{hpp,cpp}` | claude stream-json events → `AgentChunk` mapping. |
 | `src/agent_process.{hpp,cpp}` | Spawn/supervise the headless agent, line pump, timeout, kill. |
 | `src/savannahd.cpp` | The node daemon: song runtime, dispatchers, single-flight. |
-| `cli/savannah_main.cpp` | Human remote control: `savannah ls`, `savannah <ask\|info\|status> <node>` (local pipes, or mesh via mDNS/--addr with --key). |
+| `cli/savannah_main.cpp` | Human remote control: `savannah ls`, `savannah <ask\|info\|status> <node>`, and `savannah task <new\|ls\|status\|send\|tail\|cancel> <node>` (local pipes, or mesh via mDNS/--addr with --key). Task state needs a persistent daemon, so `task` targets a TCP/mesh node, not pipe-spawned `local`. |
 | `tools/fake_claude.cpp` | Fake agent speaking genuine stream-json. Scenario-driven. |
-| `shim/peer.py` | MCP stdio server (stdlib-only) wrapping the CLI: list_peers/ask_peer/peer_status. |
+| `shim/peer.py` | MCP stdio server (stdlib-only) wrapping the CLI: list_peers/ask_peer/peer_status + task_new/list/status/send/output/cancel. |
 | `tools/fake_savannah.py` | Fake savannah CLI for shim tests (canned ls/ask/status). |
 | `test/` | Unit tests per component + end-to-end echo integration. |
 
