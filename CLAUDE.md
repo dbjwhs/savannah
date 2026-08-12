@@ -115,9 +115,13 @@ Found while building against song @ HEAD on Linux GCC 13:
    savannah links the prebuilt `libsong.a` instead (still fine). Fixed
    upstream 7/28/2026 (4e989ed): subdirs gate on top-level context.
 4. Multi-line `///` doc comments in IDL lose the `///` on continuation lines
-   in generated code (syntax errors). Workaround: single-line docs only.
+   in generated code (syntax errors). Fixed upstream 8/12/2026 (song main
+   686af7d): codegen's `emit_doc` prefixes every line. Multi-line docs OK now.
 5. Enums referenced in structs generate calls to `encode_<Enum>`/`decode_<Enum>`
-   that are never emitted. Workaround: `AgentChunk.kind` is `i32` on the wire.
+   that are never emitted. Fixed upstream 8/12/2026 (song main 686af7d):
+   codegen emits scalar + array enum codecs (enum travels as its underlying
+   integer). `AgentChunk.kind` can drop its `i32`-on-the-wire workaround and use
+   the real enum whenever we choose to; the workaround is no longer forced.
 6. `is_stream` is parsed but ignored by codegen (proxies come out unary).
    Streaming is hand-wired via `call_streaming` + generated method ids.
 7. Streaming dispatchers shadow unary dispatchers per service id (see above).
