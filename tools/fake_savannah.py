@@ -67,9 +67,16 @@ def main():
             print("sent", file=sys.stderr)
             return 0
         if sub == "tail":
+            # Two invocations: the first hit the max-turns cap (error_max_turns,
+            # an interim trailer), the auto-continue finished (success). The
+            # shim must surface the LAST trailer, not the first.
             sys.stdout.write("turn 1: hello\n")
+            print('\n[result] {"is_error":true,"num_turns":3,'
+                  '"subtype":"error_max_turns"}', file=sys.stderr)
+            sys.stdout.write("\n----- turn 2 -----\ndone\n")
             print('\n[result] {"cost_usd":0.00042,"duration_ms":1234,'
-                  '"is_error":false,"num_turns":1}', file=sys.stderr)
+                  '"is_error":false,"num_turns":1,"subtype":"success"}',
+                  file=sys.stderr)
             return 0
         if sub == "cancel":
             if tid == "t-404":

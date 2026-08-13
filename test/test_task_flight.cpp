@@ -255,6 +255,9 @@ int main() {
     auto s3 = wait_state(conn, t3.id, "idle");
     CHECK(s3.state == "idle");   // finished on its own, not stalled/"incomplete"
     CHECK(s3.turns == 2);        // capped invocation + one auto-continue
+    // The auto-continue's second invocation is delimited in the transcript so
+    // the tail does not run the turns together (readability).
+    CHECK(task_output(conn, t3.id).find("----- turn 2 -----") != std::string::npos);
 
     if (g_failures == 0) std::printf("test_task_flight: all passed\n");
     return g_failures == 0 ? 0 : 1;

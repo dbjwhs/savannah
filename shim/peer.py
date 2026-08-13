@@ -284,13 +284,17 @@ def run_cli(args, timeout_s):
 
 
 def parse_result_trailer(stderr_text):
+    # Return the LAST result trailer: a task_output that auto-continued past
+    # the max-turns cap emits one trailer per invocation, and the final one is
+    # the outcome that matters (an early "error_max_turns" is not the verdict).
+    result = None
     for line in stderr_text.splitlines():
         if line.startswith("[result] "):
             try:
-                return json.loads(line[len("[result] "):])
+                result = json.loads(line[len("[result] "):])
             except json.JSONDecodeError:
-                return {"raw": line}
-    return None
+                result = {"raw": line}
+    return result
 
 
 def tool_list_peers(_args):

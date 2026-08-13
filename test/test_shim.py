@@ -135,12 +135,15 @@ def main():
                        {"name": "dbj-devone", "id": "t-404", "prompt": "x"})
     check(r["result"]["isError"] is True, "task_send missing is error")
 
-    # ---- task_output: replays transcript + result trailer ----
+    # ---- task_output: replays transcript + shows the FINAL trailer ----
+    # The fake tail emits two invocations (an interim error_max_turns, then a
+    # success); the shim must surface the last one, not the first.
     r = shim.call_tool("task_output", {"name": "dbj-devone", "id": "t-0001"})
     check(r["result"]["isError"] is False, "task_output ok")
     check("hello" in r["result"]["content"][0]["text"], "task_output replays")
-    check('"is_error":false' in r["result"]["content"][1]["text"],
-          "task_output trailer")
+    trailer = r["result"]["content"][1]["text"]
+    check('"is_error":false' in trailer, "task_output shows final trailer")
+    check("error_max_turns" not in trailer, "task_output not the interim one")
 
     # ---- task_cancel: ok, and error for a missing task ----
     r = shim.call_tool("task_cancel", {"name": "dbj-devone", "id": "t-0001"})

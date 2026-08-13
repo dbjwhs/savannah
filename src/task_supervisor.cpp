@@ -103,6 +103,16 @@ void TaskSupervisor::drive_turn(Task* t, const std::string& prompt) {
             timeout = t->timeout_ms;
             cwd = t->worktree;
             session = t->session_id;
+            // Delimit every resumed invocation (a new task_send, or an
+            // auto-continue past the max-turns cap) in the transcript so the
+            // tail shows turn boundaries instead of running the text together.
+            // The task's very first invocation needs no leading separator.
+            if (!first) {
+                t->transcript.push_back(
+                    {ChunkKind::Text,
+                     "\n\n----- turn " + std::to_string(t->turns + 1) +
+                         " -----\n"});
+            }
         }
 
         std::vector<std::string> argv;
