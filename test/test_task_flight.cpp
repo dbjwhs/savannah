@@ -27,7 +27,6 @@
 #include <thread>
 
 #include "savannah.hpp"
-#include "../src/wire_ids.hpp"
 
 namespace sw = song::savannah;
 using song::Buffer;
@@ -245,6 +244,17 @@ int main() {
     // ---- a cancelled task rejects further sends; unknown ids too ----
     CHECK(task_send(conn, t1.id, "nope") == false);
     CHECK(task_send(conn, "t-9999", "nope") == false);
+
+    // ---- auto-continue across the per-invocation max-turns cap ----
+    // A MAXTURNS-marked prompt makes fake-claude emit subtype error_max_turns
+    // on its first invocation. The supervisor must auto-resume ("Continue...")
+    // WITHOUT a second task_send and land on idle, not stall. Two invocations
+    // (the capped one + the auto-continue) advance turns by 2 from one
+    // task_new; the old behavior stopped at turns == 1.
+    auto t3 = task_new(conn, "long", "MAXTURNS do a big job", /*worktree=*/true);
+    auto s3 = wait_state(conn, t3.id, "idle");
+    CHECK(s3.state == "idle");   // finished on its own, not stalled/"incomplete"
+    CHECK(s3.turns == 2);        // capped invocation + one auto-continue
 
     if (g_failures == 0) std::printf("test_task_flight: all passed\n");
     return g_failures == 0 ? 0 : 1;

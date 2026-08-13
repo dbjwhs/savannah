@@ -84,6 +84,16 @@ void emit_result(bool is_error) {
          std::string(is_error ? "true" : "false") + "}");
 }
 
+// Emit a RESULT with an explicit subtype (e.g. "error_max_turns"), mirroring
+// the real CLI's result shape. is_error follows the subtype: only "success"
+// is not an error.
+void emit_result_subtype(const std::string& subtype) {
+    bool is_error = (subtype != "success");
+    emit(R"({"type":"result","subtype":")" + subtype +
+         R"(","total_cost_usd":0.00042,"duration_ms":1234,"num_turns":1,)"
+         R"("is_error":)" + std::string(is_error ? "true" : "false") + "}");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -156,7 +166,16 @@ int main(int argc, char** argv) {
         std::string tag = session_id.empty() ? "no-session"
                                              : session_id.substr(0, 8);
         emit_text("turn " + std::to_string(turn) + " [" + tag + "]: " + prompt);
-        emit_result(false);
+        // A prompt carrying the MAXTURNS marker simulates hitting claude's
+        // --max-turns cap on this invocation (subtype error_max_turns). The
+        // supervisor's auto-continue then resumes with a "Continue..." prompt
+        // (no marker), which finishes cleanly. Lets test_task_flight exercise
+        // auto-continue deterministically and token-free.
+        if (prompt.find("MAXTURNS") != std::string::npos) {
+            emit_result_subtype("error_max_turns");
+        } else {
+            emit_result(false);
+        }
     } else if (scenario == "echo") {
         emit_text(prompt);
         emit_result(false);

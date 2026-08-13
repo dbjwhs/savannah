@@ -42,6 +42,13 @@ public:
     /// Lines that failed to parse as JSON (skipped).
     int malformed_lines() const { return malformed_; }
 
+    /// True if the last RESULT had subtype "error_max_turns": the agent hit
+    /// its per-invocation --max-turns cap with work still pending. That is
+    /// continuable, not a real failure; the supervisor auto-continues on it.
+    bool max_turns_reached() const {
+        return result_subtype_ == "error_max_turns";
+    }
+
     /// Build the RESULT payload savannahd synthesizes when the agent dies
     /// without emitting one.
     static std::string synthetic_error_result(const std::string& reason,
@@ -54,6 +61,7 @@ private:
     Sink sink_;
     bool saw_result_ = false;
     int malformed_ = 0;
+    std::string result_subtype_;  // subtype of the last RESULT seen
 };
 
 }  // namespace savannah

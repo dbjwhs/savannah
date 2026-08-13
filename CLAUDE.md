@@ -223,8 +223,13 @@ the real CLI drifts, `SAVANNAH_LIVE=1 ctest -R test_live_schema` catches it
   string cap; finding 8). Clients concatenate TEXT payloads; split points can
   land mid-UTF8 and concatenation restores the byte sequence.
 - `{"type":"user",...}` (tool results) → ignored in v1
-- `{"type":"result","total_cost_usd":...,"duration_ms":...,"num_turns":...,
-  "is_error":...}` → RESULT chunk, compact JSON trailer
+- `{"type":"result","subtype":...,"total_cost_usd":...,"duration_ms":...,
+  "num_turns":...,"is_error":...}` → RESULT chunk, compact JSON trailer. The
+  trailer carries `subtype` when present: `"success"` is a clean finish,
+  `"error_max_turns"` means the agent hit its per-invocation `--max-turns` cap
+  (continuable, not a real failure), other subtypes are genuine errors. The
+  task supervisor auto-continues a turn on `error_max_turns` (see below); a
+  bare `ask` just forwards the trailer.
 - Unknown `type` → ignored (forward compatible)
 
 Every `ask` response MUST end with exactly one RESULT chunk. A stream that ends

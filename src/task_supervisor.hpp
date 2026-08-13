@@ -48,7 +48,9 @@ struct TaskCreate {
 struct TaskView {
     std::string id;
     std::string title;
-    std::string state;       // idle | running | done | failed | cancelled
+    std::string state;       // running | idle | incomplete | failed | cancelled
+                             // incomplete = hit the auto-continue budget with
+                             // work still pending; send again to keep going
     std::string worktree;    // cwd the worker runs in
     std::string session_id;  // claude session uuid
     std::uint32_t turns = 0;

@@ -76,12 +76,18 @@ void ChunkMapper::feed_line(const std::string& line) {
     }
 
     if (type == "result") {
+        const json::Value& subtype = doc["subtype"];
+        result_subtype_ = subtype.is_null() ? std::string() : subtype.as_string();
         json::Object trailer;
         trailer.emplace("cost_usd", doc["total_cost_usd"]);
         trailer.emplace("duration_ms", doc["duration_ms"]);
         trailer.emplace("num_turns", doc["num_turns"]);
         trailer.emplace("is_error",
                         json::Value(doc["is_error"].as_bool(false)));
+        // subtype distinguishes a clean finish ("success") from hitting the
+        // per-invocation turn cap ("error_max_turns", continuable) or a real
+        // failure, so a reader is not left guessing at a bare is_error flag.
+        if (!subtype.is_null()) trailer.emplace("subtype", subtype);
         sink_(Chunk{ChunkKind::Result, json::dump(json::Value(trailer))});
         saw_result_ = true;
         return;

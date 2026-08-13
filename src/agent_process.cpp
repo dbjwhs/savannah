@@ -150,6 +150,7 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
     }
 
     out.saw_result = mapper.saw_result();
+    out.max_turns_reached = mapper.max_turns_reached();
     out.malformed_lines = mapper.malformed_lines();
     return out;
 }

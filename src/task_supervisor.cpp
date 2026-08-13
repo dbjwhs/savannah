@@ -79,70 +79,103 @@ TaskView TaskSupervisor::snapshot(Task& t) {
 }
 
 void TaskSupervisor::drive_turn(Task* t, const std::string& prompt) {
-    bool first;
-    std::int64_t timeout;
-    std::string cwd, session;
-    {
-        std::lock_guard<std::mutex> lock(t->m);
-        first = (t->turns == 0);
-        timeout = t->timeout_ms;
-        cwd = t->worktree;
-        session = t->session_id;
-    }
+    // One logical turn (one task_send) auto-continues across claude's
+    // per-invocation --max-turns cap: it keeps resuming the session until the
+    // agent finishes on its own, dies, is cancelled, or exhausts the
+    // auto-continue budget. Without this a long task stalls the instant it hits
+    // --max-turns and the caller has to hand-send "continue" every time (the
+    // friction the enum-to-string delegation run surfaced). The task stays
+    // "running" for the whole loop; only the final outcome sets the end state.
+    constexpr int kMaxAutoContinues = 4;  // bounds token burn on a runaway task
 
-    std::vector<std::string> argv;
-    argv.push_back(config_.agent_cmd);
-    for (const auto& a : config_.agent_args) argv.push_back(a);
-    argv.push_back("-p");
-    argv.push_back(prompt);
-    argv.push_back("--output-format");
-    argv.push_back("stream-json");
-    argv.push_back("--verbose");
-    argv.push_back("--max-turns");
-    argv.push_back(std::to_string(config_.max_turns));
-    if (!config_.allowed_tools.empty()) {
-        argv.push_back("--allowedTools");
-        std::string joined;
-        for (const auto& tool : config_.allowed_tools) {
-            if (!joined.empty()) joined += ",";
-            joined += tool;
-        }
-        argv.push_back(joined);
-    }
-    // Workers have no human to answer prompts; acceptEdits lets them work in
-    // their worktree without blocking, while risky ops still fail and report.
-    argv.push_back("--permission-mode");
-    argv.push_back("acceptEdits");
-    // First turn stamps the session id; later turns resume it.
-    argv.push_back(first ? "--session-id" : "--resume");
-    argv.push_back(session);
+    std::string turn_prompt = prompt;
+    bool saw_result = false;
+    bool max_turns = false;
+    int auto_continues = 0;
 
-    AgentProcess proc;
-    auto outcome = proc.run(
-        argv, timeout, *t->cancel,
-        [t](const Chunk& c) {
+    for (;;) {
+        bool first;
+        std::int64_t timeout;
+        std::string cwd, session;
+        {
             std::lock_guard<std::mutex> lock(t->m);
-            t->transcript.push_back(c);
-            if (c.kind == ChunkKind::Text && !c.payload.empty()) {
-                t->last_line = c.payload;
+            first = (t->turns == 0);
+            timeout = t->timeout_ms;
+            cwd = t->worktree;
+            session = t->session_id;
+        }
+
+        std::vector<std::string> argv;
+        argv.push_back(config_.agent_cmd);
+        for (const auto& a : config_.agent_args) argv.push_back(a);
+        argv.push_back("-p");
+        argv.push_back(turn_prompt);
+        argv.push_back("--output-format");
+        argv.push_back("stream-json");
+        argv.push_back("--verbose");
+        argv.push_back("--max-turns");
+        argv.push_back(std::to_string(config_.max_turns));
+        if (!config_.allowed_tools.empty()) {
+            argv.push_back("--allowedTools");
+            std::string joined;
+            for (const auto& tool : config_.allowed_tools) {
+                if (!joined.empty()) joined += ",";
+                joined += tool;
             }
-        },
-        cwd);
+            argv.push_back(joined);
+        }
+        // Workers have no human to answer prompts; acceptEdits lets them work
+        // in their worktree without blocking, while risky ops still fail and
+        // report.
+        argv.push_back("--permission-mode");
+        argv.push_back("acceptEdits");
+        // First turn stamps the session id; every later turn (including an
+        // auto-continue) resumes it.
+        argv.push_back(first ? "--session-id" : "--resume");
+        argv.push_back(session);
+
+        AgentProcess proc;
+        auto outcome = proc.run(
+            argv, timeout, *t->cancel,
+            [t](const Chunk& c) {
+                std::lock_guard<std::mutex> lock(t->m);
+                t->transcript.push_back(c);
+                if (c.kind == ChunkKind::Text && !c.payload.empty()) {
+                    t->last_line = c.payload;
+                }
+            },
+            cwd);
+
+        {
+            std::lock_guard<std::mutex> lock(t->m);
+            if (!outcome.saw_result) {
+                std::string reason = t->cancel->load() ? "cancelled"
+                                     : outcome.timed_out ? "timeout"
+                                     : outcome.spawned   ? "died before result"
+                                                         : "spawn failed";
+                t->transcript.push_back(
+                    {ChunkKind::Result,
+                     ChunkMapper::synthetic_error_result(reason,
+                                                         outcome.exit_code)});
+            }
+            ++t->turns;
+        }
+
+        saw_result = outcome.saw_result;
+        max_turns = outcome.saw_result && outcome.max_turns_reached;
+
+        // Continue only if the agent hit the turn cap with work still pending,
+        // is not cancelled, produced a result, and we still have budget.
+        if (t->cancel->load() || !saw_result || !max_turns) break;
+        if (++auto_continues > kMaxAutoContinues) break;
+        turn_prompt = "Continue where you left off.";
+    }
 
     std::lock_guard<std::mutex> lock(t->m);
-    if (!outcome.saw_result) {
-        std::string reason = t->cancel->load() ? "cancelled"
-                             : outcome.timed_out ? "timeout"
-                             : outcome.spawned   ? "died before result"
-                                                 : "spawn failed";
-        t->transcript.push_back(
-            {ChunkKind::Result,
-             ChunkMapper::synthetic_error_result(reason, outcome.exit_code)});
-    }
-    ++t->turns;
-    t->state = t->cancel->load()   ? "cancelled"
-               : outcome.saw_result ? "idle"
-                                    : "failed";
+    t->state = t->cancel->load() ? "cancelled"
+               : !saw_result     ? "failed"
+               : max_turns        ? "incomplete"  // hit the auto-continue budget
+                                   : "idle";
 }
 
 TaskView TaskSupervisor::create(const TaskCreate& spec) {

@@ -22,6 +22,7 @@ struct AgentOutcome {
     bool saw_result = false;   // stream ended with a RESULT chunk
     bool timed_out = false;
     bool killed = false;       // cancel() arrived
+    bool max_turns_reached = false;  // RESULT subtype was error_max_turns
     int exit_code = -1;
     int malformed_lines = 0;
 };
