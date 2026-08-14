@@ -48,6 +48,7 @@ type tickMsg time.Time
 type model struct {
 	node   string
 	key    string
+	addr   string
 	bin    string
 	tasks  []task
 	cursor int
@@ -66,8 +67,13 @@ var (
 	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 )
 
-// cliArgs builds a savannah CLI invocation, appending --key when set.
+// cliArgs builds a savannah CLI invocation, appending --addr/--key when set.
+// --addr targets a node by address (e.g. a loopback node not on mDNS); without
+// it the CLI resolves the node name over the mesh.
 func (m model) cliArgs(args ...string) []string {
+	if m.addr != "" {
+		args = append(args, "--addr", m.addr)
+	}
 	if m.key != "" {
 		args = append(args, "--key", m.key)
 	}
@@ -263,16 +269,24 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 || strings.HasPrefix(os.Args[1], "-") {
-		fmt.Fprintln(os.Stderr, "usage: savannah-dash <node> [--key FILE]")
+		fmt.Fprintln(os.Stderr, "usage: savannah-dash <node> [--addr HOST:PORT] [--key FILE]")
 		fmt.Fprintln(os.Stderr, "  finds the savannah CLI via $SAVANNAH_BIN (default: savannah on PATH)")
 		os.Exit(2)
 	}
 	node := os.Args[1]
-	key := ""
+	key, addr := "", ""
 	for i := 2; i < len(os.Args); i++ {
-		if os.Args[i] == "--key" && i+1 < len(os.Args) {
-			key = os.Args[i+1]
-			i++
+		switch os.Args[i] {
+		case "--key":
+			if i+1 < len(os.Args) {
+				key = os.Args[i+1]
+				i++
+			}
+		case "--addr":
+			if i+1 < len(os.Args) {
+				addr = os.Args[i+1]
+				i++
+			}
 		}
 	}
 	bin := os.Getenv("SAVANNAH_BIN")
@@ -286,7 +300,7 @@ func main() {
 	ti.CharLimit = 4000
 	ti.Width = 64
 
-	m := model{node: node, key: key, bin: bin, input: ti}
+	m := model{node: node, key: key, addr: addr, bin: bin, input: ti}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "savannah-dash:", err)
