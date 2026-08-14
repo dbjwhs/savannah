@@ -20,6 +20,7 @@
 #include <song/song.hpp>
 #include <song/security.hpp>
 
+#include <csignal>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "savannah.hpp"
@@ -277,35 +279,62 @@ std::string tasks_to_json(const sw::TaskList& list) {
     return j::dump(j::Value(std::move(arr)));
 }
 
-// The cheap live view: poll task_list once a second and redraw a table. No
-// server changes, no push; a UI-flow starter that the push-based dashboard can
-// replace underneath the same idea later. Ctrl-C exits.
+// Leave the alternate screen and restore the cursor on the way out. Uses only
+// async-signal-safe calls so it can run from the Ctrl-C handler.
+void watch_restore_terminal() {
+    const char* seq = "\033[?25h\033[?1049l";  // show cursor, leave alt screen
+    ssize_t n = ::write(STDOUT_FILENO, seq, std::strlen(seq));
+    (void)n;
+}
+
+void watch_on_signal(int) {
+    watch_restore_terminal();
+    _exit(0);
+}
+
+// The cheap live view: poll task_list once a second and redraw a table in
+// place, top-style. Uses the terminal's alternate screen buffer (like
+// top/htop/vim) so it redraws over itself instead of scrolling, and restores
+// the original screen on exit. No server changes, no push; a UI-flow starter
+// the push-based dashboard can replace underneath the same rendering later.
 int run_task_watch(sw::AgentNodeProxy& proxy, const std::string& node) {
+    std::signal(SIGINT, watch_on_signal);
+    std::signal(SIGTERM, watch_on_signal);
+    std::cout << "\033[?1049h\033[?25l";  // enter alt screen, hide cursor
+    std::cout.flush();
+
     for (;;) {
         sw::TaskList list = proxy.task_list();
         std::time_t now = std::time(nullptr);
         char ts[16] = "";
         std::strftime(ts, sizeof ts, "%H:%M:%S", std::localtime(&now));
-        std::cout << "\033[2J\033[H"  // clear screen, home cursor
-                  << "watching " << node << "   " << list.tasks.size()
-                  << " task" << (list.tasks.size() == 1 ? "" : "s") << "   "
-                  << ts << "   [Ctrl-C to quit]\n\n";
+
+        // Build one frame, homing the cursor and clearing each line to the end
+        // (so a shorter line does not leave stale characters), then clearing to
+        // the end of screen (so a shrunk table leaves no orphan rows).
+        std::string f = "\033[H";
+        auto line = [&](const std::string& s) { f += s + "\033[K\n"; };
+        line("watching " + node + "   " + std::to_string(list.tasks.size()) +
+             " task" + (list.tasks.size() == 1 ? "" : "s") + "   " + ts +
+             "   [Ctrl-C to quit]");
+        line("");
         if (list.tasks.empty()) {
-            std::cout << "  (no tasks yet)\n";
+            line("  (no tasks yet)");
         } else {
-            std::cout << pad("ID", 7) << pad("STATE", 10) << pad("TURN", 4)
-                      << pad("TITLE", 22) << "LAST LINE\n";
+            line(pad("ID", 7) + pad("STATE", 11) + pad("TURN", 4) +
+                 pad("TITLE", 22) + "LAST LINE");
             for (const auto& t : list.tasks) {
-                std::cout << pad(t.id, 7) << pad(t.state, 10)
-                          << pad(std::to_string(t.turns), 4)
-                          << pad(flatten(t.title), 22)
-                          << flatten(t.last_line).substr(0, 56) << "\n";
+                line(pad(t.id, 7) + pad(t.state, 11) +
+                     pad(std::to_string(t.turns), 4) + pad(flatten(t.title), 22) +
+                     flatten(t.last_line).substr(0, 56));
             }
         }
+        f += "\033[J";  // clear from cursor to end of screen
+        std::cout << f;
         std::cout.flush();
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    return 0;  // unreachable: Ctrl-C terminates the process
+    return 0;  // unreachable: a signal restores the terminal and exits
 }
 
 int run_task(ServiceConnection& conn, const Cli& cli) {
