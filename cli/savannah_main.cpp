@@ -23,13 +23,17 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "savannah.hpp"
 #include "../src/config.hpp"    // load_hmac_key
+#include "../src/json.hpp"      // --json output
 #include "../src/wire_ids.hpp"  // stream service id + mesh mDNS type
 
 namespace sw = song::savannah;
@@ -44,7 +48,7 @@ int usage() {
         "       savannah <ask|info|status> <node> [\"prompt\"]\n"
         "       savannah task new    <node> --title T [--prompt P]\n"
         "                                   [--worktree] [--workdir DIR]\n"
-        "       savannah task ls     <node>\n"
+        "       savannah task ls     <node> [--watch] [--json]\n"
         "       savannah task status <node> <id>\n"
         "       savannah task send   <node> <id> \"prompt\"\n"
         "       savannah task tail   <node> <id>\n"
@@ -71,6 +75,8 @@ struct Cli {
     std::string task_title;    // --title (task new)
     std::string task_workdir;  // --workdir (task new)
     bool task_worktree = false;  // --worktree (task new)
+    bool task_watch = false;     // --watch (task ls): poll + redraw
+    bool json_out = false;       // --json (task ls): machine-readable output
 };
 
 bool task_sub_valid(const std::string& s) {
@@ -130,6 +136,10 @@ bool parse_cli(int argc, char** argv, Cli& c) {
             c.task_workdir = argv[++i];
         } else if (std::strcmp(argv[i], "--worktree") == 0) {
             c.task_worktree = true;
+        } else if (std::strcmp(argv[i], "--watch") == 0) {
+            c.task_watch = true;
+        } else if (std::strcmp(argv[i], "--json") == 0) {
+            c.json_out = true;
         } else {
             return false;
         }
@@ -234,6 +244,70 @@ void print_task(const sw::TaskInfo& t) {
     if (!t.last_line.empty()) std::cout << "    " << t.last_line << "\n";
 }
 
+// Collapse newlines/tabs so a value renders on a single table row.
+std::string flatten(const std::string& s) {
+    std::string out;
+    for (char ch : s) out += (ch == '\n' || ch == '\r' || ch == '\t') ? ' ' : ch;
+    return out;
+}
+
+// Pad/truncate to exactly w columns, plus a two-space gap.
+std::string pad(std::string s, std::size_t w) {
+    if (s.size() > w) s = s.substr(0, w);
+    s.resize(w, ' ');
+    return s + "  ";
+}
+
+// The machine-readable seam: a JSON array of tasks. Any UI (a Go TUI, a React
+// dashboard) can consume this instead of speaking song's wire protocol.
+std::string tasks_to_json(const sw::TaskList& list) {
+    namespace j = ::savannah::json;
+    j::Array arr;
+    for (const auto& t : list.tasks) {
+        j::Object o;
+        o.emplace("id", j::Value(t.id));
+        o.emplace("title", j::Value(t.title));
+        o.emplace("state", j::Value(t.state));
+        o.emplace("worktree", j::Value(t.worktree));
+        o.emplace("session_id", j::Value(t.session_id));
+        o.emplace("turns", j::Value(static_cast<double>(t.turns)));
+        o.emplace("last_line", j::Value(t.last_line));
+        arr.push_back(j::Value(std::move(o)));
+    }
+    return j::dump(j::Value(std::move(arr)));
+}
+
+// The cheap live view: poll task_list once a second and redraw a table. No
+// server changes, no push; a UI-flow starter that the push-based dashboard can
+// replace underneath the same idea later. Ctrl-C exits.
+int run_task_watch(sw::AgentNodeProxy& proxy, const std::string& node) {
+    for (;;) {
+        sw::TaskList list = proxy.task_list();
+        std::time_t now = std::time(nullptr);
+        char ts[16] = "";
+        std::strftime(ts, sizeof ts, "%H:%M:%S", std::localtime(&now));
+        std::cout << "\033[2J\033[H"  // clear screen, home cursor
+                  << "watching " << node << "   " << list.tasks.size()
+                  << " task" << (list.tasks.size() == 1 ? "" : "s") << "   "
+                  << ts << "   [Ctrl-C to quit]\n\n";
+        if (list.tasks.empty()) {
+            std::cout << "  (no tasks yet)\n";
+        } else {
+            std::cout << pad("ID", 7) << pad("STATE", 10) << pad("TURN", 4)
+                      << pad("TITLE", 22) << "LAST LINE\n";
+            for (const auto& t : list.tasks) {
+                std::cout << pad(t.id, 7) << pad(t.state, 10)
+                          << pad(std::to_string(t.turns), 4)
+                          << pad(flatten(t.title), 22)
+                          << flatten(t.last_line).substr(0, 56) << "\n";
+            }
+        }
+        std::cout.flush();
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return 0;  // unreachable: Ctrl-C terminates the process
+}
+
 int run_task(ServiceConnection& conn, const Cli& cli) {
     sw::AgentNodeProxy proxy(conn);
     const std::string& sub = cli.task_sub;
@@ -253,7 +327,12 @@ int run_task(ServiceConnection& conn, const Cli& cli) {
         return 0;
     }
     if (sub == "ls") {
+        if (cli.task_watch) return run_task_watch(proxy, cli.node);
         sw::TaskList list = proxy.task_list();
+        if (cli.json_out) {
+            std::cout << tasks_to_json(list) << "\n";
+            return 0;
+        }
         if (list.tasks.empty()) {
             std::cerr << "(no tasks)\n";
             return 0;
