@@ -62,6 +62,7 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `cli/savannah_main.cpp` | Human remote control: `savannah ls`, `savannah <ask\|info\|status> <node>`, and `savannah task <new\|ls\|status\|send\|tail\|cancel> <node>` (local pipes, or mesh via mDNS/--addr with --key). Task state needs a persistent daemon, so `task` targets a TCP/mesh node, not pipe-spawned `local`. |
 | `tools/fake_claude.cpp` | Fake agent speaking genuine stream-json. Scenario-driven. |
 | `shim/peer.py` | MCP stdio server (stdlib-only) wrapping the CLI: list_peers/ask_peer/peer_status + task_new/list/status/send/output/cancel. |
+| `dash/` | `savannah-dash`: interactive Go/Bubble Tea dashboard. Thin client over the CLI's `task ls --json` seam (poll+render) and `task send` (arrow-select a task, type, Enter sends). Separate Go module, not built by CMake. |
 | `tools/fake_savannah.py` | Fake savannah CLI for shim tests (canned ls/ask/status). |
 | `test/` | Unit tests per component + end-to-end echo integration. |
 
