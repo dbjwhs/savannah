@@ -133,8 +133,32 @@ func (m *model) killTail() {
 	m.tailProc = nil
 }
 
+// viewedTask finds the task the view is on; ok is false if it vanished.
+func (m model) viewedTask() (task, bool) {
+	for _, t := range m.tasks[m.viewNode] {
+		if t.ID == m.viewID {
+			return t, true
+		}
+	}
+	return task{}, false
+}
+
+// bannerLines is the extra chrome the decision banner occupies, so the
+// viewport shrinks by exactly that much while a decision is pending.
+func (m model) bannerLines() int {
+	if m.mode != modeView {
+		return 0
+	}
+	if vt, ok := m.viewedTask(); ok {
+		if _, pending := pendingDecision(vt); pending {
+			return 1
+		}
+	}
+	return 0
+}
+
 func (m model) vpHeight() int {
-	h := m.height - viewChrome
+	h := m.height - viewChrome - m.bannerLines()
 	if h < 3 {
 		h = 3
 	}
@@ -289,13 +313,10 @@ func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) viewView() string {
-	state, title := "gone?", ""
-	turns := 0
-	for _, t := range m.tasks[m.viewNode] {
-		if t.ID == m.viewID {
-			state, title, turns = t.State, t.Title, t.Turns
-			break
-		}
+	vt, found := m.viewedTask()
+	state, title, turns := "gone?", "", 0
+	if found {
+		state, title, turns = vt.State, vt.Title, vt.Turns
 	}
 	target := m.viewNode + "/" + m.viewID
 
@@ -304,6 +325,10 @@ func (m model) viewView() string {
 		headerStyle.Render("savannah-dash  "+target),
 		state, turns, trunc(title, 24), time.Now().Format("15:04:05"))
 	b.WriteString(m.vp.View() + "\n")
+	if d, pending := pendingDecision(vt); found && pending {
+		b.WriteString(warnStyle.Render(
+			trunc(decisionCell(d)+"   answer below", m.width-1)) + "\n")
+	}
 	b.WriteString("send to " + headerStyle.Render(target) + ":  " +
 		m.input.View() + "\n")
 	help := helpStyle.Render(

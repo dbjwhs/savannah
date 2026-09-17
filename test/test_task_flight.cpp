@@ -245,6 +245,27 @@ int main() {
     CHECK(task_send(conn, t1.id, "nope") == false);
     CHECK(task_send(conn, "t-9999", "nope") == false);
 
+    // ---- session handoff: DECISION_NEEDED survives verbatim to last_line ----
+    // The handoff pattern (docs/handoff.md) has no wire surface of its own: a
+    // worker asks for a human by ending its turn with a marker line, and every
+    // consumer (dash inbox, conductor Claude, CI wrapper) reads it back out of
+    // last_line via task_list/task_status. This pins that contract: the final
+    // line of the final TEXT block reaches last_line byte for byte (no
+    // truncation, no flattening), and the answer turn replaces it.
+    const std::string decision =
+        "DECISION_NEEDED {\"question\":\"ship it?\",\"options\":[\"yes\",\"no\"]}";
+    auto t4 = task_new(conn, "handoff", "checks done\n" + decision,
+                       /*worktree=*/false);
+    auto s4 = wait_state(conn, t4.id, "idle");
+    CHECK(s4.state == "idle");
+    CHECK(s4.last_line.size() >= decision.size() &&
+          s4.last_line.compare(s4.last_line.size() - decision.size(),
+                               decision.size(), decision) == 0);
+    CHECK(task_send(conn, t4.id, "yes, ship it") == true);
+    auto s5 = wait_state(conn, t4.id, "idle");
+    CHECK(s5.turns == 2);
+    CHECK(s5.last_line.find("DECISION_NEEDED") == std::string::npos);
+
     // ---- auto-continue across the per-invocation max-turns cap ----
     // A MAXTURNS-marked prompt makes fake-claude emit subtype error_max_turns
     // on its first invocation. The supervisor must auto-resume ("Continue...")

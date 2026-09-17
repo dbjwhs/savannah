@@ -21,6 +21,15 @@ follows the live turn, exits; every rerun is a fresh full replay), and the
 screen only swaps to a new run's buffer once it has caught up with the last
 completed one, so redraws do not flicker.
 
+The dash is also the inbox for the session-handoff pattern
+(`docs/handoff.md`). A worker that ends its turn with a final
+`DECISION_NEEDED {"question":...,"options":[...]}` line shows up highlighted
+on the board with the parsed question in the LAST LINE column, the header
+counts decisions waiting, and the full-screen view adds a banner with the
+question and options above the prompt line. Type the answer and press Enter;
+the answer is an ordinary `task send`, the worker resumes, and the flag
+clears itself when the next turn's output replaces the marker.
+
 ## Build and run
 
 ```bash

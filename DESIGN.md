@@ -239,3 +239,25 @@ late on purpose.
   `watch --json` event source) can replace the loop under the same
   rendering. First Go tests landed in dash/ with it (wrap/trim/switch
   helpers plus the tail run state machine driven by synthetic messages).
+- **9/17/2026 (session handoff, design B)** — Reviewed the "Session Handoff
+  via Savannah" brief (CI job needs a human decision on another machine).
+  Decision: design B, decision delegation, and the insight that shrank it:
+  the task engine already IS the pause/resume primitive. A worker that needs
+  a human ends its turn with a final line
+  `DECISION_NEEDED {"question":...,"options":[...],"context":...}` and goes
+  idle; a pending decision is a task whose state is idle/incomplete and
+  whose last output line carries the marker; the answer is an ordinary
+  task_send; the next turn's output clears the flag. Zero server changes,
+  no new wire surface, no session migration (design A stays shelved). Not a
+  blocking mesh call on purpose: chunk timeouts are sized to agents, not
+  hours (finding 14), and a held stream would pin single-flight. The dash
+  is the inbox (header count, highlighted rows, view banner, answer inline);
+  test_task_flight pins the contract that a marker-bearing final line
+  reaches last_line byte for byte. Full write-up: docs/handoff.md, including
+  security posture (HMAC authenticates, does not encrypt; answers execute
+  with the worker's tool permissions) and stated limitations (convention,
+  not enforcement; 1 s poll, no push yet). Field note from bring-up: macOS
+  Local Network privacy (TCC) can block third-party binaries from LAN
+  unicast with EHOSTUNREACH while platform ssh/nc/ping work; the ssh tunnel
+  plus --addr 127.0.0.1:PORT is the proven workaround and doubles as the
+  locked-down-network recipe.

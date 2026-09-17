@@ -256,6 +256,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tasks[msg.node] = msg.tasks
 		}
 		m.rebuildRows()
+		// A poll can flip the viewed task's decision banner on or off,
+		// which changes the viewport height.
+		if m.mode == modeView {
+			m.refreshViewport()
+		}
 		return m, nil
 	case sentMsg:
 		if msg.ok {
@@ -342,10 +347,15 @@ func (m model) View() string {
 	if m.pin != "" {
 		scope = m.pin
 	}
-	fmt.Fprintf(&b, "%s   %d node%s   %d task%s   %s\n\n",
+	deco := ""
+	if n := countDecisions(m.rows); n > 0 {
+		deco = "   " + warnStyle.Render(
+			fmt.Sprintf("%d decision%s waiting", n, plural(n)))
+	}
+	fmt.Fprintf(&b, "%s   %d node%s   %d task%s   %s%s\n\n",
 		headerStyle.Render("savannah-dash  "+scope),
 		len(m.nodes), plural(len(m.nodes)), len(m.rows), plural(len(m.rows)),
-		time.Now().Format("15:04:05"))
+		time.Now().Format("15:04:05"), deco)
 
 	if m.lsErr != "" {
 		b.WriteString(warnStyle.Render("  discovery: "+m.lsErr) + "\n")
@@ -368,11 +378,19 @@ func (m model) View() string {
 			pad("NODE", 14)+pad("ID", 7)+pad("STATE", 11)+pad("TURN", 4)+
 				pad("TITLE", 20)+"LAST LINE") + "\n")
 		for i, r := range m.rows {
+			last := r.t.LastLine
+			d, pending := pendingDecision(r.t)
+			if pending {
+				last = decisionCell(d)
+			}
 			line := pad(r.node, 14) + pad(r.t.ID, 7) + pad(r.t.State, 11) +
 				pad(fmt.Sprintf("%d", r.t.Turns), 4) + pad(r.t.Title, 20) +
-				trunc(r.t.LastLine, avail)
-			if i == m.cursor {
+				trunc(last, avail)
+			switch {
+			case i == m.cursor:
 				line = selectedStyle.Render(line)
+			case pending:
+				line = warnStyle.Render(line)
 			}
 			b.WriteString(line + "\n")
 		}
