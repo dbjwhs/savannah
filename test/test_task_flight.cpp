@@ -142,6 +142,14 @@ bool task_cancel(ServiceConnection& conn, const std::string& id) {
     return song::decode_bool(resp);
 }
 
+bool task_rm(ServiceConnection& conn, const std::string& id) {
+    Buffer args;
+    song::encode_string(args, id);
+    Buffer resp = conn.call(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_rm, args);
+    return song::decode_bool(resp);
+}
+
 std::size_t task_count(ServiceConnection& conn) {
     Buffer args;
     Buffer resp = conn.call(sw::kService_AgentNode,
@@ -279,6 +287,19 @@ int main() {
     // The auto-continue's second invocation is delimited in the transcript so
     // the tail does not run the turns together (readability).
     CHECK(task_output(conn, t3.id).find("----- turn 2 -----") != std::string::npos);
+
+    // ---- task_rm forgets finished tasks; the table shrinks ----
+    // t1 is cancelled, t4 (handoff) is idle: both removable. A removed id is
+    // truly gone (status empty, second rm false); unknown ids refuse.
+    std::size_t before = task_count(conn);
+    CHECK(task_rm(conn, t1.id) == true);
+    CHECK(task_status(conn, t1.id).id.empty());
+    CHECK(task_rm(conn, t1.id) == false);
+    CHECK(task_rm(conn, "t-9999") == false);
+    CHECK(task_rm(conn, t4.id) == true);
+    CHECK(task_count(conn) == before - 2);
+    // A tail of a removed task reports the error result, same as unknown.
+    CHECK(task_output(conn, t1.id).find("hello") == std::string::npos);
 
     if (g_failures == 0) std::printf("test_task_flight: all passed\n");
     return g_failures == 0 ? 0 : 1;

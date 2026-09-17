@@ -55,6 +55,7 @@ int usage() {
         "       savannah task send   <node> <id> \"prompt\"\n"
         "       savannah task tail   <node> <id>\n"
         "       savannah task cancel <node> <id>\n"
+        "       savannah task rm     <node> <id>\n"
         "               [--config PATH] [--timeout-ms N]\n"
         "               [--addr HOST:PORT] [--key FILE]\n"
         "\"local\" spawns ./savannahd over pipes; any other node is resolved\n"
@@ -83,7 +84,7 @@ struct Cli {
 
 bool task_sub_valid(const std::string& s) {
     return s == "new" || s == "ls" || s == "status" || s == "send" ||
-           s == "tail" || s == "cancel";
+           s == "tail" || s == "cancel" || s == "rm";
 }
 
 bool parse_cli(int argc, char** argv, Cli& c) {
@@ -99,7 +100,8 @@ bool parse_cli(int argc, char** argv, Cli& c) {
         // subcommands that operate on an existing task take a positional id
         // (and `send` also a positional prompt).
         bool needs_id = (c.task_sub == "status" || c.task_sub == "send" ||
-                         c.task_sub == "tail" || c.task_sub == "cancel");
+                         c.task_sub == "tail" || c.task_sub == "cancel" ||
+                         c.task_sub == "rm");
         if (needs_id) {
             if (i >= argc) return false;
             c.task_id = argv[i++];
@@ -381,6 +383,12 @@ int run_task(ServiceConnection& conn, const Cli& cli) {
     if (sub == "cancel") {
         bool ok = proxy.task_cancel(cli.task_id);
         std::cerr << (ok ? "cancelled\n" : "no such task\n");
+        return ok ? 0 : 1;
+    }
+    if (sub == "rm") {
+        bool ok = proxy.task_rm(cli.task_id);
+        std::cerr << (ok ? "removed\n"
+                         : "no such task (a running task needs cancel first)\n");
         return ok ? 0 : 1;
     }
     // tail: replay the transcript, then follow the live turn to its RESULT.

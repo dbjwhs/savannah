@@ -55,7 +55,7 @@ struct TaskSpec {
 struct TaskInfo {
     string id;         // supervisor-assigned task id
     string title;
-    string state;      // idle | running | done | failed | cancelled
+    string state;      // idle | running | incomplete | failed | cancelled
     string worktree;   // cwd the worker runs in (worktree or workdir)
     string session_id; // claude session uuid (stable across turns)
     u32    turns;      // turns driven so far
@@ -98,4 +98,7 @@ service AgentNode {
 
     /// Cancel a task: kill any running turn, prune its worktree; true if it existed
     task_cancel(string id) -> bool;
+
+    /// Forget a finished task (idle/incomplete/failed/cancelled), pruning any worktree; false if unknown or still running
+    task_rm(string id) -> bool;
 }

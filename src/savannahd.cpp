@@ -231,6 +231,10 @@ public:
     bool task_cancel(const std::string& id) override {
         return g_tasks->cancel(id);
     }
+
+    bool task_rm(const std::string& id) override {
+        return g_tasks->remove(id);
+    }
 };
 
 }  // namespace
@@ -299,6 +303,8 @@ int main(int argc, char** argv) {
                             sw::kMethod_AgentNode_task_status);
     runtime.register_method(sw::kService_AgentNode,
                             sw::kMethod_AgentNode_task_cancel);
+    runtime.register_method(sw::kService_AgentNode,
+                            sw::kMethod_AgentNode_task_rm);
     runtime.register_method(sw::kService_AgentNode_Stream,
                             sw::kMethod_AgentNode_task_output,
                             song::wire::MethodFlags::streaming);

@@ -55,6 +55,8 @@ Board:
 - **Enter** sends it to the highlighted worker (`task send`), clears the field
 - **Enter with an empty field / Tab** opens the full-screen view of the
   highlighted worker
+- **Ctrl-X** removes the highlighted worker if it is finished (`task rm`);
+  a running worker is refused (cancel it first)
 - **Ctrl-C / Esc** quit
 
 Full-screen view:

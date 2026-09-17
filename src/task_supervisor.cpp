@@ -196,7 +196,7 @@ TaskView TaskSupervisor::create(const TaskCreate& spec) {
                   static_cast<unsigned long long>(next_++));
     std::string id = idbuf;
 
-    auto task = std::make_unique<Task>();
+    auto task = std::make_shared<Task>();
     Task* t = task.get();
     t->id = id;
     t->title = spec.title.empty() ? id : spec.title;
@@ -267,11 +267,13 @@ bool TaskSupervisor::send(const std::string& id, const std::string& prompt) {
 
 void TaskSupervisor::tail(const std::string& id,
                           const std::function<void(const Chunk&)>& emit) {
-    Task* t = nullptr;
+    // Hold a reference for the whole tail: remove() may drop the table entry
+    // mid-replay, and this shared_ptr keeps the Task alive until we return.
+    std::shared_ptr<Task> t;
     {
         std::lock_guard<std::mutex> lock(mu_);
         auto it = tasks_.find(id);
-        if (it != tasks_.end()) t = it->second.get();
+        if (it != tasks_.end()) t = it->second;
     }
     if (!t) {
         emit({ChunkKind::Result,
@@ -308,7 +310,31 @@ bool TaskSupervisor::cancel(const std::string& id) {
     if (!t->branch.empty()) {
         run_git({"-C", t->workdir, "worktree", "remove", "--force", t->worktree});
         run_git({"-C", t->workdir, "branch", "-D", t->branch});
+        t->branch.clear();  // pruned once; remove() must not prune again
     }
+    return true;
+}
+
+bool TaskSupervisor::remove(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = tasks_.find(id);
+    if (it == tasks_.end()) return false;
+    std::shared_ptr<Task> t = it->second;
+    {
+        std::lock_guard<std::mutex> tlock(t->m);
+        if (t->state == "running") return false;  // cancel first
+    }
+    // Not running, and mu_ is held so no send() can start a new turn: the
+    // worker thread (if any) is at or past its final state store. Join it
+    // before the table drops its reference.
+    if (t->worker.joinable()) t->worker.join();
+    if (!t->branch.empty()) {
+        run_git({"-C", t->workdir, "worktree", "remove", "--force", t->worktree});
+        run_git({"-C", t->workdir, "branch", "-D", t->branch});
+        t->branch.clear();
+    }
+    // A concurrent tail keeps its own shared_ptr; the table just forgets.
+    tasks_.erase(it);
     return true;
 }
 

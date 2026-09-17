@@ -84,6 +84,13 @@ def main():
                 return 1
             print("cancelled", file=sys.stderr)
             return 0
+        if sub == "rm":
+            if tid == "t-404":
+                print("no such task (a running task needs cancel first)",
+                      file=sys.stderr)
+                return 1
+            print("removed", file=sys.stderr)
+            return 0
         return 2
 
     return 2

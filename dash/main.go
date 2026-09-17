@@ -66,6 +66,10 @@ type sentMsg struct {
 	node, id string
 	ok       bool
 }
+type rmMsg struct {
+	node, id string
+	ok       bool
+}
 type fetchTick time.Time
 type discoverTick time.Time
 
@@ -173,6 +177,17 @@ func (m model) sendCmd(node, id, text string) tea.Cmd {
 	}
 }
 
+// rmCmd forgets a finished worker (`task rm`); the server refuses a running
+// one, so a mistimed Ctrl-X is safe.
+func (m model) rmCmd(node, id string) tea.Cmd {
+	bin := m.bin
+	args := m.taskArgs("rm", node, id)
+	return func() tea.Msg {
+		err := exec.Command(bin, args...).Run()
+		return rmMsg{node: node, id: id, ok: err == nil}
+	}
+}
+
 func fetchTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return fetchTick(t) })
 }
@@ -269,6 +284,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = warnStyle.Render("not sent to " + msg.node + "/" + msg.id + " (busy or gone)")
 		}
 		return m, nil
+	case rmMsg:
+		if msg.ok {
+			m.status = okStyle.Render("removed " + msg.node + "/" + msg.id)
+			// Drop the row now instead of waiting out the poll tick.
+			return m, m.fetchCmd(msg.node)
+		}
+		m.status = warnStyle.Render("not removed " + msg.node + "/" + msg.id +
+			" (running? cancel first)")
+		return m, nil
 	case tea.KeyMsg:
 		if m.mode == modeView {
 			return m.updateViewKeys(msg)
@@ -290,6 +314,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor >= 0 && m.cursor < len(m.rows) {
 				r := m.rows[m.cursor]
 				return m, m.enterView(r.node, r.t.ID)
+			}
+			return m, nil
+		case tea.KeyCtrlX:
+			if m.cursor >= 0 && m.cursor < len(m.rows) {
+				r := m.rows[m.cursor]
+				if r.t.State == "running" {
+					m.status = warnStyle.Render(r.node + "/" + r.t.ID +
+						" is running (cancel first)")
+					return m, nil
+				}
+				m.status = "removing " + r.node + "/" + r.t.ID + "..."
+				return m, m.rmCmd(r.node, r.t.ID)
 			}
 			return m, nil
 		case tea.KeyEnter:
@@ -403,7 +439,7 @@ func (m model) View() string {
 	}
 	b.WriteString("\nsend to " + headerStyle.Render(sel) + ":  " + m.input.View() + "\n\n")
 	help := helpStyle.Render(
-		"up/down select   prompt + Enter send   empty Enter/Tab view   Ctrl-C quit")
+		"up/down select   prompt + Enter send   empty Enter/Tab view   Ctrl-X rm   Ctrl-C quit")
 	if m.status != "" {
 		help += "   " + m.status
 	}

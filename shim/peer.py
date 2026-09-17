@@ -13,6 +13,7 @@
 #   task_send(name, id, prompt)     -> drive one more turn
 #   task_output(name, id)           -> tail a worker (replay + follow)
 #   task_cancel(name, id)           -> kill a worker, prune its worktree
+#   task_rm(name, id)               -> forget a finished worker (cancel first if running)
 #
 # ask_peer is one-shot; the task_* tools drive persistent, resumable worker
 # sessions on a peer node (Phase 5a), so a master session can orchestrate many.
@@ -255,6 +256,28 @@ TOOLS = [
             "required": ["name", "id"],
         },
     },
+    {
+        "name": "task_rm",
+        "description": (
+            "Remove a finished task (idle, incomplete, failed, or cancelled) "
+            "from the node's table, pruning any worktree. A running task "
+            "must be cancelled first. Returns whether it was removed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Peer node name as shown by list_peers",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Task id from task_new or task_list",
+                },
+            },
+            "required": ["name", "id"],
+        },
+    },
 ]
 
 
@@ -410,6 +433,14 @@ def tool_task_cancel(args):
     return [text_block(msg or "")], proc.returncode != 0
 
 
+def tool_task_rm(args):
+    proc = run_cli(
+        ["task", "rm", args["name"], args["id"]] + key_args(),
+        timeout_s=30)
+    msg = proc.stdout.strip() or proc.stderr.strip()
+    return [text_block(msg or "")], proc.returncode != 0
+
+
 HANDLERS = {
     "list_peers": tool_list_peers,
     "ask_peer": tool_ask_peer,
@@ -420,6 +451,7 @@ HANDLERS = {
     "task_send": tool_task_send,
     "task_output": tool_task_output,
     "task_cancel": tool_task_cancel,
+    "task_rm": tool_task_rm,
 }
 
 

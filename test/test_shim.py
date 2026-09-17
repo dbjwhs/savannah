@@ -73,8 +73,8 @@ def main():
     r = shim.request("tools/list")
     names = sorted(t["name"] for t in r["result"]["tools"])
     check(names == ["ask_peer", "list_peers", "peer_status", "task_cancel",
-                    "task_list", "task_new", "task_output", "task_send",
-                    "task_status"], "tool names")
+                    "task_list", "task_new", "task_output", "task_rm",
+                    "task_send", "task_status"], "tool names")
     for t in r["result"]["tools"]:
         check("inputSchema" in t and "description" in t,
               f"schema for {t['name']}")
@@ -150,6 +150,12 @@ def main():
     check("cancelled" in r["result"]["content"][0]["text"], "task_cancel ok")
     r = shim.call_tool("task_cancel", {"name": "dbj-devone", "id": "t-404"})
     check(r["result"]["isError"] is True, "task_cancel missing is error")
+
+    # ---- task_rm: ok, and error for a missing/running task ----
+    r = shim.call_tool("task_rm", {"name": "dbj-devone", "id": "t-0001"})
+    check("removed" in r["result"]["content"][0]["text"], "task_rm ok")
+    r = shim.call_tool("task_rm", {"name": "dbj-devone", "id": "t-404"})
+    check(r["result"]["isError"] is True, "task_rm missing is error")
 
     # ---- protocol errors ----
     r = shim.call_tool("no_such_tool", {})

@@ -261,3 +261,17 @@ late on purpose.
   unicast with EHOSTUNREACH while platform ssh/nc/ping work; the ssh tunnel
   plus --addr 127.0.0.1:PORT is the proven workaround and doubles as the
   locked-down-network recipe.
+- **9/17/2026 (task_rm)** — Field gap found minutes after the handoff
+  landed: a cancelled or failed task sat on every board forever (the auth
+  expiry relic on dbj-devone), and the table had no remove operation at
+  all. Added `task_rm(id) -> bool` through the whole stack: IDL method,
+  supervisor `remove()` (refuses running tasks, joins the worker, prunes
+  any worktree, erases), CLI `task rm`, shim `task_rm` tool, dash Ctrl-X
+  on the board (a printable key would collide with the prompt input). The
+  table switched from unique_ptr to shared_ptr on purpose: tail() streams
+  a replay for seconds without holding the supervisor lock, so remove()
+  drops the table entry while a live tail keeps the Task alive through
+  its own reference. cancel() now clears the branch after pruning so a
+  later rm does not prune twice. rm of an idle worktree task discards
+  that worktree, same contract as cancel: harvest results before
+  forgetting a worker.

@@ -82,7 +82,13 @@ public:
     void tail(const std::string& id, const std::function<void(const Chunk&)>& emit);
 
     /// Kill any running turn, prune the worktree. True if the task existed.
+    /// The task stays in the table (state "cancelled") until remove().
     bool cancel(const std::string& id);
+
+    /// Forget a finished task (idle/incomplete/failed/cancelled): join its
+    /// worker, prune any worktree, drop it from the table. False if the id
+    /// is unknown or the task is still running (cancel first).
+    bool remove(const std::string& id);
 
 private:
     struct Task {
@@ -110,7 +116,10 @@ private:
 
     const NodeConfig& config_;
     std::mutex mu_;                                    // guards tasks_ + next_
-    std::map<std::string, std::unique_ptr<Task>> tasks_;
+    // shared_ptr, not unique_ptr: tail() streams a replay for seconds without
+    // holding mu_, so remove() must be able to drop the table entry while a
+    // tail keeps the Task alive through its own reference.
+    std::map<std::string, std::shared_ptr<Task>> tasks_;
     std::uint64_t next_ = 1;
 };
 
