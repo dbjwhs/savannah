@@ -225,3 +225,17 @@ late on purpose.
   login needed). Ephemeral ports on every start are fine on purpose: mDNS
   re-advertises, nothing pins. Unit recorded in README. macOS analog
   (launchd) not written yet.
+- **8/25/2026 (dash view mode)** — The dash grew the tmux-like piece: a
+  full-screen live view per worker (empty Enter/Tab on a board row), with
+  Left/Right flipping between workers across the whole mesh and the prompt
+  line still live at the bottom. Decision: it rides the CLI's `task tail`
+  seam in a respawn loop rather than holding a connection open. tail
+  replays then follows one turn and exits, so every rerun is a fresh full
+  replay; the screen swaps to a new run's buffer only once it has caught
+  up with the last completed one (the transcript is append-only, so the
+  newer replay is a prefix-superset), which makes the loop self-healing
+  after disconnects and flicker-free by construction. The dash stays a
+  thin client with zero wire knowledge; push (song property fan-out or a
+  `watch --json` event source) can replace the loop under the same
+  rendering. First Go tests landed in dash/ with it (wrap/trim/switch
+  helpers plus the tail run state machine driven by synthetic messages).

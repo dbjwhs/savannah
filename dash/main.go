@@ -10,11 +10,16 @@
 // optional --addr for a node not on mDNS).
 //
 // Keys: up/down select a row, type a prompt, Enter sends it to the selected
-// worker, Ctrl-C or Esc quits.
+// worker. Enter with an empty prompt (or Tab) opens a tmux-like full-screen
+// live view of the selected worker (see view.go); there, Left/Right flips
+// between workers, Up/Down scrolls, Esc returns to the board. Ctrl-C (or
+// Esc on the board) quits.
 //
 // Usage:
-//   savannah-dash [--key FILE]                 # mesh mode: discover all nodes
-//   savannah-dash <node> [--addr H:P] [--key FILE]  # pin one node
+//
+//	savannah-dash [--key FILE]                 # mesh mode: discover all nodes
+//	savannah-dash <node> [--addr H:P] [--key FILE]  # pin one node
+//
 // The savannah binary is found via $SAVANNAH_BIN (default "savannah" on PATH).
 package main
 
@@ -28,6 +33,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -79,6 +85,18 @@ type model struct {
 	input  textinput.Model
 	status string
 	width  int
+	height int
+
+	// Full-screen worker view (view.go).
+	mode     int // modeBoard | modeView
+	viewNode string
+	viewID   string
+	vp       viewport.Model
+	follow   bool // stick to the bottom as output arrives
+	tailSeq  int  // orphans in-flight tail messages on retarget/leave
+	tailProc *exec.Cmd
+	tailBuf  []byte // the current tail run
+	lastBuf  []byte // the last completed run (flicker-free fallback)
 }
 
 var (
@@ -117,15 +135,22 @@ func (m model) discoverCmd() tea.Cmd {
 	}
 }
 
-func (m model) fetchCmd(node string) tea.Cmd {
-	bin := m.bin
-	args := []string{"task", "ls", node, "--json"}
+// taskArgs builds `task <sub> <node> ...` argv with the shared --addr/--key
+// flags (used by the board's ls/send and the view's tail).
+func (m model) taskArgs(sub, node string, rest ...string) []string {
+	args := append([]string{"task", sub, node}, rest...)
 	if m.pin != "" && m.addr != "" {
 		args = append(args, "--addr", m.addr)
 	}
 	if m.key != "" {
 		args = append(args, "--key", m.key)
 	}
+	return args
+}
+
+func (m model) fetchCmd(node string) tea.Cmd {
+	bin := m.bin
+	args := m.taskArgs("ls", node, "--json")
 	return func() tea.Msg {
 		out, err := exec.Command(bin, args...).Output()
 		if err != nil {
@@ -141,13 +166,7 @@ func (m model) fetchCmd(node string) tea.Cmd {
 
 func (m model) sendCmd(node, id, text string) tea.Cmd {
 	bin := m.bin
-	args := []string{"task", "send", node, id, text}
-	if m.pin != "" && m.addr != "" {
-		args = append(args, "--addr", m.addr)
-	}
-	if m.key != "" {
-		args = append(args, "--key", m.key)
-	}
+	args := m.taskArgs("send", node, id, text)
 	return func() tea.Msg {
 		err := exec.Command(bin, args...).Run()
 		return sentMsg{node: node, id: id, ok: err == nil}
@@ -197,8 +216,14 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tailStartedMsg, tailDataMsg, tailExitMsg, tailRespawnMsg:
+		return m.updateTail(msg)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		if m.mode == modeView {
+			m.refreshViewport()
+		}
 	case discoverTick:
 		return m, tea.Batch(m.discoverCmd(), discoverTickCmd())
 	case fetchTick:
@@ -240,6 +265,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.mode == modeView {
+			return m.updateViewKeys(msg)
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
@@ -253,15 +281,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 			return m, nil
-		case tea.KeyEnter:
-			text := strings.TrimSpace(m.input.Value())
-			if text != "" && m.cursor >= 0 && m.cursor < len(m.rows) {
+		case tea.KeyTab:
+			if m.cursor >= 0 && m.cursor < len(m.rows) {
 				r := m.rows[m.cursor]
-				m.input.SetValue("")
-				m.status = "sending to " + r.node + "/" + r.t.ID + "..."
-				return m, m.sendCmd(r.node, r.t.ID, text)
+				return m, m.enterView(r.node, r.t.ID)
 			}
 			return m, nil
+		case tea.KeyEnter:
+			text := strings.TrimSpace(m.input.Value())
+			if m.cursor < 0 || m.cursor >= len(m.rows) {
+				return m, nil
+			}
+			r := m.rows[m.cursor]
+			if text == "" {
+				// Empty prompt: open the full-screen view instead.
+				return m, m.enterView(r.node, r.t.ID)
+			}
+			m.input.SetValue("")
+			m.status = "sending to " + r.node + "/" + r.t.ID + "..."
+			return m, m.sendCmd(r.node, r.t.ID, text)
 		}
 	}
 	var cmd tea.Cmd
@@ -295,6 +333,9 @@ func trunc(s string, w int) string {
 }
 
 func (m model) View() string {
+	if m.mode == modeView {
+		return m.viewView()
+	}
 	var b strings.Builder
 
 	scope := "mesh"
@@ -343,7 +384,8 @@ func (m model) View() string {
 		sel = r.node + "/" + r.t.ID
 	}
 	b.WriteString("\nsend to " + headerStyle.Render(sel) + ":  " + m.input.View() + "\n\n")
-	help := helpStyle.Render("up/down select   type a prompt + Enter to send   Ctrl-C quit")
+	help := helpStyle.Render(
+		"up/down select   prompt + Enter send   empty Enter/Tab view   Ctrl-C quit")
 	if m.status != "" {
 		help += "   " + m.status
 	}

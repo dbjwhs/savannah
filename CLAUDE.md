@@ -1,5 +1,8 @@
 # CLAUDE.md — savannah
 
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
+
 Claude-to-Claude agent mesh on the [song](https://github.com/dbjwhs/song) substrate.
 Read `idl/agent.song` first; it is the contract everything else serves.
 
@@ -15,7 +18,9 @@ The model decides when to delegate. No forking Claude Code.
 
 Design doc of record: `DESIGN.md` in this repo (architecture, rationale,
 roadmap, append-only decision log). One-liners:
-- **v1 is stateless.** Every `ask` = fresh agent invocation. Sessions are v2.
+- **`ask` is stateless.** Every `ask` = fresh agent invocation. Persistent,
+  resumable sessions exist too, but only as Phase 5a tasks (`task_*`), never
+  through `ask`.
 - **Single-flight per node in v1.** `NodeBusy` otherwise.
 - **song's value here is plumbing, not speed.** Discovery, supervision, typed
   contracts, streaming, security. LLM latency dwarfs wire latency.
@@ -58,11 +63,12 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `src/json.{hpp,cpp}` | Hand-written minimal JSON parser (stream-json needs). |
 | `src/stream_json.{hpp,cpp}` | claude stream-json events → `AgentChunk` mapping. |
 | `src/agent_process.{hpp,cpp}` | Spawn/supervise the headless agent, line pump, timeout, kill. |
+| `src/task_supervisor.{hpp,cpp}` | Phase 5a task engine: persistent, resumable worker sessions (`claude --resume` per turn), each bound to a workdir or git worktree. Authoritative task table lives here (NOT in song objects; finding 19). Per-worker single-flight on a background thread; auto-continues on `error_max_turns` up to a budget (state `incomplete`, not `failed`, when the budget runs out). |
 | `src/savannahd.cpp` | The node daemon: song runtime, dispatchers, single-flight. |
 | `cli/savannah_main.cpp` | Human remote control: `savannah ls`, `savannah <ask\|info\|status> <node>`, and `savannah task <new\|ls\|status\|send\|tail\|cancel> <node>` (local pipes, or mesh via mDNS/--addr with --key). Task state needs a persistent daemon, so `task` targets a TCP/mesh node, not pipe-spawned `local`. |
 | `tools/fake_claude.cpp` | Fake agent speaking genuine stream-json. Scenario-driven. |
 | `shim/peer.py` | MCP stdio server (stdlib-only) wrapping the CLI: list_peers/ask_peer/peer_status + task_new/list/status/send/output/cancel. |
-| `dash/` | `savannah-dash`: interactive Go/Bubble Tea dashboard. Thin client over the CLI's `task ls --json` seam (poll+render) and `task send` (arrow-select a task, type, Enter sends). Separate Go module, not built by CMake. |
+| `dash/` | `savannah-dash`: interactive Go/Bubble Tea dashboard. Thin client over the CLI's `task ls --json` seam (poll+render) and `task send` (arrow-select a task, type, Enter sends). Mesh mode discovers every node dynamically via `savannah ls` and shows the whole fleet on one board; `--addr` pins one node. Empty Enter/Tab on a row opens a tmux-like full-screen live view of that worker (rides `task tail` in a self-healing respawn loop; Left/Right switches workers, Esc back). Separate Go module (`cd dash && go build`, `go test ./...`), not built by CMake. |
 | `tools/fake_savannah.py` | Fake savannah CLI for shim tests (canned ls/ask/status). |
 | `test/` | Unit tests per component + end-to-end echo integration. |
 
@@ -81,29 +87,29 @@ Port 0 = OS picks; prints `SAVANNAHD_TCP_PORT=N` on stdout. With
 `mesh.hmac_key_file` every client is HMAC-wrapped via
 `runtime.set_transport_wrapper` (finding 11, fixed). `--mdns` additionally
 advertises as `_agent-song._tcp` and binds all interfaces, so it hard-requires
-the key. `test_tcp_flight` and `test_secure` run in CI; `test_mdns` is opt-in
-via `SAVANNAH_MDNS=1` (advertises on the real network).
+the key. `test_tcp_flight`, `test_secure`, and `test_task_flight` run in CI
+(`test_task_flight` self-skips, exit 77, if git is unavailable, since it
+exercises worktree isolation); `test_mdns` is opt-in via `SAVANNAH_MDNS=1`
+(advertises on the real network).
 
 ## Key patterns (learned from song itself)
 
-- **Streaming is currently hand-wired, backup.song-style** (but no longer has
-  to be). Client side: `conn.call_streaming(kService_AgentNode_Stream,
-  kMethod_AgentNode_ask, args, on_chunk, timeout)`; decode each Buffer chunk with
-  generated `decode_AgentChunk`. Service side:
-  `runtime.register_stream_dispatcher` + `encode_AgentChunk` into
-  `StreamWriter::write`. **song wishlist #1 is now done** (song main 316ccf4,
-  finding 6): codegen honors `is_stream` and emits exactly this shape from the
-  IDL -- a `call_streaming` proxy, a `StreamWriter&` interface, and a
-  `dispatch_<Name>_stream` on `kService_<Name>_Stream`. savannah can delete its
-  hand-wired streaming (and `wire_ids.hpp`'s `kService_AgentNode_Stream`) and
-  adopt the generated form; not yet done.
+- **Streaming is generated from the IDL** (hand-wiring deleted, commit
+  08e3d95). songc honors `stream` methods (song main 316ccf4, finding 6,
+  wishlist #1 done) and emits a client `call_streaming` proxy, a
+  `StreamWriter&` service interface, and `dispatch_AgentNode_stream` on the
+  generated `kService_AgentNode_Stream`. savannahd registers the generated
+  dispatchers; the CLI uses the incremental `call_streaming` overload
+  (per-chunk handler, finding 15). `src/wire_ids.hpp` now holds only the mDNS
+  service type name.
 - **Properties are class-level in songc**, not service-level. `status()` is a
   polled method in v1. v2: promote the agent to a song class with a `status`
   property to get push via subscription fan-out. **song wishlist #2.**
 - **Streaming methods need their own service id.** runtime.cpp checks stream
-  dispatchers first and they shadow the unary dispatcher for that id, so ask()
-  lives on `savannah_wire::kService_AgentNode_Stream = 2` (src/wire_ids.hpp),
-  exactly like backup.song's split. songc cannot express this. **wishlist #3.**
+  dispatchers first and they shadow the unary dispatcher for that id, so
+  streaming methods (`ask`, `task_output`) live on the generated
+  `kService_AgentNode_Stream`, exactly like backup.song's split. songc now
+  emits the split itself (wishlist #3 resolved by finding 6's codegen).
 - Register every method with `runtime.register_method(...)` for capability
   exchange; streaming methods get `wire::MethodFlags::streaming` and
   `runtime.set_capability(wire::Capability::streaming)`.
@@ -132,8 +138,8 @@ Found while building against song @ HEAD on Linux GCC 13:
    streaming was hand-wired via `call_streaming` + generated method ids. Fixed
    upstream 8/12/2026 (song main 316ccf4): codegen emits streaming proxies -- a
    client `call_streaming` proxy on `kService_<Name>_Stream`, a `StreamWriter&`
-   service interface, and a `dispatch_<Name>_stream`. savannah can adopt the
-   generated form and drop its hand-wiring (not yet done). Closes song
+   service interface, and a `dispatch_<Name>_stream`. savannah adopted the
+   generated form and deleted its hand-wiring (commit 08e3d95). Closes song
    wishlist #1.
 7. Streaming dispatchers shadow unary dispatchers per service id (see above).
 8. `encode_string` throws over `kMaxStringSize` (1 MB, buffer.hpp). savannahd
@@ -248,8 +254,8 @@ without one means the agent died: savannahd synthesizes
 
 ## Phases (tests define done)
 
-1. **Solo node** (this tree): CLI → savannahd → fake-claude over local pipes. ✅ when e2e echo test passes.
-2. **Streaming hardening**: pathological fake scenarios (giant chunks, mid-UTF8 splits, hang, die-early) all handled.
-3. **Two machines**: mDNS + HMAC, `savannah ls` shows both. Runs on real LAN only (not in CI).
-4. **MCP shim**: `ask_peer` from stock Claude Code. The payoff demo.
-5. **Patterns**: reviewer pair, tag fan-out, maybe datacopy file transfer.
+1. **Solo node**: CLI → savannahd → fake-claude over local pipes. ✅
+2. **Streaming hardening**: pathological fake scenarios (giant chunks, mid-UTF8 splits, hang, die-early) all handled. ✅
+3. **Two machines**: mDNS + HMAC, `savannah ls` shows both. Runs on real LAN only (not in CI). ✅
+4. **MCP shim**: `ask_peer` from stock Claude Code. The payoff demo. ✅
+5. **Patterns**: 5a Task Mesh (persistent workers: task engine + `task_*` CLI/shim tools + dash) landed; next: reviewer pair, tag fan-out, maybe datacopy file transfer. Live-status push via song classes/properties is the planned upgrade over today's polling.
