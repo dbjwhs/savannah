@@ -9,11 +9,17 @@
 // highlighted worker. Give a node name to pin a single node instead (with
 // optional --addr for a node not on mDNS).
 //
-// Keys: up/down select a row, type a prompt, Enter sends it to the selected
-// worker. Enter with an empty prompt (or Tab) opens a tmux-like full-screen
-// live view of the selected worker (see view.go); there, Left/Right flips
-// between workers, Up/Down scrolls, Esc returns to the board. Ctrl-C (or
-// Esc on the board) quits.
+// The board has two kinds of row: local Claude Code SESSIONS (your open tabs,
+// reported by hooks/session-status.py, see sessions.go) and mesh WORKERS
+// (savannah tasks). One cursor moves over both; the header counts everything
+// that needs you (sessions waiting + pending mesh decisions) in one number.
+//
+// Keys: up/down select. On a SESSION row, Enter/Tab jumps to that terminal
+// tab and Ctrl-X dismisses a stale entry. On a WORKER row, a typed prompt +
+// Enter sends it, an empty Enter or Tab opens the tmux-like full-screen live
+// view (see view.go; Left/Right flips workers, Up/Down scrolls, Esc back),
+// and Ctrl-X removes a finished worker. Ctrl-C (or Esc on the board) quits.
+// `--no-mesh` shows sessions only, needing no savannahd at all.
 //
 // Usage:
 //
@@ -47,10 +53,19 @@ type task struct {
 	Worktree string `json:"worktree"`
 }
 
-// One display line: a task and the node it lives on.
+// Board rows are either a mesh worker (a task on a node) or a local Claude
+// Code session (an open tab, via the hook). One cursor moves over both;
+// actions dispatch on kind.
+const (
+	rowTask = iota
+	rowSession
+)
+
 type row struct {
-	node string
-	t    task
+	kind int
+	node string  // mesh task: node name
+	t    task    // valid when kind == rowTask
+	s    session // valid when kind == rowSession
 }
 
 type nodesMsg struct {
@@ -79,10 +94,14 @@ type model struct {
 	pin  string // non-empty: single-node mode, skip discovery
 	addr string // single-node --addr (a node off mDNS)
 
-	nodes []string          // discovered node names, sorted
-	tasks map[string][]task // node -> its tasks
-	errs  map[string]string // node -> last fetch error
-	lsErr string            // last discovery error
+	noMesh bool // --no-mesh: skip discovery/fetch, sessions-only (work box)
+
+	nodes    []string          // discovered node names, sorted
+	tasks    map[string][]task // node -> its tasks
+	errs     map[string]string // node -> last fetch error
+	lsErr    string            // last discovery error
+	sessions []session         // local Claude Code sessions (the hook)
+	sessErr  string            // last session-read error
 
 	rows   []row
 	cursor int
@@ -206,9 +225,13 @@ func (m model) fetchAll() tea.Cmd {
 
 func (m *model) rebuildRows() {
 	var rows []row
+	// Local sessions first (the tab-hell focus), then mesh workers.
+	for _, s := range m.sessions {
+		rows = append(rows, row{kind: rowSession, s: s})
+	}
 	for _, n := range m.nodes {
 		for _, t := range m.tasks[n] {
-			rows = append(rows, row{node: n, t: t})
+			rows = append(rows, row{kind: rowTask, node: n, t: t})
 		}
 	}
 	m.rows = rows
@@ -220,12 +243,34 @@ func (m *model) rebuildRows() {
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, fetchTickCmd()}
-	if m.pin == "" {
-		cmds = append(cmds, m.discoverCmd(), discoverTickCmd())
+// currentRow returns the highlighted row, ok=false if there is none.
+func (m model) currentRow() (row, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.rows) {
+		return row{}, false
 	}
-	cmds = append(cmds, m.fetchAll())
+	return m.rows[m.cursor], true
+}
+
+// sectionCounts counts each kind for the section headers.
+func (m model) sectionCounts() (sessions, tasks int) {
+	for _, r := range m.rows {
+		if r.kind == rowSession {
+			sessions++
+		} else {
+			tasks++
+		}
+	}
+	return
+}
+
+func (m model) Init() tea.Cmd {
+	cmds := []tea.Cmd{textinput.Blink, fetchTickCmd(), readSessionsCmd()}
+	if !m.noMesh {
+		if m.pin == "" {
+			cmds = append(cmds, m.discoverCmd(), discoverTickCmd())
+		}
+		cmds = append(cmds, m.fetchAll())
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -242,7 +287,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case discoverTick:
 		return m, tea.Batch(m.discoverCmd(), discoverTickCmd())
 	case fetchTick:
-		return m, tea.Batch(m.fetchAll(), fetchTickCmd())
+		// Sessions refresh every tick regardless of mesh; workers only when meshed.
+		cmds := []tea.Cmd{readSessionsCmd(), fetchTickCmd()}
+		if !m.noMesh {
+			cmds = append(cmds, m.fetchAll())
+		}
+		return m, tea.Batch(cmds...)
+	case sessionsMsg:
+		if msg.err != "" {
+			m.sessErr = msg.err
+		} else {
+			m.sessErr = ""
+			m.sessions = msg.sessions
+		}
+		m.rebuildRows()
+		return m, nil
+	case jumpMsg:
+		if msg.ok {
+			m.status = okStyle.Render("jumped to " + msg.id + " (" + msg.how + ")")
+		} else {
+			m.status = warnStyle.Render("could not jump to " + msg.id +
+				" (" + msg.how + ")")
+		}
+		return m, nil
+	case dismissMsg:
+		if msg.ok {
+			m.status = okStyle.Render("dismissed session " + msg.id)
+			return m, readSessionsCmd()
+		}
+		m.status = warnStyle.Render("could not dismiss " + msg.id)
+		return m, nil
 	case nodesMsg:
 		if msg.err != "" {
 			m.lsErr = msg.err
@@ -311,14 +385,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyTab:
-			if m.cursor >= 0 && m.cursor < len(m.rows) {
-				r := m.rows[m.cursor]
+			if r, ok := m.currentRow(); ok {
+				if r.kind == rowSession {
+					return m, jumpSessionCmd(r.s)
+				}
 				return m, m.enterView(r.node, r.t.ID)
 			}
 			return m, nil
 		case tea.KeyCtrlX:
-			if m.cursor >= 0 && m.cursor < len(m.rows) {
-				r := m.rows[m.cursor]
+			if r, ok := m.currentRow(); ok {
+				if r.kind == rowSession {
+					m.status = "dismissing session " + r.s.ID + "..."
+					return m, dismissSessionCmd(r.s)
+				}
 				if r.t.State == "running" {
 					m.status = warnStyle.Render(r.node + "/" + r.t.ID +
 						" is running (cancel first)")
@@ -330,10 +409,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
-			if m.cursor < 0 || m.cursor >= len(m.rows) {
+			r, ok := m.currentRow()
+			if !ok {
 				return m, nil
 			}
-			r := m.rows[m.cursor]
+			if r.kind == rowSession {
+				// A local session is a person's tab: jump to it, never send.
+				if text != "" {
+					m.status = warnStyle.Render(
+						"cannot send to an interactive session; jumping instead")
+				}
+				return m, jumpSessionCmd(r.s)
+			}
 			if text == "" {
 				// Empty prompt: open the full-screen view instead.
 				return m, m.enterView(r.node, r.t.ID)
@@ -378,68 +465,118 @@ func (m model) View() string {
 		return m.viewView()
 	}
 	var b strings.Builder
+	nSess, nTask := m.sectionCounts()
 
 	scope := "mesh"
-	if m.pin != "" {
+	if m.noMesh {
+		scope = "sessions"
+	} else if m.pin != "" {
 		scope = m.pin
 	}
+	// One attention number over both worlds: sessions needing you + pending
+	// mesh decisions. This is the whole point: one glance, total.
+	attention := countSessionAttention(m.sessions) + countDecisions(m.rows)
 	deco := ""
-	if n := countDecisions(m.rows); n > 0 {
-		deco = "   " + warnStyle.Render(
-			fmt.Sprintf("%d decision%s waiting", n, plural(n)))
+	if attention > 0 {
+		deco = "   " + warnStyle.Render(fmt.Sprintf("%d need you", attention))
 	}
-	fmt.Fprintf(&b, "%s   %d node%s   %d task%s   %s%s\n\n",
+	fmt.Fprintf(&b, "%s   %d session%s   %d worker%s   %s%s\n\n",
 		headerStyle.Render("savannah-dash  "+scope),
-		len(m.nodes), plural(len(m.nodes)), len(m.rows), plural(len(m.rows)),
+		nSess, plural(nSess), nTask, plural(nTask),
 		time.Now().Format("15:04:05"), deco)
 
-	if m.lsErr != "" {
-		b.WriteString(warnStyle.Render("  discovery: "+m.lsErr) + "\n")
-	}
-
-	// NODE(14) ID(7) STATE(11) TURN(4) TITLE(20) then LAST LINE.
 	avail := m.width - (14 + 2) - (7 + 2) - (11 + 2) - (4 + 2) - (20 + 2)
 	if avail < 12 {
 		avail = 12
 	}
+	now := nowUnix()
 
-	if len(m.rows) == 0 {
-		if m.pin == "" && len(m.nodes) == 0 {
-			b.WriteString("  discovering nodes on the mesh...\n")
-		} else {
-			b.WriteString("  (no tasks yet)\n")
-		}
-	} else {
+	// ---- LOCAL SESSIONS (open Claude Code tabs, via the hook) ----
+	if nSess > 0 {
+		b.WriteString(headerStyle.Render("LOCAL SESSIONS") + "\n")
 		b.WriteString(colStyle.Render(
-			pad("NODE", 14)+pad("ID", 7)+pad("STATE", 11)+pad("TURN", 4)+
-				pad("TITLE", 20)+"LAST LINE") + "\n")
+			pad("", 2)+pad("STATE", 9)+pad("PROJECT", 26)+pad("AGE", 5)+
+				"WHAT") + "\n")
 		for i, r := range m.rows {
-			last := r.t.LastLine
-			d, pending := pendingDecision(r.t)
-			if pending {
-				last = decisionCell(d)
+			if r.kind != rowSession {
+				continue
 			}
-			line := pad(r.node, 14) + pad(r.t.ID, 7) + pad(r.t.State, 11) +
-				pad(fmt.Sprintf("%d", r.t.Turns), 4) + pad(r.t.Title, 20) +
-				trunc(last, avail)
+			s := r.s
+			line := pad(stateGlyph(s.State), 2) + pad(s.State, 9) +
+				pad(projectLabel(s.Project), 26) +
+				pad(humanAge(now-s.Updated), 5) + trunc(sessionDetail(s), avail)
 			switch {
 			case i == m.cursor:
 				line = selectedStyle.Render(line)
-			case pending:
+			case sessionAttention(s):
 				line = warnStyle.Render(line)
+			case s.State == "done":
+				line = okStyle.Render(line)
+			case s.State == "idle":
+				line = helpStyle.Render(line)
 			}
 			b.WriteString(line + "\n")
 		}
+		if m.sessErr != "" {
+			b.WriteString(warnStyle.Render("  sessions: "+m.sessErr) + "\n")
+		}
+		b.WriteString("\n")
 	}
 
-	sel := "-"
-	if m.cursor >= 0 && m.cursor < len(m.rows) {
-		r := m.rows[m.cursor]
-		sel = r.node + "/" + r.t.ID
+	// ---- MESH WORKERS (savannah tasks) ----
+	if !m.noMesh {
+		b.WriteString(headerStyle.Render("MESH WORKERS") + "\n")
+		if m.lsErr != "" {
+			b.WriteString(warnStyle.Render("  discovery: "+m.lsErr) + "\n")
+		}
+		if nTask == 0 {
+			if m.pin == "" && len(m.nodes) == 0 {
+				b.WriteString(helpStyle.Render("  discovering nodes...") + "\n")
+			} else {
+				b.WriteString(helpStyle.Render("  (no workers yet)") + "\n")
+			}
+		} else {
+			b.WriteString(colStyle.Render(
+				pad("NODE", 14)+pad("ID", 7)+pad("STATE", 11)+pad("TURN", 4)+
+					pad("TITLE", 20)+"LAST LINE") + "\n")
+			for i, r := range m.rows {
+				if r.kind != rowTask {
+					continue
+				}
+				last := r.t.LastLine
+				d, pending := pendingDecision(r.t)
+				if pending {
+					last = decisionCell(d)
+				}
+				line := pad(r.node, 14) + pad(r.t.ID, 7) + pad(r.t.State, 11) +
+					pad(fmt.Sprintf("%d", r.t.Turns), 4) + pad(r.t.Title, 20) +
+					trunc(last, avail)
+				switch {
+				case i == m.cursor:
+					line = selectedStyle.Render(line)
+				case pending:
+					line = warnStyle.Render(line)
+				}
+				b.WriteString(line + "\n")
+			}
+		}
 	}
-	b.WriteString("\nsend to " + headerStyle.Render(sel) + ":  " + m.input.View() + "\n\n")
+
+	// Selection line adapts to what is highlighted.
+	r, ok := m.currentRow()
+	switch {
+	case !ok:
+		b.WriteString("\n" + helpStyle.Render("no rows") + "\n\n")
+	case r.kind == rowSession:
+		b.WriteString("\n" + headerStyle.Render(projectLabel(r.s.Project)) +
+			"   " + helpStyle.Render("Enter jumps to its tab") + "\n\n")
+	default:
+		b.WriteString("\nsend to " + headerStyle.Render(r.node+"/"+r.t.ID) +
+			":  " + m.input.View() + "\n\n")
+	}
+
 	help := helpStyle.Render(
-		"up/down select   prompt + Enter send   empty Enter/Tab view   Ctrl-X rm   Ctrl-C quit")
+		"up/down select   Enter jump/send   Tab view   Ctrl-X rm/dismiss   Ctrl-C quit")
 	if m.status != "" {
 		help += "   " + m.status
 	}
@@ -456,6 +593,7 @@ func plural(n int) string {
 
 func main() {
 	pin, key, addr := "", "", ""
+	noMesh := false
 	args := os.Args[1:]
 	// A leading non-flag positional pins a single node.
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -474,10 +612,14 @@ func main() {
 				addr = args[i+1]
 				i++
 			}
+		case "--no-mesh", "--sessions":
+			noMesh = true
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: savannah-dash [<node>] [--addr H:P] [--key FILE]")
-			fmt.Fprintln(os.Stderr, "  no node: mesh mode, discovers every node via `savannah ls`")
-			fmt.Fprintln(os.Stderr, "  <node>:  pin one node (use --addr for a node not on mDNS)")
+			fmt.Fprintln(os.Stderr, "usage: savannah-dash [<node>] [--addr H:P] [--key FILE] [--no-mesh]")
+			fmt.Fprintln(os.Stderr, "  no node:   mesh mode, discovers every node via `savannah ls`")
+			fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS)")
+			fmt.Fprintln(os.Stderr, "  --no-mesh: sessions only, no savannahd needed (a local tab monitor)")
+			fmt.Fprintln(os.Stderr, "Local Claude Code sessions always show (via the session-status hook).")
 			os.Exit(2)
 		}
 	}
@@ -487,17 +629,17 @@ func main() {
 	}
 
 	ti := textinput.New()
-	ti.Placeholder = "prompt for the selected task..."
+	ti.Placeholder = "prompt for the selected worker..."
 	ti.Focus()
 	ti.CharLimit = 4000
 	ti.Width = 64
 
 	m := model{
-		key: key, bin: bin, pin: pin, addr: addr,
+		key: key, bin: bin, pin: pin, addr: addr, noMesh: noMesh,
 		tasks: map[string][]task{}, errs: map[string]string{},
 		input: ti,
 	}
-	if pin != "" {
+	if pin != "" && !noMesh {
 		m.nodes = []string{pin}
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())

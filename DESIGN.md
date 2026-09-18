@@ -275,3 +275,24 @@ late on purpose.
   later rm does not prune twice. rm of an idle worktree task discards
   that worktree, same contract as cancel: harvest results before
   forgetting a worker.
+- **9/17/2026 (local-session attention, 5c)** — Answered "my iTerm tab hell
+  is unmanageable past 5-6 sessions." Key distinction: savannah's workers are
+  headless sessions savannahd owns; the user's tabs are interactive sessions
+  it cannot see. So the fix is a bridge, not the mesh. A Claude Code hook
+  (`hooks/session-status.py`, stdlib) fires on SessionStart/UserPromptSubmit/
+  Notification/Stop/SessionEnd and upserts a per-session status file under
+  ~/.claude/savannah/sessions; the dash reads them into a LOCAL SESSIONS
+  section above the mesh workers, floats the ones needing you (a permission
+  prompt or idle nudge, from the Notification event) to the top, and jumps to
+  the iTerm2/tmux tab on Enter. One unified header counter sums sessions
+  waiting + pending worker decisions: one glance, total. Pure local files, no
+  daemon/network/tokens, so `--no-mesh` is a standalone tab monitor for a
+  locked-down work box. Confirmed the Claude Code hook schema via the
+  claude-code-guide agent (Notification carries notification_message and
+  notification_type permission_prompt|idle_prompt; env like ITERM_SESSION_ID
+  inherits into the hook). Also answered the recurring "does this use an API?"
+  question: no. Mesh is song's binary wire protocol over TCP (HMAC, not
+  HTTP/REST); each node's brain is the claude CLI subprocess, which is the only
+  thing that talks to Anthropic's API (HTTPS), holding the auth. savannah never
+  holds an Anthropic key. install.py merges the hook into settings.json
+  (idempotent, backs up, --uninstall); test_hook.py pins the state machine.

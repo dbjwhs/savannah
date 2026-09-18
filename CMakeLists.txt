@@ -143,8 +143,13 @@ if(Python3_Interpreter_FOUND)
              ${CMAKE_CURRENT_SOURCE_DIR}/shim/peer.py
              ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_savannah.py)
     set_tests_properties(test_shim PROPERTIES TIMEOUT 60)
+
+    add_test(NAME test_hook COMMAND ${Python3_EXECUTABLE}
+             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hook.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/hooks/session-status.py)
+    set_tests_properties(test_hook PROPERTIES TIMEOUT 60)
 else()
-    message(STATUS "Python3 not found - shim test disabled")
+    message(STATUS "Python3 not found - shim and hook tests disabled")
 endif()
 
 # Integration test fixtures: per-scenario savannahd configs pointing at

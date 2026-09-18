@@ -1,0 +1,20 @@
+{
+  "_comment": "Merge this 'hooks' block into ~/.claude/settings.json (user-level, all projects) or a repo's .claude/settings.json. Replace ABSOLUTE_PATH with this repo's path. Every event points at the same script; it decides what to record from hook_event_name. Empty matcher = all occurrences (Stop and UserPromptSubmit do not support matchers; empty is correct for them). After editing settings.json, restart Claude Code sessions (or run /hooks) for it to take effect.",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 ABSOLUTE_PATH/hooks/session-status.py" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python3 ABSOLUTE_PATH/hooks/session-status.py" } ] }
+    ],
+    "Notification": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 ABSOLUTE_PATH/hooks/session-status.py" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python3 ABSOLUTE_PATH/hooks/session-status.py" } ] }
+    ],
+    "SessionEnd": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 ABSOLUTE_PATH/hooks/session-status.py" } ] }
+    ]
+  }
+}

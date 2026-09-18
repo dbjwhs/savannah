@@ -3,6 +3,15 @@
 An interactive terminal dashboard for the task mesh, built with
 [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
+The board has two halves. **LOCAL SESSIONS** are your own open Claude Code
+tabs (via the session hook, see `../hooks/`): every interactive session on
+this machine, with the ones blocked on a permission prompt or your input
+floated to the top and Enter to jump to that terminal tab. **MESH WORKERS**
+are the headless savannah tasks below. One cursor moves over both, and the
+header shows a single "N need you" count over sessions waiting plus pending
+worker decisions. Run `savannah-dash --no-mesh` for the sessions half alone
+(no savannahd, no network) as a standalone tab monitor.
+
 It is a thin client over the `savannah` CLI, not a second implementation of
 song's wire protocol. In mesh mode it browses the mesh with `savannah ls` on a
 3-second tick to **discover every node dynamically** (systems appear and drop
@@ -50,13 +59,12 @@ The savannah CLI must be reachable (on PATH or via `$SAVANNAH_BIN`).
 
 Board:
 
-- **up / down** move the highlighted row (across all nodes)
-- **type** a prompt into the field at the bottom
-- **Enter** sends it to the highlighted worker (`task send`), clears the field
-- **Enter with an empty field / Tab** opens the full-screen view of the
-  highlighted worker
-- **Ctrl-X** removes the highlighted worker if it is finished (`task rm`);
-  a running worker is refused (cancel it first)
+- **up / down** move the highlighted row (across both sections)
+- On a **SESSION** row: **Enter / Tab** jumps to that terminal tab;
+  **Ctrl-X** dismisses a stale entry
+- On a **WORKER** row: **type** a prompt then **Enter** sends it (`task
+  send`); **empty Enter / Tab** opens the full-screen view; **Ctrl-X**
+  removes it if finished (`task rm`; a running worker is refused, cancel first)
 - **Ctrl-C / Esc** quit
 
 Full-screen view:

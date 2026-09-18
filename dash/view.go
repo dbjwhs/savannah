@@ -256,14 +256,14 @@ func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.leaveView()
 		return m, nil
 	case tea.KeyLeft, tea.KeyRight:
-		if len(m.rows) == 0 {
-			return m, nil
-		}
 		d := 1
 		if k.Type == tea.KeyLeft {
 			d = -1
 		}
-		i := neighborRow(m.rows, m.viewNode, m.viewID, d)
+		i, ok := neighborTaskRow(m.rows, m.viewNode, m.viewID, d)
+		if !ok {
+			return m, nil
+		}
 		r := m.rows[i]
 		m.cursor = i // keep the board's selection in step
 		if r.node == m.viewNode && r.t.ID == m.viewID {
@@ -340,18 +340,29 @@ func (m model) viewView() string {
 	return b.String()
 }
 
-// neighborRow returns the index delta rows away from (node, id), wrapping
-// around; if (node, id) is no longer a row it counts from the top.
-func neighborRow(rows []row, node, id string, delta int) int {
-	cur := 0
+// neighborTaskRow returns the m.rows index of the task row delta steps away
+// from (node, id), wrapping around and skipping session rows (the view is
+// only ever over mesh workers). ok is false if there are no task rows.
+func neighborTaskRow(rows []row, node, id string, delta int) (int, bool) {
+	var idx []int // m.rows indices that are task rows, in order
+	cur := -1
 	for i, r := range rows {
-		if r.node == node && r.t.ID == id {
-			cur = i
-			break
+		if r.kind != rowTask {
+			continue
 		}
+		if r.node == node && r.t.ID == id {
+			cur = len(idx)
+		}
+		idx = append(idx, i)
 	}
-	n := len(rows)
-	return ((cur+delta)%n + n) % n
+	if len(idx) == 0 {
+		return 0, false
+	}
+	if cur < 0 {
+		cur = 0
+	}
+	pos := ((cur+delta)%len(idx) + len(idx)) % len(idx)
+	return idx[pos], true
 }
 
 // wrapTo hard-wraps every line of s at w runes so the viewport never clips

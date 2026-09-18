@@ -49,24 +49,43 @@ func TestTrimFront(t *testing.T) {
 	}
 }
 
-func TestNeighborRow(t *testing.T) {
+func TestNeighborTaskRow(t *testing.T) {
 	rows := []row{
-		{node: "a", t: task{ID: "t1"}},
-		{node: "a", t: task{ID: "t2"}},
-		{node: "b", t: task{ID: "t1"}},
+		{kind: rowTask, node: "a", t: task{ID: "t1"}},
+		{kind: rowTask, node: "a", t: task{ID: "t2"}},
+		{kind: rowTask, node: "b", t: task{ID: "t1"}},
 	}
-	if got := neighborRow(rows, "a", "t2", 1); got != 2 {
-		t.Errorf("next: got %d, want 2", got)
+	if got, ok := neighborTaskRow(rows, "a", "t2", 1); !ok || got != 2 {
+		t.Errorf("next: got %d ok=%v, want 2", got, ok)
 	}
-	if got := neighborRow(rows, "b", "t1", 1); got != 0 { // wraps
-		t.Errorf("wrap next: got %d, want 0", got)
+	if got, ok := neighborTaskRow(rows, "b", "t1", 1); !ok || got != 0 { // wraps
+		t.Errorf("wrap next: got %d ok=%v, want 0", got, ok)
 	}
-	if got := neighborRow(rows, "a", "t1", -1); got != 2 { // wraps back
-		t.Errorf("wrap prev: got %d, want 2", got)
+	if got, ok := neighborTaskRow(rows, "a", "t1", -1); !ok || got != 2 { // wraps back
+		t.Errorf("wrap prev: got %d ok=%v, want 2", got, ok)
 	}
-	// A vanished target counts from the top.
-	if got := neighborRow(rows, "z", "zz", 1); got != 1 {
-		t.Errorf("gone target: got %d, want 1", got)
+	// A vanished target counts from the top task row.
+	if got, ok := neighborTaskRow(rows, "z", "zz", 1); !ok || got != 1 {
+		t.Errorf("gone target: got %d ok=%v, want 1", got, ok)
+	}
+
+	// Session rows are skipped: switching lands only on task rows, and the
+	// returned index is into the full row slice.
+	mixed := []row{
+		{kind: rowSession, s: session{ID: "s1"}},
+		{kind: rowTask, node: "a", t: task{ID: "t1"}},
+		{kind: rowSession, s: session{ID: "s2"}},
+		{kind: rowTask, node: "b", t: task{ID: "t2"}},
+	}
+	if got, ok := neighborTaskRow(mixed, "a", "t1", 1); !ok || got != 3 {
+		t.Errorf("skip sessions fwd: got %d ok=%v, want 3", got, ok)
+	}
+	if got, ok := neighborTaskRow(mixed, "a", "t1", -1); !ok || got != 3 { // wraps past sessions
+		t.Errorf("skip sessions back: got %d ok=%v, want 3", got, ok)
+	}
+	// No task rows at all: ok is false.
+	if _, ok := neighborTaskRow([]row{{kind: rowSession}}, "x", "y", 1); ok {
+		t.Error("no task rows should return ok=false")
 	}
 }
 
