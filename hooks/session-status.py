@@ -20,9 +20,15 @@
 #   (file removed on SessionEnd)
 #
 # Terminal identity (ITERM_SESSION_ID, TMUX_PANE, ...) is captured from the
-# hook's environment so the dash can jump you to the right tab. Everything is
-# best-effort: a missing field or env var is simply omitted, never fatal, and
-# the hook always exits 0 so it can never block or break a Claude session.
+# hook's environment so the dash can jump you to the right tab. Two more
+# fields help you remember what a tab was doing: transcript_path (where Claude
+# Code keeps the conversation) and last_prompt (the first line of what you
+# last typed, capped at 200 chars). Both are kept across later events that do
+# not carry them. The hook does no joining of its own: work sessions (work/)
+# match a hook file to their worktree at read time by comparing "project".
+# Everything is best-effort: a missing field or env var is simply omitted,
+# never fatal, and the hook always exits 0 so it can never block or break a
+# Claude session.
 
 import json
 import os
@@ -64,6 +70,15 @@ def terminal_identity():
     return ident
 
 
+def first_line(text, limit):
+    """First non-blank line of text, stripped, cut to limit characters."""
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line[:limit]
+    return ""
+
+
 def atomic_write(path, obj):
     tmp = path + ".tmp.%d" % os.getpid()
     with open(tmp, "w") as f:
@@ -71,14 +86,20 @@ def atomic_write(path, obj):
     os.replace(tmp, path)  # atomic on POSIX; a reader never sees a half file
 
 
-def main():
+def run():
     try:
         raw = sys.stdin.read()
         event = json.loads(raw) if raw.strip() else {}
     except (ValueError, OSError):
         event = {}
+    # Valid JSON that is not an object (an array, a string, a number) carries
+    # no fields we can read; treat it like an empty event.
+    if not isinstance(event, dict):
+        event = {}
 
     sid = event.get("session_id") or ""
+    if not isinstance(sid, str):
+        sid = ""
     if not sid:
         return 0  # nothing we can key on; do no harm
 
@@ -106,6 +127,10 @@ def main():
             record = json.load(f)
     except (OSError, ValueError):
         record = {}
+    # A damaged record that parses but is not an object is rebuilt from
+    # scratch rather than crashing on the first key assignment.
+    if not isinstance(record, dict):
+        record = {}
 
     record["session_id"] = sid
     record["project"] = event.get("cwd") or os.getcwd()
@@ -113,6 +138,24 @@ def main():
     record["pid"] = os.getppid()  # the Claude Code process, not this hook
     record["mode"] = event.get("permission_mode", record.get("mode", ""))
     record.update(terminal_identity())
+
+    # Where Claude Code keeps this conversation's transcript. Most events
+    # carry it; when one does not, the previous value stands.
+    tp = event.get("transcript_path")
+    if isinstance(tp, str) and tp:
+        record["transcript_path"] = tp
+    record.setdefault("transcript_path", "")
+
+    # What you last asked for, so a tab still tells you what it was doing.
+    # "prompt" is the documented field, "user_prompt" an alternate name. First
+    # line only, capped at 200 chars, and kept through every later event.
+    if name == "UserPromptSubmit":
+        prompt = event.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            prompt = event.get("user_prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            record["last_prompt"] = first_line(prompt, 200)
+    record.setdefault("last_prompt", "")
 
     if name in EVENT_STATE:
         record["state"] = EVENT_STATE[name]
@@ -135,6 +178,16 @@ def main():
     except OSError:
         pass
     return 0
+
+
+def main():
+    # Best effort, always. A hook that exits nonzero can block a Claude
+    # session, so whatever goes wrong in run() (an unexpected payload shape,
+    # a filesystem surprise) is swallowed and the session carries on.
+    try:
+        return run()
+    except Exception:  # noqa: BLE001 - the whole point is to never fail
+        return 0
 
 
 if __name__ == "__main__":

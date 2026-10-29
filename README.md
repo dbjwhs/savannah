@@ -36,8 +36,9 @@ Claude Code (A)                          Claude Code (B)
   ask while one is in flight gets an immediate `busy` error trailer;
   `cancel` kills the in-flight agent and frees the node.
 - **`ask_peer` from stock Claude Code** (Phase 4): `shim/peer.py` is an
-  MCP stdio server in pure stdlib Python giving any MCP client three
-  tools: `list_peers`, `ask_peer(name, prompt)`, `peer_status(name)`.
+  MCP stdio server in pure stdlib Python giving any MCP client the mesh
+  tools `list_peers`, `ask_peer(name, prompt)`, `peer_status(name)`, the
+  `task_*` tools (Phase 5a) and the local `work_*` tools (Phase 5d).
   It shells out to the `savannah` CLI, so discovery, HMAC, and streaming
   ride the tested C++ paths. This repo's `.mcp.json` registers it
   automatically for Claude Code sessions started here (build first, and
@@ -70,7 +71,12 @@ Stated on purpose; this list shrinks phase by phase (see `DESIGN.md`).
   stream-json subset; run `SAVANNAH_LIVE=1 ctest --test-dir build -R
   test_live_schema` manually to check the live CLI against it (one tiny
   prompt, burns a few tokens; skipped otherwise).
-- v1 is stateless: every ask is a fresh `claude -p`, no sessions.
+- `ask` is stateless: every ask is a fresh `claude -p`. Persistent sessions
+  exist in two forms only, and neither flows through `ask`: mesh tasks
+  (Phase 5a, `savannah task ...` / `task_*` tools, headless workers that
+  savannahd owns and resumes per turn) and local work sessions (Phase 5d,
+  `work/`, your own interactive Claude tabs in iTerm2; see below). Nothing
+  migrates a session between machines.
 - Single-flight per node. Cancel is SIGKILL, not cooperative.
 - No cross-node file transfer: prompt out, text back.
 - savannahd delegates tool/workspace restrictions to the claude CLI's own
@@ -225,6 +231,60 @@ journalctl --user -u savannahd -f     # logs (port marker, client drops)
 The port is OS-assigned on every start; peers find the node through mDNS,
 so nothing needs pinning. macOS nodes have no equivalent yet (a launchd
 plist would be the analog); the daemon there is started by hand.
+
+## Work sessions (local)
+
+Not part of the mesh. `work/savannah_work.py` (stdlib Python, Phase 5d)
+names the habit of one iTerm2 tab per work item: an upper pane running your
+ordinary interactive `claude` in a git worktree, a lower shell pane cd'd
+into the same worktree, and a plain-text notes file so you can remember what
+that session was doing. No savannahd, no song, no tokens spent by the tool;
+the brain in the upper pane is your own interactive Claude Code, not a
+headless worker.
+
+```bash
+work() { python3 work/savannah_work.py "$@"; }   # a shell function; W="python3 ..." breaks under zsh
+work new fix-parser --prompt "look at src/json.cpp"   # worktree + tab + record
+work note fix-parser "flaky on nested arrays, suspect the depth check"
+work say fix-parser "run ctest -R test_json and summarize"   # types into the Claude pane
+work say fix-parser -- --continue      # text that starts with "-" goes after "--"
+work ls          # NAME  BRANCH  STATE  LAST PROMPT  LAST NOTE
+```
+
+`new` creates `<repo>/.savannah-worktrees/<name>` on branch `work/<name>`
+(or `--branch B` for an existing local branch, `--no-worktree` for the repo
+itself), opens the split tab in the current iTerm2 window, and writes
+`~/.claude/savannah/work/<name>/record.json`. `--repo` may point anywhere
+inside the repository; it is resolved to the main worktree root. `notes`,
+`sh` (type into the shell pane), `jump` (focus a pane) and `rm` (close the
+tab, remove the worktree, archive the notes; the branch stays, it is your
+work) complete the set. `new` of a name whose `work/<name>` branch survived
+an earlier `rm` reattaches to that branch and says so. The same verbs are MCP
+tools in the shim (`work_new`, `work_list`, `work_note`, `work_notes`,
+`work_say`, `work_shell`, `work_jump`, `work_rm`), so a hub Claude Code
+session can open a tab for you, leave a note, or type a line into another
+session. The dash shows each work session in a WORK column on LOCAL
+SESSIONS, joined to its live Claude Code session through the hook files
+(`hooks/`) by worktree path at read time, and keeps an `offline` row with the
+last note when the tab is gone. Details and the storage layout are in
+`work/README.md`.
+
+What does not work: iTerm2 on macOS only (the Terminal seam exists, a tmux
+implementation does not). STATE, LAST PROMPT and the dash join need the hook
+installed (`python3 hooks/install.py`); without it every session reads
+`offline`. Typing into a pane is the only input channel into an interactive
+Claude Code session, and it is blind: `say` presses Enter and never reads a
+reply or checks that Claude was ready (it does refuse empty text, exit 2).
+Nothing watches the panes, so a tab closed by hand leaves an `offline` record
+until `rm`. `rm` refuses a dirty worktree without `--force`, `--force`
+discards uncommitted changes there, and `rm` refuses when another work
+session's worktree lies inside the one it is about to remove (`--keep-worktree`
+skips both the removal and that check). `--branch B` must
+already exist locally (no DWIM from remotes), and cannot be combined with
+`--no-worktree`. `.savannah-worktrees/` lives inside your repo and shows up
+as untracked unless you exclude it. Tests drive a fake `osascript` and a
+throwaway git repo; the real AppleScript is compile-checked against iTerm2's
+dictionary, not run in CI.
 
 ## Layout
 

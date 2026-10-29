@@ -69,3 +69,9 @@ Testing/
 .cache/
 build/
 generated/
+
+# savannah worktrees (mesh tasks and local work sessions carve them here)
+.savannah-worktrees/
+
+# Python bytecode from the stdlib test suites
+__pycache__/

@@ -13,9 +13,12 @@
 // reported by hooks/session-status.py, see sessions.go) and mesh WORKERS
 // (savannah tasks). One cursor moves over both; the header counts everything
 // that needs you (sessions waiting + pending mesh decisions) in one number.
+// Sessions carry a WORK column naming the work session (work/) whose worktree
+// they run in; a work session with no live tab shows as an "offline" row.
 //
 // Keys: up/down select. On a SESSION row, Enter/Tab jumps to that terminal
-// tab and Ctrl-X dismisses a stale entry. On a WORKER row, a typed prompt +
+// tab and Ctrl-X dismisses a stale entry (an offline work row is file-owned
+// and is left to `work rm`). On a WORKER row, a typed prompt +
 // Enter sends it, an empty Enter or Tab opens the tmux-like full-screen live
 // view (see view.go; Left/Right flips workers, Up/Down scrolls, Esc back),
 // and Ctrl-X removes a finished worker. Ctrl-C (or Esc on the board) quits.
@@ -100,8 +103,11 @@ type model struct {
 	tasks    map[string][]task // node -> its tasks
 	errs     map[string]string // node -> last fetch error
 	lsErr    string            // last discovery error
-	sessions []session         // local Claude Code sessions (the hook)
+	hooks    []session         // last good hook sessions (readSessions), kept across read errors
+	work     []workRecord      // last good work records (readWork), kept across read errors
+	sessions []session         // hooks joined with work (joinWork) + offline work rows
 	sessErr  string            // last session-read error
+	workErr  string            // last work-dir read error
 
 	rows   []row
 	cursor int
@@ -243,6 +249,24 @@ func (m *model) rebuildRows() {
 	}
 }
 
+// applySessions folds one tick's hook sessions and work records into the
+// model and rebuilds the rows. A side that failed to read keeps its last good
+// list (so a transient sessions-dir error does not flip every live tab to an
+// offline work row) and only its error line changes; the join is redone
+// every tick from the two kept lists.
+func (m *model) applySessions(msg sessionsMsg) {
+	m.sessErr = msg.err
+	if msg.err == "" {
+		m.hooks = msg.hooks
+	}
+	m.workErr = msg.workErr
+	if msg.workErr == "" {
+		m.work = msg.work
+	}
+	m.sessions = joinWork(m.hooks, m.work)
+	m.rebuildRows()
+}
+
 // currentRow returns the highlighted row, ok=false if there is none.
 func (m model) currentRow() (row, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
@@ -294,13 +318,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 	case sessionsMsg:
-		if msg.err != "" {
-			m.sessErr = msg.err
-		} else {
-			m.sessErr = ""
-			m.sessions = msg.sessions
-		}
-		m.rebuildRows()
+		m.applySessions(msg)
 		return m, nil
 	case jumpMsg:
 		if msg.ok {
@@ -395,6 +413,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlX:
 			if r, ok := m.currentRow(); ok {
 				if r.kind == rowSession {
+					if isWorkRow(r.s) {
+						// No hook file behind it; the record is the work
+						// tool's to delete, never the dash's.
+						m.status = warnStyle.Render("work session " + r.s.Work +
+							" has no live tab; use `work rm " + r.s.Work + "`")
+						return m, nil
+					}
 					m.status = "dismissing session " + r.s.ID + "..."
 					return m, dismissSessionCmd(r.s)
 				}
@@ -492,33 +517,42 @@ func (m model) View() string {
 	now := nowUnix()
 
 	// ---- LOCAL SESSIONS (open Claude Code tabs, via the hook) ----
-	if nSess > 0 {
+	// The section shows when there are rows OR a read error to report: an
+	// error with zero rows must still be visible, not hidden by the guard.
+	if nSess > 0 || m.sessErr != "" || m.workErr != "" {
 		b.WriteString(headerStyle.Render("LOCAL SESSIONS") + "\n")
-		b.WriteString(colStyle.Render(
-			pad("", 2)+pad("STATE", 9)+pad("PROJECT", 26)+pad("AGE", 5)+
-				"WHAT") + "\n")
-		for i, r := range m.rows {
-			if r.kind != rowSession {
-				continue
+		if nSess > 0 {
+			// Fixed cells total 60 columns (the worker table's are 64), so
+			// WHAT gets the same avail and the line still fits at 100 columns.
+			b.WriteString(colStyle.Render(
+				pad("", 2)+pad("STATE", 9)+pad("WORK", 12)+pad("PROJECT", 22)+
+					pad("AGE", 5)+"WHAT") + "\n")
+			for i, r := range m.rows {
+				if r.kind != rowSession {
+					continue
+				}
+				s := r.s
+				line := pad(stateGlyph(s.State), 2) + pad(s.State, 9) +
+					pad(s.Work, 12) + pad(projectLabel(s.Project), 22) +
+					pad(humanAge(now-s.Updated), 5) + trunc(sessionDetail(s), avail)
+				switch {
+				case i == m.cursor:
+					line = selectedStyle.Render(line)
+				case sessionAttention(s):
+					line = warnStyle.Render(line)
+				case s.State == "done":
+					line = okStyle.Render(line)
+				case s.State == "idle", s.State == "offline":
+					line = helpStyle.Render(line)
+				}
+				b.WriteString(line + "\n")
 			}
-			s := r.s
-			line := pad(stateGlyph(s.State), 2) + pad(s.State, 9) +
-				pad(projectLabel(s.Project), 26) +
-				pad(humanAge(now-s.Updated), 5) + trunc(sessionDetail(s), avail)
-			switch {
-			case i == m.cursor:
-				line = selectedStyle.Render(line)
-			case sessionAttention(s):
-				line = warnStyle.Render(line)
-			case s.State == "done":
-				line = okStyle.Render(line)
-			case s.State == "idle":
-				line = helpStyle.Render(line)
-			}
-			b.WriteString(line + "\n")
 		}
 		if m.sessErr != "" {
-			b.WriteString(warnStyle.Render("  sessions: "+m.sessErr) + "\n")
+			b.WriteString(warnStyle.Render("  sessions: "+m.sessErr+" (showing last good list)") + "\n")
+		}
+		if m.workErr != "" {
+			b.WriteString(warnStyle.Render("  work: "+m.workErr+" (showing last good list)") + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -567,9 +601,14 @@ func (m model) View() string {
 	switch {
 	case !ok:
 		b.WriteString("\n" + helpStyle.Render("no rows") + "\n\n")
+	case r.kind == rowSession && isWorkRow(r.s):
+		hint := "no live session; Enter focuses its Claude pane, `work rm` removes it"
+		b.WriteString("\n" + headerStyle.Render(fitLabel("work "+r.s.Work, m.width, hint)) + "   " +
+			helpStyle.Render(hint) + "\n\n")
 	case r.kind == rowSession:
-		b.WriteString("\n" + headerStyle.Render(projectLabel(r.s.Project)) +
-			"   " + helpStyle.Render("Enter jumps to its tab") + "\n\n")
+		hint := "Enter jumps to its tab"
+		b.WriteString("\n" + headerStyle.Render(fitLabel(projectLabel(r.s.Project), m.width, hint)) +
+			"   " + helpStyle.Render(hint) + "\n\n")
 	default:
 		b.WriteString("\nsend to " + headerStyle.Render(r.node+"/"+r.t.ID) +
 			":  " + m.input.View() + "\n\n")
@@ -619,7 +658,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "  no node:   mesh mode, discovers every node via `savannah ls`")
 			fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS)")
 			fmt.Fprintln(os.Stderr, "  --no-mesh: sessions only, no savannahd needed (a local tab monitor)")
-			fmt.Fprintln(os.Stderr, "Local Claude Code sessions always show (via the session-status hook).")
+			fmt.Fprintln(os.Stderr, "Local Claude Code sessions always show (via the session-status hook),")
+			fmt.Fprintln(os.Stderr, "joined with work sessions from $SAVANNAH_WORK_DIR (~/.claude/savannah/work).")
 			os.Exit(2)
 		}
 	}
@@ -647,4 +687,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "savannah-dash:", err)
 		os.Exit(1)
 	}
+}
+
+// fitLabel truncates a footer label so label + 3 spaces + hint fits the
+// terminal width (a 64-char work name would otherwise soft-wrap at 80 cols).
+func fitLabel(label string, width int, hint string) string {
+	if width <= 0 {
+		return label
+	}
+	room := width - 3 - len([]rune(hint))
+	if room < 8 {
+		room = 8
+	}
+	return trunc(label, room)
 }

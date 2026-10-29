@@ -1,12 +1,14 @@
 # Savannah — Design Document
 
 **Claude-to-Claude agent mesh, built on [song](https://github.com/dbjwhs/song).**
-v0.3 (as-built) · July 28, 2026 · Dennis Jones + Claude
-Status: **Phases 1 through 4 complete.** Two-machine acceptance ran
-7/29/2026 (both platforms in one `savannah ls`, bidirectional HMAC asks);
-the peer MCP shim landed the same day and completed the payoff loop live:
-MCP tool call on the mac, answer streamed back from the linux node.
-9 test suites; live-CLI and mDNS suites opt-in.
+v0.4 (as-built) · October 27, 2026 · Dennis Jones + Claude
+Status: **Phases 1 through 4 complete; Phase 5 patterns 5a through 5d
+landed** (task mesh, session handoff, local-session attention, local work
+sessions). Two-machine acceptance ran 7/29/2026 (both platforms in one
+`savannah ls`, bidirectional HMAC asks); the peer MCP shim landed the same
+day and completed the payoff loop live: MCP tool call on the mac, answer
+streamed back from the linux node. 12 ctest suites plus the dash's Go tests;
+live-CLI and mDNS suites opt-in.
 
 > One-liner: Claude Code instances become discoverable peers on your network.
 > Any agent can ask any other agent for help, mid-task, on its own judgment.
@@ -116,14 +118,17 @@ Claude Code (A)                          Claude Code (B)
   the CLI's own flags and supervises the process. savannahd is not a sandbox,
   and the docs say so.
 
-## 6. Sessions: v1 is deliberately stateless
+## 6. Sessions: `ask` is stateless, sessions live elsewhere
 
 Every `ask` is a fresh `claude -p`. Clean, testable, no context-lifetime
 headaches, and it matches the best first use case (clean-context review).
-v2 adds persistent sessions (`--resume` / Agent SDK) with session ids in the
-IDL, only after v1 proves the loop. Session semantics, cooperative
-cancellation, and context lifetime are the hard parts; they are sequenced
-late on purpose.
+That was the whole v1 story and it still holds for `ask`. Persistent sessions
+arrived as separate things, never through `ask`: Phase 5a tasks are headless
+`claude --resume` workers owned by savannahd with session ids in the IDL
+(`TaskInfo.session_id`), and Phase 5d work sessions are the owner's own
+interactive Claude Code tabs, file-owned and joined to the hook's session
+files at read time. Cooperative cancellation and context lifetime remain the
+hard parts and remain open.
 
 ## 7. Roadmap (tests define done)
 
@@ -146,9 +151,19 @@ late on purpose.
    HMAC, streaming stay on the tested C++ paths). Live loop verified:
    MCP `ask_peer("dbj-devone", ...)` from the mac answered by the linux
    node. `.mcp.json` registers it for Claude Code sessions in this repo.
-5. **Patterns** — reviewer pair (author node + clean-context reviewer),
-   tag fan-out ("all idle nodes tagged cpp"), file transfer via song's
-   datacopy pattern.
+5. **Patterns**, landed so far:
+   5a ✅ Task Mesh (persistent, resumable headless workers: task engine in
+   savannahd, `task_*` CLI and shim tools, the dash); 5b ✅ session handoff
+   (9/17/2026, `DECISION_NEEDED` convention plus the dash as decision inbox,
+   zero server changes); 5c ✅ local-session attention (9/17/2026, Claude
+   Code hook plus the dash's LOCAL SESSIONS section and unified "need you"
+   count); 5d ✅ local work sessions (10/27/2026, `work/`: one iTerm2 tab
+   per work item with interactive Claude in a worktree over a shell,
+   plain-text notes, `work_*` shim tools, dash WORK column; iTerm2 only).
+   Remaining: reviewer pair (author node + clean-context reviewer), tag
+   fan-out ("all idle nodes tagged cpp"), file transfer via song's datacopy
+   pattern, a tmux Terminal behind the work/ seam, and live-status push via
+   song classes/properties in place of today's polling.
 
 ## 8. Known limitations (stated, on purpose)
 
@@ -296,3 +311,61 @@ late on purpose.
   thing that talks to Anthropic's API (HTTPS), holding the auth. savannah never
   holds an Anthropic key. install.py merges the hook into settings.json
   (idempotent, backs up, --uninstall); test_hook.py pins the state machine.
+- **10/27/2026 (local work sessions, 5d)**: The problem was the owner's own
+  habit, not the mesh. Every work item is an iTerm2 tab split in two:
+  interactive Claude Code in a git worktree on top, a shell cd'd into the
+  same worktree below. Past a handful of tabs nobody remembers what each
+  session was doing, and there was no way for a hub session to talk to the
+  others except the human typing. Decisions: (1) the brain stays the
+  interactive Claude Code in the upper pane, NOT a mesh task; a `task_*`
+  worker is headless and savannahd-owned, and the owner wants to sit in
+  these sessions. (2) A work session is a local, file-owned object in the
+  same spirit as hooks/: `~/.claude/savannah/work/<name>/record.json` plus
+  `notes.md`, zero savannahd or song involvement, zero tokens spent by the
+  tool. (3) iTerm2 first, driven over AppleScript (`create tab with default
+  profile`, `split horizontally with same profile`, `write text`, `select`,
+  `close`), behind a four-method Terminal seam (create_split_tab, write,
+  focus, close_tab) so tmux can plug in later without touching the verbs;
+  the osascript binary is `$SAVANNAH_OSASCRIPT` so tests run a fake. (4)
+  Typing into the pane (`write text`) is the only input channel into an
+  interactive Claude Code session; hooks can add context to a session but
+  cannot speak to it, so `say` is how the hub talks to a session, and it is
+  one-way. (5) The join between a work session and its live Claude Code
+  session is computed at read time, `realpath(hook.project) ==
+  realpath(record.worktree)`, preferring the hook whose iTerm id matches the
+  recorded Claude pane, else the newest; `work ls` and the dash both do it,
+  and neither side writes into the other's file. (6) Notes are plain text
+  appended with a local timestamp heading, for the human, in the owner's
+  words; on `rm` they move to `archive/<name>-<created>.md` rather than
+  vanishing, and the branch is never deleted. Shim gained `work_*` tools
+  whose descriptions insist these are the owner's local tabs, not workers;
+  the hook gained `last_prompt` and `transcript_path` so a tab can say what
+  it was doing; the dash gained a WORK column and `offline` rows (last note
+  in WHAT, Enter still focuses the recorded pane). Build-time findings:
+  iTerm2 tabs have no AppleScript id, so `tab_id` is informational
+  (`w<window>t<index>`) and `rm` closes by pane ids; `rm` runs `git worktree
+  remove` before closing the tab so a refused dirty worktree leaves
+  everything in place; `new` rolls back its worktree and branch if the
+  terminal step fails. Stated limitations: macOS + iTerm2 only; `say` and
+  `sh` type blind (Enter pressed, no reply read, readiness unchecked);
+  nothing watches the panes, a hand-closed tab is `offline` until `rm`;
+  `.savannah-worktrees/` sits untracked inside the repo; hook files are
+  trusted; the real AppleScript is compile-checked against iTerm2's
+  dictionary, not executed in CI. Deliberately NOT done: owning the Claude
+  brain as a mesh task (would make these headless and savannahd-owned, the
+  opposite of the point), and hook-side writes into work records (the hook
+  stays a dumb best-effort recorder; one writer per file). Tests: test_work
+  (temp work dir, temp sessions dir, throwaway git repo, fake osascript),
+  test_shim extended through the MCP frames, test_hook for the two new
+  fields, Go tests for the join and the offline rows.
+  Live bring-up on the mac the same day found two things the fake could not:
+  `index of t` on the tab reference returned by `create tab` is not gettable
+  (iTerm2 raised -1728), so `tab_id` is now derived from the tab count at
+  creation, and every id is read with an explicit `get`; and a script that
+  failed after the tab existed left an orphaned tab running `claude`, so the
+  create script now closes its own tab on any error before rethrowing, and
+  the python rollback (worktree and branch) was confirmed live. Also noted:
+  a fresh worktree is a new folder to Claude Code, so the first launch sits
+  at the folder-trust prompt and the hook join reads `offline` until it is
+  answered. End-to-end smoke (new, sh, jump, say, rm) is green against the
+  real iTerm2; it stays out of CI on purpose.

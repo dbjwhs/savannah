@@ -29,6 +29,22 @@ permission mode, and the terminal identity (`ITERM_SESSION_ID` or
 `TMUX_PANE`), so the dashboard can jump you to the right tab. Everything is
 best-effort and always exits 0, so it can never block or slow a session.
 
+Two fields exist so you can remember what a tab was doing:
+
+| Field             | Set on           | What it holds                                   |
+|-------------------|------------------|-------------------------------------------------|
+| `transcript_path` | every event      | where Claude Code keeps this conversation's transcript; the last known value stays when an event omits it |
+| `last_prompt`     | UserPromptSubmit | the first non-blank line of what you last typed, cut to 200 chars; kept through Notification, Stop and heartbeats until your next prompt |
+
+Both are always present, as empty strings until known. The hook reads
+`prompt` from the event (and accepts `user_prompt` as an alternate name).
+
+The hook does no joining of its own. Work sessions (`work/`, one iTerm tab
+per work item) find their live Claude Code session at read time: a hook file
+belongs to a work session when its `project` is the same real path as the
+work session's `worktree`. `work ls` and the dash perform that match; nothing
+writes into the other side's file.
+
 ## Install
 
 ```bash
@@ -67,3 +83,9 @@ pending worker decisions together.
 - Cloud and web Claude Code sessions do not run user-level hooks and will not
   appear.
 - The dashboard polls the directory once a second; there is no push.
+- `last_prompt` is the first line of your prompt only, capped at 200 chars;
+  it is a reminder, not a record. The full conversation is in
+  `transcript_path`, which the hook records but does not read or parse.
+- `transcript_path` is whatever Claude Code sends; if a release stops sending
+  it, the field stays empty (or stale from an earlier event) rather than
+  failing.

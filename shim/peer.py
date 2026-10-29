@@ -14,9 +14,22 @@
 #   task_output(name, id)           -> tail a worker (replay + follow)
 #   task_cancel(name, id)           -> kill a worker, prune its worktree
 #   task_rm(name, id)               -> forget a finished worker (cancel first if running)
+#   work_new(name, ...)             -> open a LOCAL interactive work tab (Phase 5d)
+#   work_list()                     -> local work sessions joined with live hook state
+#   work_note(name, text)           -> append a plain-text note for the human
+#   work_notes(name)                -> read those notes
+#   work_say(name, text)            -> type into that tab's interactive Claude pane
+#   work_shell(name, cmd)           -> type into that tab's shell pane
+#   work_jump(name, shell?)         -> focus the tab
+#   work_rm(name, ...)              -> close tab, remove worktree, archive notes
 #
 # ask_peer is one-shot; the task_* tools drive persistent, resumable worker
 # sessions on a peer node (Phase 5a), so a master session can orchestrate many.
+# The work_* tools are different in kind: they manage the OWNER's own
+# interactive Claude Code tabs in iTerm2 on THIS machine (work/savannah_work.py,
+# a file-owned local object; no savannahd, no mesh, no tokens spent by the
+# tool itself). Typing into a pane is how the hub talks to an interactive
+# session; there is no answer channel back, the human reads the tab.
 #
 # Implementation: a Model Context Protocol stdio server in pure stdlib
 # Python that shells out to the savannah CLI, which carries the tested
@@ -28,6 +41,11 @@
 #   SAVANNAH_BIN             savannah CLI (default: "savannah" on PATH)
 #   SAVANNAH_KEY             HMAC key file passed as --key (optional)
 #   SAVANNAH_ASK_TIMEOUT_MS  per-ask agent timeout (default 300000)
+#   SAVANNAH_WORK_BIN        work-session CLI argv (default: the interpreter
+#                            running this shim, sys.executable, on
+#                            <real dir of peer.py>/../work/savannah_work.py);
+#                            that module honors SAVANNAH_WORK_DIR,
+#                            SAVANNAH_SESSIONS_DIR and SAVANNAH_OSASCRIPT
 #
 # Wire: newline-delimited JSON-RPC 2.0 on stdin/stdout per the MCP stdio
 # transport. Logs go to stderr; stdout carries protocol frames only.
@@ -278,6 +296,210 @@ TOOLS = [
             "required": ["name", "id"],
         },
     },
+
+    # ---- local work sessions (Phase 5d): the owner's own interactive tabs ----
+    {
+        "name": "work_new",
+        "description": (
+            "Open a LOCAL work session on THIS machine: a new iTerm2 tab in "
+            "the current window with interactive Claude Code in the upper "
+            "pane and a shell in the lower pane, both cd'd into a fresh git "
+            "worktree (<repo>/.savannah-worktrees/<name> on branch "
+            "work/<name>, or an existing branch via branch, or the repo "
+            "itself with no_worktree). This is the owner's interactive tab, "
+            "not a mesh worker: nothing runs headless, nothing is sent to a "
+            "peer node, and the tool itself spends no tokens. Returns the "
+            "record JSON (name, repo, worktree, branch, tab_id, claude_pane, "
+            "shell_pane, prompt, created, updated, terminal). Name rule: "
+            "^[a-z0-9][a-z0-9._-]{0,63}$ and not t-<digits>. macOS + iTerm2 "
+            "only today."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name (also the directory "
+                                   "and tab name)",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "Git repo to work in (default: the shim's "
+                                   "current directory)",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Check out this EXISTING branch instead "
+                                   "of creating work/<name>",
+                },
+                "no_worktree": {
+                    "type": "boolean",
+                    "description": "Run in the repo itself, no worktree, no "
+                                   "branch",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Initial prompt handed to the interactive "
+                                   "claude command",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "First plain-text note for the human",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "work_list",
+        "description": (
+            "List the owner's LOCAL work sessions on this machine (not mesh "
+            "workers), each joined at read time with its live Claude Code "
+            "hook session when one is running in that worktree. Returns a "
+            "JSON array of records plus claude_session_id, state (offline "
+            "when no live session), message, last_prompt, last_note, "
+            "notes_path, transcript_path."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "work_note",
+        "description": (
+            "Append a timestamped plain-text note to a local work session's "
+            "notes.md. Notes are for the human, to remember what that tab "
+            "was doing; multi-line text is fine."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The note text",
+                },
+            },
+            "required": ["name", "text"],
+        },
+    },
+    {
+        "name": "work_notes",
+        "description": (
+            "Return the plain-text notes of a local work session (the whole "
+            "notes.md, newest note last)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                }
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "work_say",
+        "description": (
+            "Type text (plus Enter) into the interactive Claude Code pane of "
+            "a local work session's iTerm2 tab, as if the owner had typed it. "
+            "This is the only way to talk to that interactive session; there "
+            "is no reply channel, the human reads the tab (or work_list "
+            "shows its state). Fails if the pane no longer exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "What to type into the Claude pane",
+                },
+            },
+            "required": ["name", "text"],
+        },
+    },
+    {
+        "name": "work_shell",
+        "description": (
+            "Type a command (plus Enter) into the lower shell pane of a local "
+            "work session's iTerm2 tab, cd'd into its worktree. Output stays "
+            "in the tab; nothing is captured back. Fails if the pane no "
+            "longer exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "cmd": {
+                    "type": "string",
+                    "description": "Shell command line to type",
+                },
+            },
+            "required": ["name", "cmd"],
+        },
+    },
+    {
+        "name": "work_jump",
+        "description": (
+            "Bring a local work session's iTerm2 tab forward and focus its "
+            "Claude pane (or the shell pane with shell=true). Fails if the "
+            "pane no longer exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "shell": {
+                    "type": "boolean",
+                    "description": "Focus the shell pane instead of the "
+                                   "Claude pane",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "work_rm",
+        "description": (
+            "Remove a local work session: archive notes.md under "
+            "<work dir>/archive/, git worktree remove its worktree (refused "
+            "when dirty unless force; keep_worktree skips this; a refusal "
+            "leaves everything in place, tab included), then close its iTerm2 "
+            "tab (best effort) and delete the record. The git branch is left "
+            "alone: it is the human's work."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "keep_worktree": {
+                    "type": "boolean",
+                    "description": "Leave the worktree directory in place",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Discard a dirty worktree",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -441,6 +663,138 @@ def tool_task_rm(args):
     return [text_block(msg or "")], proc.returncode != 0
 
 
+# ---- local work sessions (Phase 5d) ----
+#
+# These shell out to work/savannah_work.py, not to the savannah CLI. Exit 0 is
+# success, 1 a user error (unknown name, git refused, pane gone), 2 bad usage;
+# anything non-zero surfaces as a tool error carrying the module's one-line
+# stderr message.
+
+
+def work_argv():
+    override = os.environ.get("SAVANNAH_WORK_BIN", "")
+    if override:
+        return shlex.split(override)
+    # Same interpreter that runs the shim (not whatever "python3" is on PATH)
+    # and the real location of this file (a symlinked shim still finds its
+    # sibling work/ module).
+    here = os.path.dirname(os.path.realpath(__file__))
+    return [sys.executable,
+            os.path.normpath(os.path.join(here, "..", "work", "savannah_work.py"))]
+
+
+def run_work(args, stdin_text=None, timeout_s=120):
+    argv = work_argv() + args
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout_s,
+            input=stdin_text)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"work-session CLI not found ({argv[0]!r}); set SAVANNAH_WORK_BIN")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"work-session CLI timed out after {timeout_s}s: {' '.join(args)}")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip()
+                           or f"work {' '.join(args[:1])} failed")
+    return proc
+
+
+def work_name(args):
+    name = args.get("name", "")
+    if not isinstance(name, str) or not name.strip():
+        raise RuntimeError("work session name is required")
+    return name.strip()
+
+
+def work_text(args, key, label):
+    """A non-empty string argument, or a tool error.
+
+    Never str()'d: a null, number or object is a caller bug, and typing its
+    repr into a live pane (or pressing bare Enter for an empty string) is
+    not what anyone meant.
+    """
+    text = args.get(key)
+    if not isinstance(text, str):
+        raise RuntimeError(f"{label} must be a string")
+    if not text.strip():
+        raise RuntimeError(f"{label} is empty")
+    return text
+
+
+def work_opt(args, key, flag):
+    """[--flag=VALUE] as ONE token, so a value starting with '-' is a value."""
+    value = args.get(key)
+    if value is None or value == "":
+        return []
+    if not isinstance(value, str):
+        raise RuntimeError(f"{key} must be a string")
+    return [f"{flag}={value}"]
+
+
+def tool_work_new(args):
+    cli = ["new", work_name(args), "--json"]
+    cli += work_opt(args, "repo", "--repo")
+    cli += work_opt(args, "branch", "--branch")
+    if args.get("no_worktree"):
+        cli += ["--no-worktree"]
+    cli += work_opt(args, "prompt", "--prompt")
+    cli += work_opt(args, "note", "--note")
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_work_list(_args):
+    proc = run_work(["ls", "--json"])
+    return [text_block(proc.stdout.strip() or "[]")], False
+
+
+def tool_work_note(args):
+    text = work_text(args, "text", "note text")
+    # Text travels on stdin so multi-line notes survive intact.
+    proc = run_work(["note", work_name(args)], stdin_text=text)
+    return [text_block(proc.stdout.strip() or "ok")], False
+
+
+def tool_work_notes(args):
+    proc = run_work(["notes", work_name(args)])
+    return [text_block(proc.stdout if proc.stdout.strip()
+                       else "(no notes yet)")], False
+
+
+def tool_work_say(args):
+    # "--" ends option parsing so text starting with "-" is typed, not parsed
+    # ("-h" used to come back as argparse help, reported as success).
+    text = work_text(args, "text", "say text")
+    proc = run_work(["say", work_name(args), "--", text])
+    return [text_block(proc.stdout.strip() or "ok")], False
+
+
+def tool_work_shell(args):
+    cmd = work_text(args, "cmd", "shell command")
+    proc = run_work(["sh", work_name(args), "--", cmd])
+    return [text_block(proc.stdout.strip() or "ok")], False
+
+
+def tool_work_jump(args):
+    cli = ["jump", work_name(args)]
+    if args.get("shell"):
+        cli += ["--shell"]
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip() or "ok")], False
+
+
+def tool_work_rm(args):
+    cli = ["rm", work_name(args)]
+    if args.get("keep_worktree"):
+        cli += ["--keep-worktree"]
+    if args.get("force"):
+        cli += ["--force"]
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip() or "ok")], False
+
+
 HANDLERS = {
     "list_peers": tool_list_peers,
     "ask_peer": tool_ask_peer,
@@ -452,6 +806,14 @@ HANDLERS = {
     "task_output": tool_task_output,
     "task_cancel": tool_task_cancel,
     "task_rm": tool_task_rm,
+    "work_new": tool_work_new,
+    "work_list": tool_work_list,
+    "work_note": tool_work_note,
+    "work_notes": tool_work_notes,
+    "work_say": tool_work_say,
+    "work_shell": tool_work_shell,
+    "work_jump": tool_work_jump,
+    "work_rm": tool_work_rm,
 }
 
 
