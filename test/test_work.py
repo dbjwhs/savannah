@@ -737,6 +737,158 @@ def main():
           "rollback after a failed record write closes the tab it just created")
     check(not os.path.exists(os.path.join(workroot, "nospace")), "rollback removed the claimed dir")
 
+    # ---- output: the read side of say --------------------------------------
+    chat_dir = os.path.join(tmp, "chatrepo")
+    os.makedirs(chat_dir, exist_ok=True)
+    run_json(["new", "chat", "--no-worktree", "--repo", chat_dir, "--json"])
+    p = run(["output", "chat"])
+    check(p.returncode == 1 and "no transcript" in p.stderr,
+          f"output with no transcript exits 1 with a reason ({p.stderr.strip()})")
+    check(run(["output", "chat", "--last", "0"]).returncode == 2, "output --last 0 exits 2")
+    check(run(["output", "nosuch"]).returncode == 1, "output of unknown name exits 1")
+
+    def line(obj):
+        return json.dumps(obj) + "\n"
+    transcript = os.path.join(tmp, "chat.jsonl")
+    with open(transcript, "w") as f:
+        f.write(line({"type": "mode", "mode": "normal"}))                       # no message: ignored
+        f.write(line({"type": "user", "timestamp": "2026-10-30T01:00:00.000Z",
+                      "message": {"role": "user", "content": "first question"}}))
+        f.write(line({"type": "assistant", "timestamp": "2026-10-30T01:00:05.000Z",
+                      "message": {"role": "assistant", "content": [
+                          {"type": "thinking", "thinking": "secret"},
+                          {"type": "text", "text": "Looking now."},
+                          {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}))
+        f.write(line({"type": "user", "timestamp": "2026-10-30T01:00:06.000Z",
+                      "message": {"role": "user", "content": [
+                          {"type": "tool_result", "tool_use_id": "x", "content": "a b c"}]}}))
+        f.write(line({"type": "assistant", "isSidechain": True,
+                      "message": {"role": "assistant", "content": [{"type": "text", "text": "SUBAGENT"}]}}))
+        f.write("{not json\n")
+        f.write(line({"type": "assistant", "timestamp": "2026-10-30T01:00:09.000Z",
+                      "message": {"role": "assistant", "content": [{"type": "text", "text": "First answer."}]}}))
+        f.write(line({"type": "user", "timestamp": "2026-10-30T01:01:00.000Z",
+                      "message": {"role": "user", "content": [{"type": "text", "text": "second\nquestion"}]}}))
+        f.write(line({"type": "assistant", "timestamp": "2026-10-30T01:01:04.000Z",
+                      "message": {"role": "assistant", "content": [{"type": "text", "text": "Second answer."}]}}))
+        f.write(line({"type": "user", "timestamp": "2026-10-30T01:02:00.000Z",
+                      "message": {"role": "user", "content": "third, unanswered"}}))
+    with open(os.path.join(sessions, "chat.json"), "w") as f:
+        json.dump({"session_id": "chat-s", "project": chat_dir, "state": "working", "updated": 1,
+                   "transcript_path": transcript}, f)
+    p = run(["output", "chat"])
+    check(p.returncode == 0, f"output exits 0 ({p.stderr.strip()})")
+    check("you: third, unanswered" in p.stdout and "(no reply yet)" in p.stdout,
+          f"output default shows the last turn, unanswered ({p.stdout!r})")
+    check("First answer" not in p.stdout and "Second answer" not in p.stdout, "output default is one turn")
+    p = run(["output", "chat", "--last", "3"])
+    check(p.stdout.count("## ") == 3, f"output --last 3 prints three headers ({p.stdout!r})")
+    check("SUBAGENT" not in p.stdout and "secret" not in p.stdout and "a b c" not in p.stdout,
+          "output drops sidechain lines, thinking blocks and tool results")
+    check("Looking now.\n\nFirst answer." in p.stdout, "output joins a turn's assistant texts in order")
+    check("you: second" in p.stdout and "second\nquestion" not in p.stdout,
+          "output header shows the prompt's first line only")
+    check(" local  you:" in p.stdout, "output header carries a local timestamp")
+    out = run_json(["output", "chat", "--last", "99", "--json"])
+    check(out.get("source") == "hook" and out.get("transcript_path") == transcript,
+          "output --json names the hook transcript")
+    check(out.get("turns_total") == 3 and len(out.get("turns", [])) == 3, "output --json --last 99 caps at total")
+    t = out["turns"]
+    check(t[0]["prompt"] == "first question" and t[0]["text"] == "Looking now.\n\nFirst answer."
+          and t[0]["asked"].startswith("2026-10-30T01:00:00") and t[0]["answered"].startswith("2026-10-30T01:00:09"),
+          f"output --json turn 1 fields ({t[0]})")
+    check(t[1]["prompt"] == "second\nquestion" and t[1]["text"] == "Second answer.", "output --json turn 2")
+    check(t[2]["text"] == "" and t[2]["answered"] == "", "output --json unanswered turn has empty text")
+    out = run_json(["output", "chat", "--json"])
+    check(len(out["turns"]) == 1 and out["turns"][0]["prompt"] == "third, unanswered", "output --json default last 1")
+
+    # fallback: no hook file, Claude Code's own projects dir (HOME is tmp here)
+    os.remove(os.path.join(sessions, "chat.json"))
+    p = run(["output", "chat"])
+    check(p.returncode == 1, "output without hook and without projects dir exits 1")
+    sw2 = load_module(module)
+    check(sw2.encode_project_dir("/a/b.c_d x") == "-a-b-c-d-x", "encode_project_dir replaces every non-alphanumeric")
+    pdir = os.path.join(tmp, ".claude", "projects", sw2.encode_project_dir(os.path.realpath(chat_dir)))
+    os.makedirs(pdir)
+    with open(os.path.join(pdir, "old.jsonl"), "w") as f:
+        f.write(line({"type": "user", "message": {"role": "user", "content": "OLD"}}))
+    os.utime(os.path.join(pdir, "old.jsonl"), (1000, 1000))
+    shutil.copy(transcript, os.path.join(pdir, "new.jsonl"))
+    out = run_json(["output", "chat", "--json"])
+    check(out.get("source") == "projects" and out["transcript_path"].endswith("new.jsonl"),
+          f"output falls back to the newest projects transcript ({out.get('transcript_path')})")
+    cfg = os.path.join(tmp, "altcfg")
+    os.makedirs(os.path.join(cfg, "projects", sw2.encode_project_dir(os.path.realpath(chat_dir))))
+    with open(os.path.join(cfg, "projects", sw2.encode_project_dir(os.path.realpath(chat_dir)), "x.jsonl"), "w") as f:
+        f.write(line({"type": "user", "message": {"role": "user", "content": "ALT"}}))
+    out = run_json(["output", "chat", "--json"], extra_env={"CLAUDE_CONFIG_DIR": cfg})
+    check(out["turns"][0]["prompt"] == "ALT", "output honors CLAUDE_CONFIG_DIR")
+    with open(os.path.join(sessions, "chat.json"), "w") as f:
+        json.dump({"session_id": "chat-s", "project": chat_dir, "transcript_path": os.path.join(tmp, "gone.jsonl")}, f)
+    out = run_json(["output", "chat", "--json"])
+    check(out.get("source") == "projects", "a hook transcript_path that no longer exists falls back to projects")
+    os.remove(os.path.join(sessions, "chat.json"))
+    check(sw2.local_stamp("") == "" and sw2.local_stamp("junk") == "junk"
+          and sw2.local_stamp("2026-10-30T01:00:00.000Z").endswith(" local"), "local_stamp edge cases")
+
+    # ---- hub: .mcp.json + CLAUDE.md in a directory of repos ----------------
+    hub = os.path.join(tmp, "hub")
+    os.makedirs(hub)
+    check(run(["hub", os.path.join(tmp, "nope"), "--no-launch"]).returncode == 1, "hub on a missing dir exits 1")
+    h = run_json(["hub", hub, "--no-launch", "--json"])
+    check(h.get("mcp_status") == "created" and h.get("claude_md_status") == "created" and h.get("launch") is False,
+          f"hub first run creates both files ({h})")
+    with open(os.path.join(hub, ".mcp.json")) as f:
+        mcp = json.load(f)
+    peer = mcp.get("mcpServers", {}).get("peer", {})
+    shim_path = os.path.normpath(os.path.join(os.path.dirname(module), "..", "shim", "peer.py"))
+    check(peer.get("command") == "python3" and peer.get("args") == [os.path.realpath(shim_path)],
+          f"hub .mcp.json points at the shim by absolute path ({peer})")
+    check(all(os.path.isabs(v) for v in peer.get("env", {}).values()), "hub .mcp.json env paths are absolute")
+    with open(os.path.join(hub, "CLAUDE.md")) as f:
+        md = f.read()
+    for word in ("work_new", "work_list", "work_output", "work_say", "work_rm", "HUB"):
+        check(word in md, f"hub CLAUDE.md mentions {word}")
+    check("—" not in md, "hub CLAUDE.md has no em dashes")
+    h = run_json(["hub", hub, "--no-launch", "--json"])
+    check(h.get("mcp_status") == "unchanged" and h.get("claude_md_status") == "kept",
+          f"hub second run changes nothing ({h})")
+    with open(os.path.join(hub, "CLAUDE.md"), "w") as f:
+        f.write("mine\n")
+    with open(os.path.join(hub, ".mcp.json"), "w") as f:
+        json.dump({"mcpServers": {"other": {"command": "x"}, "peer": {"command": "stale"}}, "keep": 1}, f)
+    p = run(["hub", hub, "--no-launch"])
+    check(p.returncode == 0 and "updated" in p.stdout and "kept" in p.stdout,
+          f"hub merges into an existing .mcp.json and keeps CLAUDE.md ({p.stdout!r})")
+    with open(os.path.join(hub, ".mcp.json")) as f:
+        mcp = json.load(f)
+    check(mcp.get("keep") == 1 and mcp["mcpServers"].get("other") == {"command": "x"}
+          and mcp["mcpServers"]["peer"] == peer, "hub keeps other servers and keys, replaces a stale peer")
+    with open(os.path.join(hub, "CLAUDE.md")) as f:
+        check(f.read() == "mine\n", "hub never overwrites an existing CLAUDE.md")
+    with open(os.path.join(hub, ".mcp.json"), "w") as f:
+        f.write("{broken")
+    p = run(["hub", hub, "--no-launch"])
+    check(p.returncode == 1 and "malformed" in p.stderr, "hub refuses a malformed .mcp.json")
+    with open(os.path.join(hub, ".mcp.json")) as f:
+        check(f.read() == "{broken", "hub leaves the malformed file alone")
+    os.remove(os.path.join(hub, ".mcp.json"))
+    # default dir is the cwd
+    h = run_json(["hub", "--no-launch", "--json"], cwd=hub)
+    check(os.path.realpath(h.get("dir", "")) == os.path.realpath(hub) and h.get("mcp_status") == "created",
+          "hub defaults to the cwd")
+    # launch: exec of $SAVANNAH_CLAUDE_BIN in the hub dir (a fake that records its cwd)
+    fake_claude = os.path.join(tmp, "fake_claude.py")
+    with open(fake_claude, "w") as f:
+        f.write("import os, sys\nopen(sys.argv[1], 'w').write(os.getcwd())\nsys.exit(7)\n")
+    marker = os.path.join(tmp, "launched.txt")
+    p = run(["hub", hub], extra_env={"SAVANNAH_CLAUDE_BIN": f"{shlex.quote(sys.executable)} {shlex.quote(fake_claude)} {shlex.quote(marker)}"})
+    check(p.returncode == 7 and "launching" in p.stdout, f"hub execs claude and its exit code is the result (rc {p.returncode})")
+    with open(marker) as f:
+        check(os.path.realpath(f.read()) == os.path.realpath(hub), "hub launches claude with cwd = hub dir")
+    p = run(["hub", hub], extra_env={"SAVANNAH_CLAUDE_BIN": os.path.join(tmp, "no-such-claude")})
+    check(p.returncode == 1 and "cannot launch" in p.stderr, "hub reports a missing claude binary")
+
     shutil.rmtree(tmp, ignore_errors=True)
     if failures == 0:
         print("test_work: all passed" + ("" if have_git else " (worktree cases skipped)"))

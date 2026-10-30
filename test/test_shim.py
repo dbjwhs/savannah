@@ -230,6 +230,37 @@ def test_work_tools(peer, fake, tmp):
     check(demo["transcript_path"] == hook["transcript_path"],
           "work_list transcript_path")
 
+    # ---- work_output: the reply channel, read from the hook's transcript ----
+    r = shim.call_tool("work_output", {"name": "shim-demo"})
+    check(r["result"]["isError"] is True and "no transcript" in text_of(r),
+          f"work_output before the transcript exists is an error ({text_of(r)})")
+    with open(hook["transcript_path"], "w") as f:
+        for obj in (
+            {"type": "user", "timestamp": "2026-10-30T01:00:00Z",
+             "message": {"role": "user", "content": "fix the flaky test"}},
+            {"type": "assistant", "timestamp": "2026-10-30T01:00:03Z",
+             "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "name": "Bash", "input": {"command": "ctest"}},
+                 {"type": "text", "text": "Fixed it: the sleep was too short."}]}},
+            {"type": "user", "timestamp": "2026-10-30T01:01:00Z",
+             "message": {"role": "user", "content": "now the docs"}},
+            {"type": "assistant", "timestamp": "2026-10-30T01:01:03Z",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "Docs updated."}]}},
+        ):
+            f.write(json.dumps(obj) + "\n")
+    r = shim.call_tool("work_output", {"name": "shim-demo"})
+    check(r["result"]["isError"] is False, f"work_output ok: {text_of(r)}")
+    check("Docs updated." in text_of(r) and "Fixed it" not in text_of(r),
+          "work_output default returns only the last turn")
+    r = shim.call_tool("work_output", {"name": "shim-demo", "last": 2})
+    check("Fixed it: the sleep was too short." in text_of(r) and "you: fix the flaky test" in text_of(r)
+          and "ctest" not in text_of(r), f"work_output last=2 has both turns, no tool calls ({text_of(r)!r})")
+    for bad in (0, -1, "2", 1.5, True):
+        r = shim.call_tool("work_output", {"name": "shim-demo", "last": bad})
+        check(r["result"]["isError"] is True, f"work_output last={bad!r} is an error")
+    r = shim.call_tool("work_output", {"name": "shim-flat"})
+    check(r["result"]["isError"] is True, "work_output of a session with no transcript is an error")
+
     # ---- work_note / work_notes (multi-line survives) ----
     r = shim.call_tool("work_note", {"name": "shim-demo",
                                      "text": "second note\nwith a 2nd line"})
@@ -415,8 +446,8 @@ def main():
     check(names == ["ask_peer", "list_peers", "peer_status", "task_cancel",
                     "task_list", "task_new", "task_output", "task_rm",
                     "task_send", "task_status", "work_jump", "work_list",
-                    "work_new", "work_note", "work_notes", "work_rm",
-                    "work_say", "work_shell"], "tool names")
+                    "work_new", "work_note", "work_notes", "work_output",
+                    "work_rm", "work_say", "work_shell"], "tool names")
     for t in r["result"]["tools"]:
         check("inputSchema" in t and "description" in t,
               f"schema for {t['name']}")

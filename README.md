@@ -248,7 +248,9 @@ work new fix-parser --prompt "look at src/json.cpp"   # worktree + tab + record
 work note fix-parser "flaky on nested arrays, suspect the depth check"
 work say fix-parser "run ctest -R test_json and summarize"   # types into the Claude pane
 work say fix-parser -- --continue      # text that starts with "-" goes after "--"
+work output fix-parser --last 2        # what that Claude said: the last two turns, prompt + reply
 work ls          # NAME  BRANCH  STATE  LAST PROMPT  LAST NOTE
+work hub ~/ng/dbjwhs                   # the folder of ALL your repos as the coordinating Claude session
 ```
 
 `new` creates `<repo>/.savannah-worktrees/<name>` on branch `work/<name>`
@@ -261,9 +263,15 @@ tab, remove the worktree, archive the notes; the branch stays, it is your
 work) complete the set. `new` of a name whose `work/<name>` branch survived
 an earlier `rm` reattaches to that branch and says so. The same verbs are MCP
 tools in the shim (`work_new`, `work_list`, `work_note`, `work_notes`,
-`work_say`, `work_shell`, `work_jump`, `work_rm`), so a hub Claude Code
-session can open a tab for you, leave a note, or type a line into another
-session. The dash shows each work session in a WORK column on LOCAL
+`work_say`, `work_output`, `work_shell`, `work_jump`, `work_rm`), so a hub
+Claude Code session can open a tab for you, type a line into it, and read
+the reply back. `work hub DIR` sets that hub up: it registers the shim in
+`DIR/.mcp.json` with absolute paths (the repo's own `.mcp.json` only works
+from inside the repo), writes a starter `CLAUDE.md` (from `work/hub_CLAUDE.md`,
+never overwriting yours) that tells the hub Claude to delegate every task to
+a tab and read it back with `work_output`, and launches `claude` there. The
+intended shape: `work hub ~/ng/dbjwhs` in one iTerm2 tab, the dash in
+another, and tabs appearing as the hub hands out work. The dash shows each work session in a WORK column on LOCAL
 SESSIONS, joined to its live Claude Code session through the hook files
 (`hooks/`) by worktree path at read time, and keeps an `offline` row with the
 last note when the tab is gone. Details and the storage layout are in
@@ -273,9 +281,12 @@ What does not work: iTerm2 on macOS only (the Terminal seam exists, a tmux
 implementation does not). STATE, LAST PROMPT and the dash join need the hook
 installed (`python3 hooks/install.py`); without it every session reads
 `offline`. Typing into a pane is the only input channel into an interactive
-Claude Code session, and it is blind: `say` presses Enter and never reads a
-reply or checks that Claude was ready (it does refuse empty text, exit 2).
-Nothing watches the panes, so a tab closed by hand leaves an `offline` record
+Claude Code session, and it is blind: `say` presses Enter and never checks
+that Claude was ready (it does refuse empty text, exit 2). `output` is the
+read side, but it reads the transcript file Claude Code writes, not the
+pane: the subset of that file it relies on is pinned by a test fixture, not
+by any published contract, and a reply is only final once `ls` reports the
+tab `done` or `waiting`. Nothing watches the panes, so a tab closed by hand leaves an `offline` record
 until `rm`. `rm` refuses a dirty worktree without `--force`, `--force`
 discards uncommitted changes there, and `rm` refuses when another work
 session's worktree lies inside the one it is about to remove (`--keep-worktree`

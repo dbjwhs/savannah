@@ -19,6 +19,7 @@
 #   work_note(name, text)           -> append a plain-text note for the human
 #   work_notes(name)                -> read those notes
 #   work_say(name, text)            -> type into that tab's interactive Claude pane
+#   work_output(name, last?)        -> the last N turns (prompt + reply) of that tab
 #   work_shell(name, cmd)           -> type into that tab's shell pane
 #   work_jump(name, shell?)         -> focus the tab
 #   work_rm(name, ...)              -> close tab, remove worktree, archive notes
@@ -29,7 +30,8 @@
 # interactive Claude Code tabs in iTerm2 on THIS machine (work/savannah_work.py,
 # a file-owned local object; no savannahd, no mesh, no tokens spent by the
 # tool itself). Typing into a pane is how the hub talks to an interactive
-# session; there is no answer channel back, the human reads the tab.
+# session; work_output is the read side (it parses the transcript Claude Code
+# writes), work_list the state (working/idle/done/waiting/offline).
 #
 # Implementation: a Model Context Protocol stdio server in pure stdlib
 # Python that shells out to the savannah CLI, which carries the tested
@@ -406,9 +408,9 @@ TOOLS = [
         "description": (
             "Type text (plus Enter) into the interactive Claude Code pane of "
             "a local work session's iTerm2 tab, as if the owner had typed it. "
-            "This is the only way to talk to that interactive session; there "
-            "is no reply channel, the human reads the tab (or work_list "
-            "shows its state). Fails if the pane no longer exists."
+            "This is how you talk to that interactive session; it returns "
+            "nothing. Poll work_list for its state, then read the reply with "
+            "work_output. Fails if the pane no longer exists."
         ),
         "inputSchema": {
             "type": "object",
@@ -423,6 +425,34 @@ TOOLS = [
                 },
             },
             "required": ["name", "text"],
+        },
+    },
+    {
+        "name": "work_output",
+        "description": (
+            "Read what the interactive Claude in a local work session's tab "
+            "has said: the last N turns, each the human prompt and the "
+            "assistant's reply text (tool calls and thinking left out). This "
+            "is the reply channel for work_say: send with work_say, poll "
+            "work_list until state is done or waiting, then read here. "
+            "Parses the transcript Claude Code itself writes (the hook's "
+            "recorded path, else the newest transcript for that worktree). "
+            "Fails until that Claude has started."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "last": {
+                    "type": "integer",
+                    "description": "How many recent turns (default 1)",
+                    "minimum": 1,
+                },
+            },
+            "required": ["name"],
         },
     },
     {
@@ -771,6 +801,17 @@ def tool_work_say(args):
     return [text_block(proc.stdout.strip() or "ok")], False
 
 
+def tool_work_output(args):
+    cli = ["output", work_name(args)]
+    last = args.get("last")
+    if last is not None:
+        if isinstance(last, bool) or not isinstance(last, int) or last < 1:
+            raise RuntimeError("last must be a positive integer")
+        cli += ["--last", str(last)]
+    proc = run_work(cli)
+    return [text_block(proc.stdout.rstrip("\n") or "(no turns yet)")], False
+
+
 def tool_work_shell(args):
     cmd = work_text(args, "cmd", "shell command")
     proc = run_work(["sh", work_name(args), "--", cmd])
@@ -811,6 +852,7 @@ HANDLERS = {
     "work_note": tool_work_note,
     "work_notes": tool_work_notes,
     "work_say": tool_work_say,
+    "work_output": tool_work_output,
     "work_shell": tool_work_shell,
     "work_jump": tool_work_jump,
     "work_rm": tool_work_rm,

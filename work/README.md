@@ -24,7 +24,9 @@ work say fix-parser "run the tests again"   # types into the Claude pane
 work say fix-parser -- --continue           # text starting with "-" goes after "--"
 work sh fix-parser git status               # types into the shell pane
 work jump fix-parser [--shell]              # focus the pane
+work output fix-parser [--last N] [--json]  # what that Claude said: last N turns (prompt + reply)
 work rm fix-parser [--keep-worktree] [--force]
+work hub [DIR] [--no-launch] [--json]       # make DIR (your folder of repos) the hub, launch claude there
 ```
 
 `new` flags: `--repo DIR` (default cwd; when a worktree is made, any directory
@@ -54,6 +56,49 @@ it yourself; that is the point of keeping it.
 
 The name `archive` is reserved (it is the notes graveyard under the work dir),
 along with mesh task ids (`t-<digits>`).
+
+`output` is the read side of `say`. It parses the transcript Claude Code
+itself writes for that tab (the `transcript_path` the hook recorded, else the
+newest `.jsonl` under `$CLAUDE_CONFIG_DIR/projects/<worktree with every
+non-alphanumeric character replaced by "-">/`, default `~/.claude/projects`)
+and prints the last N turns: a header with the local time and the first line
+of your prompt, then the assistant's text blocks joined in order. Thinking,
+tool calls, tool results and subagent (sidechain) lines are dropped. A turn
+whose reply has not arrived yet prints `(no reply yet)`. `--json` gives
+`{name, transcript_path, source ("hook" or "projects"), turns_total,
+turns:[{prompt, text, asked, answered}]}`. Exit 1 until that Claude has
+started (there is no transcript to read).
+
+## The hub
+
+The pattern this exists for: one coordinating Claude Code session in the
+directory that holds all your repos, opening a tab per task and reading the
+results back, so you never sit in the tabs yourself unless a row says
+`waiting`.
+
+```bash
+work hub ~/ng/dbjwhs            # writes .mcp.json + CLAUDE.md there, then runs claude in it
+work hub ~/ng/dbjwhs --no-launch
+```
+
+`hub` registers the peer shim in `DIR/.mcp.json` under the `peer` key with
+ABSOLUTE paths (the repo's own `.mcp.json` uses relative ones, which is why a
+Claude started anywhere else never saw the `work_*` tools). Other servers in
+an existing `.mcp.json` are kept; a `peer` entry that differs is replaced and
+reported as `updated`; a malformed file is refused untouched. `DIR/CLAUDE.md`
+is created from `work/hub_CLAUDE.md` only when missing, never overwritten
+(the output says `kept` and names the template so you can merge by hand).
+Then, unless `--no-launch`, it `chdir`s to DIR and execs `claude`
+(`$SAVANNAH_CLAUDE_BIN` overrides the command; the exit code is claude's).
+The first launch asks you to approve the project MCP server; that is Claude
+Code's own prompt, answer once.
+
+The hub session then has `work_new(name, repo="<subdir>", prompt=...)` to
+open a tab, `work_list` for every tab's state, `work_say`/`work_shell` to
+steer, `work_output` to read what a tab's Claude said, `work_note`/`work_notes`
+for the record, `work_rm` to finish. The template CLAUDE.md spells out that
+loop and the rules (no editing repos from the hub, one tab per work item,
+`say` is a request and `output` the result).
 
 Exit codes: 0 success, 1 user error (unknown name, git refused, pane gone),
 2 bad usage.
@@ -148,6 +193,18 @@ init or commit is a failure.
 - A fresh worktree is a new folder to Claude Code, so the first `claude` in it
   shows the "do you trust the files in this folder" prompt. Until you answer
   it no hook fires and `ls` says `offline` even though the tab is open.
+- `output` reads a file Claude Code owns. The subset it relies on (`type`
+  `user`/`assistant`, `message.content` text blocks, `isSidechain`,
+  `timestamp`) is pinned by `test/test_work.py`'s hand-written transcript,
+  not by any contract Claude Code publishes; if the layout drifts, `output`
+  degrades to `(no turns yet)`. The projects-dir fallback also guesses the
+  directory name from the worktree path; the hook's recorded path is the
+  reliable route, so keep the hook installed. The reply is only as final as
+  the tab's state: read `work ls` (or `work_list`) and wait for `done` or
+  `waiting` before trusting `output`.
+- `hub` has no `tmux` form either, and it only knows how to launch `claude`
+  with no extra arguments (`--no-launch`, then run it yourself for anything
+  else). It never edits an existing `CLAUDE.md`.
 - Nothing watches the panes. If you close the tab by hand the record stays
   until you `rm` it; `ls` just shows `offline`. `say`/`sh`/`jump` report exit 1
   when the pane is gone, nothing more.

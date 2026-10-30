@@ -30,10 +30,22 @@
 #   say <name> <text...>      type into the Claude pane
 #   sh <name> <cmd...>        type into the shell pane
 #   jump <name> [--shell]     focus the Claude pane (or shell pane)
+#   output <name> [--last N]  the last N turns (prompt + reply) of that tab's Claude
 #   rm <name> [--keep-worktree] [--force]
+#   hub [DIR] [--no-launch]   make DIR a hub (.mcp.json with the peer shim +
+#                             a starter CLAUDE.md) and launch claude there
 #
 # Exit codes: 0 success, 1 user error (unknown name, git refused, pane gone),
-# 2 bad usage. --json on ls/new/note emits one JSON value on stdout.
+# 2 bad usage. --json on ls/new/note/output/hub emits one JSON value on stdout.
+#
+# Reply channel: `say` types into the pane and gets nothing back. `output`
+# is the read side: it parses the transcript Claude Code itself writes
+# (the path the hook recorded, else the newest .jsonl under
+# $CLAUDE_CONFIG_DIR/projects/<encoded worktree>/) and prints the human
+# prompts and assistant text of the last N turns. The transcript is Claude
+# Code's file and its layout is not a contract we own; the subset read here
+# (type user/assistant, message.content text blocks, isSidechain) is pinned
+# by test_work's hand-written transcript.
 #
 # Trust: the NAME on the command line is the only thing that names a record
 # directory. A record.json's own "name" field is never used to build a path
@@ -59,6 +71,9 @@ RESERVED_RE = re.compile(r"t-[0-9]+")  # mesh task ids
 WORKTREES_SUBDIR = ".savannah-worktrees"
 ARCHIVE_SUBDIR = "archive"   # notes graveyard under the work dir; never a session name
 LAST_PROMPT_MAX = 200
+OUTPUT_PROMPT_CLIP = 120           # chars of the prompt shown on an output header
+HUB_TEMPLATE = "hub_CLAUDE.md"     # sibling of this module; copied into a new hub
+HUB_SERVER = "peer"                # the mcpServers key the hub registers
 ITERM_RUNNING_GUARD = 'if application "iTerm2" is not running then return false'
 
 
@@ -559,6 +574,189 @@ def ls_entry(rec, hooks):
 
 
 # --------------------------------------------------------------------------
+# transcripts (the read side of say)
+
+
+def claude_config_dir():
+    d = os.environ.get("CLAUDE_CONFIG_DIR")
+    if d:
+        return d
+    return os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def encode_project_dir(path):
+    """Claude Code names ~/.claude/projects/<dir> after the cwd with every
+    non-alphanumeric character replaced by '-' (so '/a/b.c' -> '-a-b-c').
+    Observed, not promised: the hook's transcript_path is the primary source
+    and this is only the fallback for a tab whose hook file is gone."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def find_transcript(rec, hooks):
+    """(path, source) of the transcript for a work session, or ("", "").
+    source is "hook" (the live hook file named it) or "projects" (newest
+    .jsonl in Claude Code's own per-project directory for the worktree)."""
+    h = join_session(rec, hooks)
+    p = (h or {}).get("transcript_path") or ""
+    if isinstance(p, str) and p and os.path.isfile(p):
+        return p, "hook"
+    worktree = rec.get("worktree") or ""
+    if not worktree:
+        return "", ""
+    d = os.path.join(claude_config_dir(), "projects",
+                     encode_project_dir(os.path.realpath(worktree)))
+    try:
+        names = [n for n in os.listdir(d) if n.endswith(".jsonl")]
+    except OSError:
+        return "", ""
+    if not names:
+        return "", ""
+    newest = max(names, key=lambda n: os.path.getmtime(os.path.join(d, n)))
+    return os.path.join(d, newest), "projects"
+
+
+def _text_blocks(content):
+    if isinstance(content, str):
+        return [content] if content.strip() else []
+    if not isinstance(content, list):
+        return []
+    out = []
+    for b in content:
+        if isinstance(b, dict) and b.get("type") == "text":
+            t = b.get("text")
+            if isinstance(t, str) and t.strip():
+                out.append(t)
+    return out
+
+
+def _human_prompt(content):
+    """The text of a human turn, or None for a tool_result carrier."""
+    if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+        return None
+    parts = _text_blocks(content)
+    return "\n".join(parts) if parts else None
+
+
+def transcript_turns(path):
+    """Turns of a Claude Code transcript: [{prompt, text, asked, answered}].
+    A turn starts at each human prompt (type user whose content is not a
+    tool_result) and collects the text blocks of every assistant message
+    until the next prompt; thinking and tool_use blocks are dropped,
+    sidechain (subagent) lines are skipped, unparsable lines are ignored."""
+    turns = []
+    cur = None
+    try:
+        f = open(path, encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise UserError(f"cannot read transcript {path}: {e.strerror or e}")
+    with f:
+        for line in f:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(d, dict) or d.get("isSidechain"):
+                continue
+            msg = d.get("message")
+            if not isinstance(msg, dict):
+                continue
+            kind = d.get("type")
+            ts = d.get("timestamp") if isinstance(d.get("timestamp"), str) else ""
+            if kind == "user":
+                prompt = _human_prompt(msg.get("content"))
+                if prompt is None:
+                    continue
+                cur = {"prompt": prompt, "text": "", "asked": ts, "answered": ""}
+                turns.append(cur)
+            elif kind == "assistant":
+                parts = _text_blocks(msg.get("content"))
+                if not parts:
+                    continue
+                if cur is None:
+                    cur = {"prompt": "", "text": "", "asked": "", "answered": ""}
+                    turns.append(cur)
+                joined = "\n\n".join(parts)
+                cur["text"] = (cur["text"] + "\n\n" + joined) if cur["text"] else joined
+                cur["answered"] = ts or cur["answered"]
+    return turns
+
+
+def local_stamp(iso):
+    """'2026-10-30T01:33:10.326Z' -> '2026-10-29 18:33 local'; '' stays ''."""
+    if not iso:
+        return ""
+    try:
+        import datetime
+        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M local")
+    except ValueError:
+        return iso
+
+
+# --------------------------------------------------------------------------
+# hub (a directory of repos where a coordinating Claude runs)
+
+
+def savannah_root():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def hub_server_entry():
+    """The mcpServers entry for the peer shim, with absolute paths so it works
+    from any directory (the repo's own .mcp.json uses relative ones)."""
+    root = savannah_root()
+    entry = {"command": "python3",
+             "args": [os.path.join(root, "shim", "peer.py")]}
+    env = {}
+    for key, rel in (("SAVANNAH_BIN", ("build", "savannah")),
+                     ("SAVANNAH_KEY", ("build", "mesh.key"))):
+        path = os.path.join(root, *rel)
+        if os.path.isfile(path):
+            env[key] = path
+    if env:
+        entry["env"] = env
+    return entry
+
+
+def hub_template_text():
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), HUB_TEMPLATE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        raise UserError(f"hub template missing: {path} ({e.strerror or e})")
+
+
+def write_hub_mcp(path):
+    """Merge the peer server into DIR/.mcp.json. Other servers are kept.
+    Returns 'created', 'updated' or 'unchanged'."""
+    cfg = {}
+    status = "created"
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except ValueError as e:
+            raise UserError(f"refusing to rewrite malformed {path}: {e}")
+        except OSError as e:
+            raise UserError(f"cannot read {path}: {e.strerror or e}")
+        if not isinstance(cfg, dict):
+            raise UserError(f"refusing to rewrite {path}: top level is not an object")
+        status = "updated"
+    servers = cfg.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+        cfg["mcpServers"] = servers
+    entry = hub_server_entry()
+    if servers.get(HUB_SERVER) == entry:
+        return "unchanged"
+    servers[HUB_SERVER] = entry
+    atomic_write(path, cfg)
+    return status
+
+
+# --------------------------------------------------------------------------
 # verbs
 
 
@@ -775,6 +973,76 @@ def cmd_jump(a):
     return 0
 
 
+def cmd_output(a):
+    if a.last < 1:
+        return usage_error("output", "--last wants a positive count")
+    rec = load_record(a.name)
+    path, source = find_transcript(rec, load_hook_sessions())
+    if not path:
+        raise UserError(f"no transcript for {a.name} yet (claude not started in "
+                        f"{rec.get('worktree') or 'its worktree'}, or hooks/install.py not run)")
+    turns = transcript_turns(path)
+    shown = turns[-a.last:] if turns else []
+    if a.json:
+        print(json.dumps({"name": a.name, "transcript_path": path, "source": source,
+                          "turns_total": len(turns), "turns": shown}))
+        return 0
+    if not shown:
+        print("(no turns yet)")
+        return 0
+    for i, t in enumerate(shown):
+        if i:
+            print()
+        head = (t["prompt"].strip().splitlines() or [""])[0]
+        if len(head) > OUTPUT_PROMPT_CLIP:
+            head = head[: OUTPUT_PROMPT_CLIP - 1] + "~"
+        when = local_stamp(t["answered"] or t["asked"])
+        print(f"## {when}  you: {head}" if head else f"## {when}")
+        print(t["text"] if t["text"] else "(no reply yet)")
+    return 0
+
+
+def cmd_hub(a):
+    d = os.path.abspath(a.dir or os.getcwd())
+    if not os.path.isdir(d):
+        raise UserError(f"not a directory: {d}")
+    mcp_path = os.path.join(d, ".mcp.json")
+    mcp_status = write_hub_mcp(mcp_path)
+    claude_md = os.path.join(d, "CLAUDE.md")
+    if os.path.exists(claude_md):
+        md_status = "kept"
+    else:
+        text = hub_template_text()
+        tmp = claude_md + ".tmp.%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, claude_md)
+        md_status = "created"
+    launch = not a.no_launch
+    argv = shlex.split(os.environ.get("SAVANNAH_CLAUDE_BIN", "") or "claude")
+    if a.json:
+        print(json.dumps({"dir": d, "mcp_json": mcp_path, "mcp_status": mcp_status,
+                          "claude_md": claude_md, "claude_md_status": md_status,
+                          "launch": launch, "claude": argv}))
+    else:
+        print(f"hub {d}")
+        print(f"  {mcp_path}: {mcp_status} ({HUB_SERVER} shim)")
+        print(f"  {claude_md}: {md_status}" + (
+            "" if md_status == "created" else
+            f" (not touched; see {os.path.join(os.path.dirname(os.path.realpath(__file__)), HUB_TEMPLATE)})"))
+        if launch:
+            print(f"  launching {' '.join(argv)} in {d}")
+    sys.stdout.flush()
+    if not launch:
+        return 0
+    try:
+        os.chdir(d)
+        os.execvp(argv[0], argv)
+    except OSError as e:
+        raise UserError(f"cannot launch {argv[0]}: {e.strerror or e} (set SAVANNAH_CLAUDE_BIN)")
+    return 0  # not reached: execvp replaces the process
+
+
 def cmd_rm(a):
     name = a.name
     if not valid_name(name):
@@ -924,11 +1192,24 @@ def build_parser():
     p.add_argument("--shell", action="store_true")
     p.set_defaults(fn=cmd_jump)
 
+    p = sub.add_parser("output", help="print the last N turns (your prompt, Claude's reply) of that tab")
+    p.add_argument("name")
+    p.add_argument("--last", type=int, default=1, metavar="N")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_output)
+
     p = sub.add_parser("rm", help="close tab, remove worktree, archive notes")
     p.add_argument("name")
     p.add_argument("--keep-worktree", action="store_true")
     p.add_argument("--force", action="store_true", help="discard a dirty worktree")
     p.set_defaults(fn=cmd_rm)
+
+    p = sub.add_parser("hub", help="register the peer shim in DIR/.mcp.json, add a starter "
+                                   "CLAUDE.md, launch claude there (the coordinating session)")
+    p.add_argument("dir", nargs="?", help="hub directory (default: cwd); your folder of repos")
+    p.add_argument("--no-launch", action="store_true", help="write the files, do not start claude")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_hub)
     return ap
 
 

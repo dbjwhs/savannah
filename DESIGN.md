@@ -369,3 +369,34 @@ hard parts and remain open.
   at the folder-trust prompt and the hook join reads `offline` until it is
   answered. End-to-end smoke (new, sh, jump, say, rm) is green against the
   real iTerm2; it stays out of CI on purpose.
+- **10/29/2026 (the hub, 5e)**: Live testing of 5d showed the tool was one
+  step short of the owner's actual picture: not "a tab per work item that I
+  drive from a shell" but "one Claude session in the directory that holds
+  ALL my repos, which opens the tabs and reads them back while I watch the
+  board". Two gaps. (1) The peer shim was registered only in savannah's own
+  `.mcp.json`, with relative paths, so a Claude started in `~/ng/dbjwhs` had
+  no `work_*` tools at all. `work hub DIR` fixes the wiring: it merges a
+  `peer` entry with absolute paths into `DIR/.mcp.json` (other servers kept,
+  malformed file refused), drops a starter `CLAUDE.md` (template
+  `work/hub_CLAUDE.md`, never overwrites) that tells the hub Claude its job is
+  to delegate to tabs and not edit repos itself, then execs `claude` in DIR.
+  (2) `say` had no reply channel: the hub could type into a tab but only the
+  human could read the answer. `work output <name> [--last N]` (shim
+  `work_output`) parses the transcript Claude Code itself writes for that tab
+  (the hook's recorded `transcript_path`, else the newest `.jsonl` under
+  `$CLAUDE_CONFIG_DIR/projects/<encoded worktree>/`) and returns the last N
+  turns as prompt + assistant text, dropping thinking, tool calls, tool
+  results and sidechain lines. Decisions: read Claude Code's own file rather
+  than scrape the pane or wrap the interactive session in a pty, because the
+  file is complete, UTF-8 and already there; pin the subset we read with a
+  hand-written transcript in test_work rather than pretend it is a contract;
+  keep the hook path primary and the projects-dir guess a fallback; the
+  hub stays a Claude Code session with files on disk, no new daemon, nothing
+  in savannahd or song. Rejected: a `work hub` that is its own TUI or REPL
+  (the dash already is the board; the hub's brain is Claude), and extra
+  `claude` arguments through `hub` (use `--no-launch`). Live on the mac the
+  same day: `hub ..` wrote both files into `~/ng/dbjwhs`, and `output`
+  read two real turns back from a tab opened with `new` and driven with
+  `say`. Tests: test_work (transcript fixture, projects fallback,
+  `CLAUDE_CONFIG_DIR`, hub create/merge/keep/refuse/exec via a fake claude),
+  test_shim (`work_output`, `last` validation).
