@@ -22,6 +22,12 @@
 #   work_output(name, last?)        -> the last N turns (prompt + reply) of that tab
 #   work_shell(name, cmd)           -> type into that tab's shell pane
 #   work_jump(name, shell?)         -> focus the tab
+#   work_open(name, shell?)         -> focus the tab, or reopen it when it is gone
+#   work_adopt(name, session_id, note?, title?) -> take a tab the human opened into a named session
+#   work_move(name, priority?, rank?) -> the board section (active/later) and order of a session
+#   work_rename(old, new)           -> a new record name (worktree, branch and tab keep theirs)
+#   work_status(name, text?, clear?) -> read, report or clear what that tab's Claude is polling
+#   work_title(name, text?, clear?)  -> read, set or clear the free-text title the board shows
 #   work_rm(name, ...)              -> close tab, remove worktree, archive notes
 #
 # ask_peer is one-shot; the task_* tools drive persistent, resumable worker
@@ -47,16 +53,43 @@
 #                            running this shim, sys.executable, on
 #                            <real dir of peer.py>/../work/savannah_work.py);
 #                            that module honors SAVANNAH_WORK_DIR,
-#                            SAVANNAH_SESSIONS_DIR and SAVANNAH_OSASCRIPT
+#                            SAVANNAH_SESSIONS_DIR and SAVANNAH_IT2
 #
 # Wire: newline-delimited JSON-RPC 2.0 on stdin/stdout per the MCP stdio
 # transport. Logs go to stderr; stdout carries protocol frames only.
+#
+# The shim also writes savannah's one log (work/savannah_log.py beside this
+# checkout's work/, src=shim; $SAVANNAH_LOG_DIR, default
+# ~/.claude/savannah/log/savannah.log): an INFO line per tool call (tool,
+# argument keys, the prompt's head), DEBUG when it ends, WARN when it fails;
+# `savannah work log` reads them. Optional: a shim copied out of the
+# checkout, or an unwritable log directory, logs nothing and says nothing.
 
 import json
 import os
 import shlex
 import subprocess
 import sys
+import time
+
+try:
+    sys.path.insert(0, os.path.normpath(os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "..", "work")))
+    import savannah_log
+    savannah_log.configure("shim")
+    log_debug, log_info, log_warn = (savannah_log.log_debug, savannah_log.log_info,
+                                     savannah_log.log_warn)
+except Exception:  # noqa: BLE001 - no log is fine, a dead shim is not
+    def log_debug(_msg, **_kv):
+        pass
+
+    def log_info(_msg, **_kv):
+        pass
+
+    def log_warn(_msg, **_kv):
+        pass
+
+LOG_PROMPT_CLIP = 120   # chars of a prompt/text argument kept in the tool's INFO line
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "peer", "version": "0.1.0"}
@@ -348,6 +381,12 @@ TOOLS = [
                     "type": "string",
                     "description": "First plain-text note for the human",
                 },
+                "title": {
+                    "type": "string",
+                    "description": "Free-text title the board shows (first "
+                                   "line, 120 chars); the name stays the "
+                                   "identifier",
+                },
             },
             "required": ["name"],
         },
@@ -502,6 +541,187 @@ TOOLS = [
         },
     },
     {
+        "name": "work_open",
+        "description": (
+            "Bring a local work session's tab forward, or, when its tab is "
+            "gone (iTerm2 restarted, tab closed by hand), open it again: a "
+            "new tab with Claude above and a shell below in the same "
+            "worktree, Claude resuming the worktree's last conversation when "
+            "one exists. Returns JSON {name, action: focused|reopened, "
+            "tab_id, claude_pane, shell_pane}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "shell": {
+                    "type": "boolean",
+                    "description": "When focusing, focus the shell pane "
+                                   "instead of the Claude pane",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "work_adopt",
+        "description": (
+            "Take an interactive Claude Code tab the human opened themselves "
+            "(one work_list does not show; known by its Claude session id, "
+            "the name of its hook file under ~/.claude/savannah/sessions/) "
+            "into a named local work session. No new tab, no worktree: the "
+            "directory that tab runs in becomes the session's worktree as "
+            "it is. From then on work_note, work_say, work_output, "
+            "work_open, work_jump and work_rm address it; work_rm forgets "
+            "the record and never touches the directory. It has no shell "
+            "pane (work_shell fails) until work_open remakes the tab after "
+            "its pane is gone. Returns the record JSON (adopted: true)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "New work session name: "
+                                   "^[a-z0-9][a-z0-9._-]{0,63}$",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "That tab's Claude Code session id (its "
+                                   "hook file's session_id)",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "First note to record",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Free-text title the board shows (first "
+                                   "line, 120 chars)",
+                },
+            },
+            "required": ["name", "session_id"],
+        },
+    },
+    {
+        "name": "work_move",
+        "description": (
+            "Where a local work session sits on the savannah board: priority "
+            "'active' (the top section, what the human is on now) or 'later' "
+            "(the bottom section), and/or its rank, the order inside the "
+            "section (lower first; a new session ranks by its creation time). "
+            "At least one of priority or rank is required. Storage only: the "
+            "tab, the worktree and the branch are not touched. Returns "
+            "{name, priority, rank}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["active", "later"],
+                    "description": "The board section",
+                },
+                "rank": {
+                    "type": "integer",
+                    "description": "Order inside the section, lower first "
+                                   "(may be negative)",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "work_rename",
+        "description": (
+            "Rename a local work session: its record, notes and status move "
+            "to the new name. The worktree directory, the git branch "
+            "(work/<old>) and the tab's own Claude session name keep the old "
+            "name, because a running Claude sits in that directory. Returns "
+            "{name, old, worktree, branch}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "old": {
+                    "type": "string",
+                    "description": "Current name",
+                },
+                "new": {
+                    "type": "string",
+                    "description": "New name: ^[a-z0-9][a-z0-9._-]{0,63}$",
+                },
+            },
+            "required": ["old", "new"],
+        },
+    },
+    {
+        "name": "work_status",
+        "description": (
+            "What a local work session's own Claude says it is polling for "
+            "the human (a test run, CI, a deploy): with text, record one more "
+            "poll with that text (first line, 200 chars; the count goes up by "
+            "one each time); with clear, remove the report; with neither, "
+            "read it (status null when there is none). The board shows the "
+            "text, the count and how long ago. Self-reported: nothing "
+            "verifies it. Returns JSON."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "What is being waited on, e.g. "
+                                   "'waiting for ctest (run 2 of 3)'",
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Remove the report instead",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "work_title",
+        "description": (
+            "The free-text title of a local work session (capitals, spaces, "
+            "anything; first line, 120 chars): what the board shows in its "
+            "WORK column while the name stays the identifier underneath. "
+            "With text, set it; with clear, remove it; with neither, read "
+            "it. Returns JSON {name, title} (title empty when there is none)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Work session name from work_list",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The title to set",
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Remove the title instead",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
         "name": "work_rm",
         "description": (
             "Remove a local work session: archive notes.md under "
@@ -509,7 +729,8 @@ TOOLS = [
             "when dirty unless force; keep_worktree skips this; a refusal "
             "leaves everything in place, tab included), then close its iTerm2 "
             "tab (best effort) and delete the record. The git branch is left "
-            "alone: it is the human's work."
+            "alone: it is the human's work. An adopted session's directory "
+            "is never touched."
         ),
         "inputSchema": {
             "type": "object",
@@ -771,6 +992,7 @@ def tool_work_new(args):
         cli += ["--no-worktree"]
     cli += work_opt(args, "prompt", "--prompt")
     cli += work_opt(args, "note", "--note")
+    cli += work_opt(args, "title", "--title")
     proc = run_work(cli)
     return [text_block(proc.stdout.strip())], False
 
@@ -826,6 +1048,75 @@ def tool_work_jump(args):
     return [text_block(proc.stdout.strip() or "ok")], False
 
 
+def tool_work_open(args):
+    cli = ["open", work_name(args), "--json"]
+    if args.get("shell"):
+        cli += ["--shell"]
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip() or "ok")], False
+
+
+def tool_work_adopt(args):
+    session_id = work_text(args, "session_id", "session id").strip()
+    # `=` form: a session id is never read as an option, whatever it looks like.
+    cli = ["adopt", work_name(args), f"--session={session_id}", "--json"]
+    cli += work_opt(args, "note", "--note")
+    cli += work_opt(args, "title", "--title")
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_work_move(args):
+    cli = ["move", work_name(args), "--json"]
+    priority = args.get("priority")
+    rank = args.get("rank")
+    if priority is None and rank is None:
+        raise RuntimeError("give priority ('active' or 'later'), rank, or both")
+    if priority is not None:
+        if priority not in ("active", "later"):
+            raise RuntimeError("priority must be 'active' or 'later'")
+        cli.append(f"--{priority}")
+    if rank is not None:
+        if isinstance(rank, bool) or not isinstance(rank, int):
+            raise RuntimeError("rank must be an integer")
+        cli.append(f"--rank={rank}")  # one token: a negative rank is a value
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_work_rename(args):
+    old = work_text(args, "old", "old name").strip()
+    new = work_text(args, "new", "new name").strip()
+    proc = run_work(["rename", old, new, "--json"])
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_work_status(args):
+    cli = ["status", work_name(args), "--json"]
+    text = args.get("text")
+    if args.get("clear"):
+        if text not in (None, ""):
+            raise RuntimeError("clear takes no text")
+        cli.append("--clear")
+    elif text is not None:
+        cli += ["--", work_text(args, "text", "status text")]
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip())], False
+
+
+def tool_work_title(args):
+    cli = ["title", work_name(args), "--json"]
+    text = args.get("text")
+    if args.get("clear"):
+        if text not in (None, ""):
+            raise RuntimeError("clear takes no text")
+        cli.append("--clear")
+    elif text is not None:
+        cli += ["--", work_text(args, "text", "title text")]
+    proc = run_work(cli)
+    return [text_block(proc.stdout.strip())], False
+
+
 def tool_work_rm(args):
     cli = ["rm", work_name(args)]
     if args.get("keep_worktree"):
@@ -855,6 +1146,12 @@ HANDLERS = {
     "work_output": tool_work_output,
     "work_shell": tool_work_shell,
     "work_jump": tool_work_jump,
+    "work_open": tool_work_open,
+    "work_adopt": tool_work_adopt,
+    "work_move": tool_work_move,
+    "work_rename": tool_work_rename,
+    "work_status": tool_work_status,
+    "work_title": tool_work_title,
     "work_rm": tool_work_rm,
 }
 
@@ -875,6 +1172,17 @@ def reply_error(msg_id, code, message):
 def emit(obj):
     sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
     sys.stdout.flush()
+
+
+def tool_prompt_head(args):
+    """The head of whatever text a tool call carries (prompt, text or cmd),
+    for the log line; "" when it carries none."""
+    for key in ("prompt", "text", "cmd"):
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            head = v.strip().splitlines()[0]
+            return head if len(head) <= LOG_PROMPT_CLIP else head[:LOG_PROMPT_CLIP - 1] + "~"
+    return ""
 
 
 def handle(msg):
@@ -898,15 +1206,31 @@ def handle(msg):
         reply(msg_id, {"tools": TOOLS})
     elif method == "tools/call":
         params = msg.get("params", {})
-        handler = HANDLERS.get(params.get("name", ""))
+        tool = params.get("name", "")
+        args = params.get("arguments", {})
+        if not isinstance(args, dict):
+            args = {}
+        handler = HANDLERS.get(tool)
         if handler is None:
+            log_warn("unknown tool", tool=str(tool))
             reply_error(msg_id, -32602,
                         f"unknown tool: {params.get('name')!r}")
             return
+        log_info("tool", tool=tool, args=sorted(str(k) for k in args),
+                 prompt=tool_prompt_head(args))
+        t0 = time.time()
         try:
-            blocks, is_error = handler(params.get("arguments", {}))
+            blocks, is_error = handler(args)
             reply(msg_id, {"content": blocks, "isError": is_error})
+            ms = int((time.time() - t0) * 1000)
+            if is_error:
+                log_warn("tool error", tool=tool, ms=ms,
+                         error=(blocks[0].get("text", "") if blocks else "")[:200])
+            else:
+                log_debug("tool done", tool=tool, ms=ms)
         except Exception as e:  # tool failure -> tool-level error result
+            log_warn("tool error", tool=tool, ms=int((time.time() - t0) * 1000),
+                     error=str(e)[:200])
             reply(msg_id, {"content": [text_block(str(e))],
                            "isError": True})
     elif not is_notification:

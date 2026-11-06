@@ -3,10 +3,24 @@
 //
 // savannah — the human's remote control (and the test harness).
 //
+//   savannah                       the work board (execs savannah-dash)
+//   savannah mesh [...]            the board with the mesh workers too
+//   savannah hub [DIR] [--no-launch]
+//   savannah work <verb> ...       the local work-session CLI
 //   savannah ls [--timeout-ms N]
 //   savannah ask <node> "<prompt>" [options]
 //   savannah info <node> [options]
 //   savannah status <node> [options]
+//   savannah task ...
+//
+// A bare `savannah` is the front door: it execs the Go dash (path baked in at
+// build time as SAVANNAH_DASH_BIN, default <repo>/dash/savannah-dash, env
+// overrides, `savannah-dash` on PATH as the last resort) in its default work
+// mode, the board of your work sessions; `savannah mesh` is the same board
+// with the mesh workers. `hub` and `work` exec python3 on
+// work/savannah_work.py (SAVANNAH_WORK_PY, same scheme). None of these touch
+// song; the exec happens before any mesh code runs. SAVANNAH_BIN is set to
+// this binary's own path for the dash when it is not already set.
 //
 // <node> "local" spawns ./savannahd over pipes (Phase 1 path, no network).
 // Any other <node> is a mesh name: resolved via mDNS (_agent-song._tcp), or
@@ -20,6 +34,8 @@
 #include <song/song.hpp>
 #include <song/security.hpp>
 
+#include <cerrno>
+#include <climits>
 #include <csignal>
 #include <chrono>
 #include <cstdlib>
@@ -46,7 +62,11 @@ namespace {
 
 int usage() {
     std::cerr <<
-        "usage: savannah ls [--timeout-ms N]\n"
+        "usage: savannah                    the work board (your Claude tabs; needs dash/savannah-dash built)\n"
+        "       savannah mesh [--key FILE]  the board with the mesh workers too\n"
+        "       savannah hub [DIR] [--no-launch] [--json]\n"
+        "       savannah work <new|ls|open|repos|note|notes|say|sh|jump|output|rm> ...\n"
+        "       savannah ls [--timeout-ms N]\n"
         "       savannah <ask|info|status> <node> [\"prompt\"]\n"
         "       savannah task new    <node> --title T [--prompt P]\n"
         "                                   [--worktree] [--workdir DIR]\n"
@@ -81,6 +101,66 @@ struct Cli {
     bool task_watch = false;     // --watch (task ls): poll + redraw
     bool json_out = false;       // --json (task ls): machine-readable output
 };
+
+#ifndef SAVANNAH_WORK_PY
+#define SAVANNAH_WORK_PY ""
+#endif
+
+std::string work_module() {
+    if (const char* e = std::getenv("SAVANNAH_WORK_PY"); e && *e) return e;
+    return SAVANNAH_WORK_PY;
+}
+
+#ifndef SAVANNAH_DASH_BIN
+#define SAVANNAH_DASH_BIN ""
+#endif
+
+// Replace this process with the dash. Returns only on failure (exit 1 with
+// the build hint on stderr). SAVANNAH_BIN tells the dash where this binary
+// is, so `savannah work ...` from the board works even off PATH.
+int exec_dash(const char* self, const std::vector<std::string>& args) {
+    std::string bin;
+    if (const char* e = std::getenv("SAVANNAH_DASH_BIN"); e && *e) bin = e;
+    else bin = SAVANNAH_DASH_BIN;
+    if (bin.empty() || access(bin.c_str(), X_OK) != 0) {
+        bin = "savannah-dash";  // last resort: on PATH
+    }
+    if (!std::getenv("SAVANNAH_BIN") && self && std::strchr(self, '/')) {
+        char real[PATH_MAX];
+        if (realpath(self, real)) setenv("SAVANNAH_BIN", real, 1);
+    }
+    std::vector<std::string> full = {bin};
+    full.insert(full.end(), args.begin(), args.end());
+    std::vector<char*> cargv;
+    cargv.reserve(full.size() + 1);
+    for (auto& a : full) cargv.push_back(a.data());
+    cargv.push_back(nullptr);
+    execvp(cargv[0], cargv.data());
+    std::cerr << "savannah: cannot run the dash (" << bin << ": " << std::strerror(errno)
+              << "); build it with `cd dash && go build -o savannah-dash .` "
+                 "(or `cmake --build build --target dash`), or set SAVANNAH_DASH_BIN\n";
+    return 1;
+}
+
+// Replace this process with `python3 <work module> args...`. Returns only on
+// failure (exit code 1 with a reason on stderr).
+int exec_work(const std::vector<std::string>& args) {
+    const std::string mod = work_module();
+    if (mod.empty() || access(mod.c_str(), R_OK) != 0) {
+        std::cerr << "savannah: work module not found (" << mod
+                  << "); set SAVANNAH_WORK_PY\n";
+        return 1;
+    }
+    std::vector<std::string> full = {"python3", mod};
+    full.insert(full.end(), args.begin(), args.end());
+    std::vector<char*> cargv;
+    cargv.reserve(full.size() + 1);
+    for (auto& a : full) cargv.push_back(a.data());
+    cargv.push_back(nullptr);
+    execvp(cargv[0], cargv.data());
+    std::cerr << "savannah: cannot exec python3: " << std::strerror(errno) << "\n";
+    return 1;
+}
 
 bool task_sub_valid(const std::string& s) {
     return s == "new" || s == "ls" || s == "status" || s == "send" ||
@@ -461,6 +541,19 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 1) return exec_dash(argv[0], {});
+    if (std::strcmp(argv[1], "mesh") == 0) {
+        std::vector<std::string> rest = {"--mesh"};
+        for (int i = 2; i < argc; ++i) rest.emplace_back(argv[i]);
+        return exec_dash(argv[0], rest);
+    }
+    if (std::strcmp(argv[1], "hub") == 0 || std::strcmp(argv[1], "work") == 0) {
+        std::vector<std::string> rest;
+        if (std::strcmp(argv[1], "hub") == 0) rest.emplace_back("hub");
+        for (int i = 2; i < argc; ++i) rest.emplace_back(argv[i]);
+        return exec_work(rest);
+    }
+
     Cli cli;
     if (!parse_cli(argc, argv, cli)) return usage();
 

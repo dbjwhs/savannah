@@ -45,6 +45,40 @@ belongs to a work session when its `project` is the same real path as the
 work session's `worktree`. `work ls` and the dash perform that match; nothing
 writes into the other side's file.
 
+## What a work session's Claude is told
+
+On SessionStart only, the hook looks for the work session whose `worktree`
+is the new session's cwd (it reads every `<work dir>/<name>/record.json`
+itself, `$SAVANNAH_WORK_DIR` or `~/.claude/savannah/work`, skipping
+`archive/` and anything unreadable; with several on one directory, the one
+whose `claude_pane` is this tab's `ITERM_SESSION_ID` uuid wins, else the
+newest). When one matches, the hook prints one JSON object on stdout,
+`{"hookSpecificOutput": {"hookEventName": "SessionStart",
+"additionalContext": TEXT}}`, which Claude Code adds to that session's
+context. TEXT is a statement of fact, not an instruction: it names the work
+session, gives the exact command that reports a poll to the board
+(`<repo>/build/savannah work status <name> -- "waiting for ctest (run 2 of
+3)"`, or `python3 <repo>/work/savannah_work.py ...` when the CLI is not
+built), says that each run counts as one poll and that the board shows the
+text, the count and the age, and names the `--clear` form. Nothing is
+printed on any other event, nothing when no record matches, and the status
+file is written either way. See `work/README.md` ("Polling for you") for
+what the board does with the report.
+
+The hook also writes savannah's one log, `$SAVANNAH_LOG_DIR/savannah.log`
+(default `~/.claude/savannah/log/`; the format and the reader, `savannah
+work log`, are in `work/README.md` under "Logging"), through
+`work/savannah_log.py`, found beside this checkout's `hooks/` directory:
+one DEBUG line per event (`msg=event`, with the event name, session id,
+state, cwd, iTerm2 session id and the file written; `removed=true` on
+SessionEnd), an INFO line (`msg="work context"`, the name and the command)
+when a SessionStart hands a work session's Claude its context, a WARN line
+when the session file could not be written, all stamped `src=hook`. Best
+effort like the rest: a hook copied out of the checkout cannot import the
+module and logs nothing, an unwritable log directory logs nothing, and in
+neither case does anything reach stdout or stderr, since those are Claude
+Code's. `savannah work log --level debug` is the reader.
+
 ## Install
 
 ```bash
@@ -89,3 +123,8 @@ pending worker decisions together.
 - `transcript_path` is whatever Claude Code sends; if a release stops sending
   it, the field stays empty (or stale from an earlier event) rather than
   failing.
+- The SessionStart context reaches only a Claude started inside a work
+  session's worktree with this hook installed; a tab adopted later (`work
+  adopt`) never saw it, and whether that Claude runs `work status` is its
+  own call. The command is spelled with this checkout's absolute path, so a
+  moved checkout needs the hook reinstalled.

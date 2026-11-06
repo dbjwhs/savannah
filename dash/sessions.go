@@ -58,25 +58,36 @@ type session struct {
 	Tmux    string `json:"tmux_pane"`
 	Updated int64  `json:"updated"`
 	PID     int    `json:"pid"`
-	Work    string `json:"-"` // joined work-session name, "" when none
-	file    string // source path, for dismiss
+	// What the tab was doing, as the hook saw it: the first line of the
+	// last prompt and where Claude Code keeps the conversation.
+	LastPrompt string `json:"last_prompt"`
+	Transcript string `json:"transcript_path"`
+	Work       string `json:"-"` // joined work-session name, "" when none
+	WorkTitle  string `json:"-"` // that record's title, "" when none (the WORK cell shows it)
+	file       string // source path, for dismiss
 }
 
 // workRecord mirrors one <work dir>/<name>/record.json written by
 // work/savannah_work.py. The dash only reads these; `work rm` owns deletion.
 type workRecord struct {
-	Name       string `json:"name"`
-	Repo       string `json:"repo"`
-	Worktree   string `json:"worktree"`
-	Branch     string `json:"branch"`
-	Created    int64  `json:"created"`
-	Updated    int64  `json:"updated"`
-	Terminal   string `json:"terminal"`
-	TabID      string `json:"tab_id"`
-	ClaudePane string `json:"claude_pane"`
-	ShellPane  string `json:"shell_pane"`
-	Prompt     string `json:"prompt"`
-	lastNote   string // first line of the last note in notes.md, "" if none
+	Name       string     `json:"name"`
+	Repo       string     `json:"repo"`
+	Worktree   string     `json:"worktree"`
+	Branch     string     `json:"branch"`
+	Created    int64      `json:"created"`
+	Updated    int64      `json:"updated"`
+	Terminal   string     `json:"terminal"`
+	TabID      string     `json:"tab_id"`
+	ClaudePane string     `json:"claude_pane"`
+	ShellPane  string     `json:"shell_pane"`
+	Prompt     string     `json:"prompt"`
+	Adopted    bool       `json:"adopted"`  // a tab the owner opened, named later: the directory is theirs
+	Priority   string     `json:"priority"` // "active" (the default) or "later": the board section
+	Rank       int64      `json:"rank"`     // order within the section; 0 = by creation time
+	Title      string     `json:"title"`    // free text shown instead of the name; the name stays the id
+	lastNote   string     // first line of the last note in notes.md, "" if none
+	notes      string     // the whole notes.md, for the detail panel
+	status     workStatus // the tab's own progress report (status.json), zero when none
 }
 
 // workRowPrefix marks a synthesized row for a work session with no live hook
@@ -152,10 +163,11 @@ func workDir() string {
 // validWorkName is the work-session name rule, mirrored from
 // work/savannah_work.py (valid_name) so the dash and the CLI list the same
 // directories: ^[a-z0-9][a-z0-9._-]{0,63}$, never a mesh task id (t-<digits>),
-// never "archive" (the notes graveyard), never ".." anywhere, never a trailing
-// ".", never a ".lock" suffix (git refs). Change both sides together.
+// never "archive" (the notes graveyard) or "snapshots" (the saved layouts),
+// never ".." anywhere, never a trailing ".", never a ".lock" suffix (git
+// refs). Change both sides together.
 func validWorkName(name string) bool {
-	if name == "" || len(name) > 64 || name == "archive" || strings.Contains(name, "..") {
+	if name == "" || len(name) > 64 || name == "archive" || name == "snapshots" || strings.Contains(name, "..") {
 		return false
 	}
 	for i := 0; i < len(name); i++ {
@@ -188,8 +200,9 @@ func validWorkName(name string) bool {
 // readWork loads every <dir>/<name>/record.json. A missing directory is not
 // an error (no work sessions yet); the archive/ folder, any directory whose
 // name fails validWorkName (the CLI would not list it either), any
-// unparseable record, and any record without a worktree are skipped. The first line of the last note is attached
-// when notes.md exists.
+// unparseable record, and any record without a worktree are skipped. The
+// first line of the last note is attached when notes.md exists, and the
+// tab's progress report when status.json does (polling.go).
 func readWork(dir string) ([]workRecord, error) {
 	if dir == "" {
 		return nil, nil
@@ -223,8 +236,10 @@ func readWork(dir string) ([]workRecord, error) {
 			continue
 		}
 		if nb, err := os.ReadFile(filepath.Join(dir, e.Name(), "notes.md")); err == nil {
-			r.lastNote = lastNoteFirstLine(string(nb))
+			r.notes = string(nb)
+			r.lastNote = lastNoteFirstLine(r.notes)
 		}
+		r.status = readStatus(filepath.Join(dir, e.Name(), "status.json"))
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -333,14 +348,15 @@ func pickWorkSession(rec workRecord, sessions []session) int {
 // unchanged; Message carries the last note so WHAT says what you were doing.
 func offlineWorkRow(rec workRecord) session {
 	return session{
-		ID:      workRowPrefix + rec.Name,
-		Project: rec.Worktree,
-		State:   "offline",
-		Message: rec.lastNote,
-		ITerm:   rec.ClaudePane,
-		Term:    rec.Terminal,
-		Updated: rec.Updated,
-		Work:    rec.Name,
+		ID:        workRowPrefix + rec.Name,
+		Project:   rec.Worktree,
+		State:     "offline",
+		Message:   rec.lastNote,
+		ITerm:     rec.ClaudePane,
+		Term:      rec.Terminal,
+		Updated:   rec.Updated,
+		Work:      rec.Name,
+		WorkTitle: rec.Title,
 	}
 }
 
@@ -369,14 +385,14 @@ func joinWork(sessions []session, work []workRecord) []session {
 		if isWorkRow(s) {
 			continue
 		}
-		s.Work = ""
+		s.Work, s.WorkTitle = "", ""
 		out = append(out, s)
 	}
 	claimed := make([]bool, len(out))
 	tagged := make([]bool, len(work))
 	for r, rec := range work {
 		if i := matchPane(rec, out, claimed); i >= 0 {
-			out[i].Work = rec.Name
+			out[i].Work, out[i].WorkTitle = rec.Name, rec.Title
 			claimed[i] = true
 			tagged[r] = true
 		}
@@ -387,7 +403,7 @@ func joinWork(sessions []session, work []workRecord) []session {
 			continue
 		}
 		if i := matchNewest(rec, out, claimed); i >= 0 {
-			out[i].Work = rec.Name
+			out[i].Work, out[i].WorkTitle = rec.Name, rec.Title
 			claimed[i] = true
 			continue
 		}
@@ -533,46 +549,50 @@ func sessionDetail(s session) string {
 	return s.State
 }
 
+// it2Bundled is the it2 CLI every iTerm2 install carries, for a PATH without
+// it; $SAVANNAH_IT2 overrides both (tests point it at a fake).
+const it2Bundled = "/Applications/iTerm.app/Contents/Resources/utilities/it2"
+
+// it2Argv is the command that drives iTerm2: $SAVANNAH_IT2 split into words,
+// else it2 on PATH, else the copy inside iTerm.app.
+func it2Argv() []string {
+	if v := strings.Fields(os.Getenv("SAVANNAH_IT2")); len(v) > 0 {
+		return v
+	}
+	if p, err := exec.LookPath("it2"); err == nil {
+		return []string{p}
+	}
+	return []string{it2Bundled}
+}
+
 // jumpSessionCmd focuses a session's terminal tab. iTerm2 first (the id after
-// the colon in ITERM_SESSION_ID is the session's AppleScript id), then tmux.
+// the colon in ITERM_SESSION_ID is the session id it2 takes), then tmux.
 // Best-effort: no known terminal is a no-op with a status hint, not an error.
 func jumpSessionCmd(s session) tea.Cmd {
 	return func() tea.Msg {
 		if s.ITerm != "" {
-			uuid := itermUUID(s.ITerm)
-			// Return whether the tab was actually found, so a stale id reads
-			// as "tab not found" instead of a false "jumped". Only activate
-			// iTerm when found, so a miss does not yank it forward.
-			script := fmt.Sprintf(`set found to false
-tell application "iTerm2"
-  repeat with w in windows
-    repeat with t in tabs of w
-      repeat with s in sessions of t
-        if id of s is %q then
-          select w
-          tell t to select
-          select s
-          set found to true
-        end if
-      end repeat
-    end repeat
-  end repeat
-  if found then activate
-end tell
-return found`, uuid)
-			out, err := exec.Command("osascript", "-e", script).Output()
-			found := err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "true")
-			how := "iTerm"
-			if err == nil && !found {
-				how = "iTerm: tab not found"
+			// `session focus` exits non-zero for an unknown id, so a stale
+			// pane reads as "tab not found" instead of a false "jumped";
+			// iTerm2 is only brought forward after a hit, so a miss never
+			// yanks it over whatever you were doing.
+			argv := it2Argv()
+			focus := append(append([]string{}, argv[1:]...), "session", "focus", itermUUID(s.ITerm))
+			if _, err := run(argv[0], focus...); err != nil {
+				how := "iTerm: tab not found"
+				if _, exited := err.(*exec.ExitError); !exited {
+					how = "it2: " + err.Error()
+				}
+				return jumpMsg{id: s.ID, ok: false, how: how}
 			}
-			return jumpMsg{id: s.ID, ok: found, how: how}
+			activate := append(append([]string{}, argv[1:]...), "app", "activate")
+			_, _ = run(argv[0], activate...)
+			return jumpMsg{id: s.ID, ok: true, how: "iTerm"}
 		}
 		if s.Tmux != "" {
 			// Select the pane and bring its window forward in the attached client.
-			err := exec.Command("tmux", "select-pane", "-t", s.Tmux).Run()
+			_, err := run("tmux", "select-pane", "-t", s.Tmux)
 			if err == nil {
-				exec.Command("tmux", "select-window", "-t", s.Tmux).Run()
+				_, _ = run("tmux", "select-window", "-t", s.Tmux)
 			}
 			return jumpMsg{id: s.ID, ok: err == nil, how: "tmux"}
 		}

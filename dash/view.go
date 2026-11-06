@@ -34,9 +34,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// Screens. The board is the default; the view is the mesh worker tail (this
+// file); output and new are the work session screens (work.go); log is the
+// board's own log read back (logview.go); snapshot is save and restore
+// (snapshot.go).
 const (
 	modeBoard = iota
 	modeView
+	modeOutput
+	modeNew
+	modeLog
+	modeSnapshot
 )
 
 const (

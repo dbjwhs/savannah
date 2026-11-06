@@ -8,7 +8,8 @@
 # JSON on stdin; we upsert
 #   $SAVANNAH_SESSIONS_DIR/<session_id>.json   (default ~/.claude/savannah/sessions)
 # and delete it on SessionEnd. Stdlib only, no third-party imports, so it
-# runs anywhere Claude Code does.
+# runs anywhere Claude Code does; the one import of our own, the shared log
+# module beside this checkout's work/, is optional (see below).
 #
 # The state we record, and what fires it:
 #   idle     SessionStart          fresh session, nothing pending
@@ -26,14 +27,40 @@
 # last typed, capped at 200 chars). Both are kept across later events that do
 # not carry them. The hook does no joining of its own: work sessions (work/)
 # match a hook file to their worktree at read time by comparing "project".
+# One thing besides the file: on SessionStart, when the cwd is a work
+# session's worktree, the hook prints one JSON object with additionalContext
+# (Claude Code adds it to that session's context) that tells the Claude in
+# the tab which session it is and the `work status` command that reports a
+# poll (a test run, CI, a deploy) to the board. Nothing on any other event,
+# nothing when no record matches, nothing else ever on stdout.
 # Everything is best-effort: a missing field or env var is simply omitted,
 # never fatal, and the hook always exits 0 so it can never block or break a
 # Claude session.
+# The hook also writes savannah's one log (work/savannah_log.py, src=hook):
+# a DEBUG line per event and an INFO line when a work session's Claude is
+# handed its context; `work log --level debug` reads them. Best effort
+# too: a hook copied out of the checkout, or a log directory that cannot be
+# written, logs nothing, and nothing ever reaches stdout or stderr for it.
 
 import json
 import os
 import sys
 import time
+
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "work"))
+    import savannah_log
+    savannah_log.configure("hook")
+    log_debug, log_info, log_warn = savannah_log.log_debug, savannah_log.log_info, savannah_log.log_warn
+except Exception:  # noqa: BLE001 - no log is fine, a failed hook is not
+    def log_debug(_msg, **_kv):
+        pass
+
+    def log_info(_msg, **_kv):
+        pass
+
+    def log_warn(_msg, **_kv):
+        pass
 
 
 # Event -> state. Events not listed here (tool hooks, etc.) refresh the
@@ -86,6 +113,79 @@ def atomic_write(path, obj):
     os.replace(tmp, path)  # atomic on POSIX; a reader never sees a half file
 
 
+# What a work session's Claude is told at SessionStart. Statements, not
+# instructions: Claude Code treats imperative hook context with suspicion.
+WORK_CONTEXT = (
+    'This directory is savannah work session "{name}", shown on the savannah '
+    'board. Progress on a long wait or a poll for the owner (tests, CI, a '
+    'deploy, a slow build) can be reported to that board with: {cmd} work '
+    'status {name} -- "waiting for ctest (run 2 of 3)" . Each run counts as '
+    'one poll; the board shows the text, the poll count and how long ago it '
+    'was reported. The report stops showing as live when the turn ends, and '
+    '{cmd} work status {name} --clear removes it.'
+)
+
+
+def work_dir():
+    d = os.environ.get("SAVANNAH_WORK_DIR")
+    if d:
+        return d
+    return os.path.join(os.path.expanduser("~"), ".claude", "savannah", "work")
+
+
+def savannah_command():
+    """How to run savannah from this checkout (the hook lives in <repo>/hooks/):
+    the built CLI when it exists, else the work module under python3."""
+    repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    cli = os.path.join(repo, "build", "savannah")
+    if os.path.isfile(cli):
+        return cli
+    return "python3 " + os.path.join(repo, "work", "savannah_work.py")
+
+
+def work_session_for(cwd, iterm_session_id):
+    """Name of the work session (work/) whose worktree is cwd, or "". Reads
+    the record files directly (the work module is not imported; this hook
+    stays one standalone file), skipping archive/ and anything unreadable.
+    Several records on one directory: the one whose claude_pane is this
+    iTerm2 session (the uuid after the colon in ITERM_SESSION_ID) wins, else
+    the newest."""
+    if not isinstance(cwd, str) or not cwd:
+        return ""
+    root = work_dir()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return ""
+    here = os.path.realpath(cwd)
+    sid = iterm_session_id or ""
+    pane = sid.split(":", 1)[1] if ":" in sid else sid
+    matches = []
+    for name in names:
+        if name == "archive":
+            continue
+        try:
+            with open(os.path.join(root, name, "record.json")) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        worktree = rec.get("worktree") if isinstance(rec, dict) else None
+        if not isinstance(worktree, str) or not worktree:
+            continue
+        if os.path.realpath(worktree) != here:
+            continue
+        if pane and rec.get("claude_pane") == pane:
+            return name
+        try:
+            created = int(rec.get("created") or 0)
+        except (TypeError, ValueError, OverflowError):
+            created = 0
+        matches.append((created, name))
+    if not matches:
+        return ""
+    return max(matches)[1]
+
+
 def run():
     try:
         raw = sys.stdin.read()
@@ -117,6 +217,7 @@ def run():
             os.remove(path)
         except OSError:
             pass
+        log_debug("event", event=name, session=sid, cwd=event.get("cwd") or "", file=path, removed=True)
         return 0
 
     # Start from any existing record so a state-less event (a heartbeat)
@@ -173,10 +274,26 @@ def run():
         record["message"] = ""
         record["notify_type"] = ""
 
+    written = True
     try:
         atomic_write(path, record)
-    except OSError:
-        pass
+    except OSError as e:
+        written = False
+        log_warn("session file not written", session=sid, file=path, error=e.strerror or str(e))
+    log_debug("event", event=name or "", session=sid, state=record.get("state", ""), cwd=record["project"],
+              iterm=record.get("iterm_session_id", ""), file=path, written=written)
+
+    # A work session's Claude learns which session it is and how to report
+    # a poll to the board. The only thing this hook ever prints to stdout,
+    # and only on SessionStart: Claude Code adds additionalContext to the
+    # session (stdout that is not JSON would have to be plain text).
+    if name == "SessionStart":
+        work_name = work_session_for(record["project"], os.environ.get("ITERM_SESSION_ID", ""))
+        if work_name:
+            context = WORK_CONTEXT.format(name=work_name, cmd=savannah_command())
+            log_info("work context", session=sid, name=work_name, cmd=savannah_command())
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "SessionStart", "additionalContext": context}}))
     return 0
 
 

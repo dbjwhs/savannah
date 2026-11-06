@@ -4,14 +4,18 @@
 #
 # Work-session test: drives work/savannah_work.py the way a human (or the
 # shim) does, against a temp SAVANNAH_WORK_DIR, a temp SAVANNAH_SESSIONS_DIR
-# with hand-written hook files, a throwaway git repo, and the fake osascript
-# (tools/fake_osascript.py) via SAVANNAH_OSASCRIPT. No real iTerm2, no real
-# claude, no network, stdlib only. git is isolated from the user's config
+# with hand-written hook files, a throwaway git repo, and the fake it2
+# (tools/fake_it2.py, standing in for iTerm2's own command) via SAVANNAH_IT2.
+# No real iTerm2, no real claude, no network, stdlib only. git is isolated from the user's config
 # (HOME=tmp, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1, identity via
 # GIT_AUTHOR_*/GIT_COMMITTER_*). Worktree cases are skipped (with a message,
 # still exit 0) ONLY when git is not on PATH; a git that is present but fails
 # to init/commit is a test FAILURE. Usage:
-#   test_work.py <path/to/savannah_work.py> <path/to/fake_osascript.py>
+#   test_work.py <path/to/savannah_work.py> <path/to/fake_it2.py> [savannah CLI]
+# The optional third argument is the built C++ CLI; when given, its `hub`,
+# `work`, `mesh` and bare-invocation entry points are exercised too (they
+# exec the module, or the dash; SAVANNAH_WORK_PY / SAVANNAH_DASH_BIN point
+# them at the module under test and a fake dash).
 
 import importlib.util
 import json
@@ -23,6 +27,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 failures = 0
 
@@ -47,15 +52,27 @@ def main():
     tmp = tempfile.mkdtemp(prefix="savannah-work-test-")
     workroot = os.path.join(tmp, "work")
     sessions = os.path.join(tmp, "sessions")
-    log = os.path.join(tmp, "osascript.log")
+    log = os.path.join(tmp, "it2.log")
     os.makedirs(sessions)
 
     env = dict(os.environ)
     env["SAVANNAH_WORK_DIR"] = workroot
     env["SAVANNAH_SESSIONS_DIR"] = sessions
-    env["SAVANNAH_OSASCRIPT"] = f"{shlex.quote(sys.executable)} {shlex.quote(fake)}"
-    env["FAKE_OSASCRIPT_LOG"] = log
-    env.pop("FAKE_OSASCRIPT_MISSING", None)
+    env["SAVANNAH_IT2"] = f"{shlex.quote(sys.executable)} {shlex.quote(fake)}"
+    env["SAVANNAH_HUB_FILE"] = os.path.join(tmp, "hub.json")
+    logdir = os.path.join(tmp, "log")          # savannah's one log, never the user's
+    env["SAVANNAH_LOG_DIR"] = logdir
+    os.environ["SAVANNAH_LOG_DIR"] = logdir    # the in-process module checks below log too
+    env.pop("SAVANNAH_WORK_PY", None)
+    env.pop("SAVANNAH_DASH_BIN", None)
+    env.pop("SAVANNAH_CLAUDE_BIN", None)
+    env.pop("SAVANNAH_BIN", None)
+    env["FAKE_IT2_LOG"] = log
+    for k in ("FAKE_IT2_MISSING", "FAKE_IT2_FAIL", "FAKE_IT2_NO_WINDOW"):
+        env.pop(k, None)
+    # The module names the window of the session it runs in; the fake never
+    # lists this one, so it falls through to the fake's own window.
+    env["ITERM_SESSION_ID"] = "w9t9p9:NOT-IN-FAKE"
     # git isolation: the user's config must not leak into the throwaway repo
     # (hooks, signing, templates, default branch...), and identity is explicit.
     env["HOME"] = tmp
@@ -91,8 +108,24 @@ def main():
         except OSError:
             return ""
 
-    def clear_log():
-        for p in (log, log + ".counter"):
+    def calls():
+        """Every it2 argv the fake saw since clear_log, in order."""
+        return [json.loads(ln) for ln in read_log().splitlines() if ln.strip()]
+
+    def called(prefix, last=None):
+        """Index of the first call starting with prefix (and ending with last
+        when given), or -1."""
+        for i, c in enumerate(calls()):
+            if c[:len(prefix)] == list(prefix) and (last is None or c[-1] == last):
+                return i
+        return -1
+
+    def clear_log(keep_state=False):
+        # The state file is the fake's world (its counter and live panes):
+        # clearing it restarts ids at TAB-1 / PANE-C-1 / PANE-S-1. keep_state
+        # drops only the call log, so the next checks see one command's calls
+        # while the panes made so far stay alive.
+        for p in ((log,) if keep_state else (log, log + ".state")):
             try:
                 os.remove(p)
             except OSError:
@@ -163,7 +196,7 @@ def main():
                           [{"project": os.getcwd(), "session_id": "s"}]) is None,
           "join_session: empty worktree never joins (realpath('') would be cwd)")
 
-    # timeout message mentions both causes; patched subprocess so nothing hangs
+    # timeout message names both causes; patched subprocess so nothing hangs
     real_run = sw.subprocess.run
 
     def fake_timeout(*a, **k):
@@ -173,16 +206,37 @@ def main():
         sw.ITerm().write("P", "x")
         check(False, "timeout raises UserError")
     except sw.UserError as e:
-        check("Automation" in str(e) and "Privacy & Security" in str(e) and "iTerm2" in str(e),
-              f"timeout message names iTerm2 and the Automation permission dialog ({e})")
+        check("Python API" in str(e) and "iTerm2" in str(e),
+              f"timeout message names iTerm2 and its Python API switch ({e})")
     finally:
         sw.subprocess.run = real_run
+    os.environ["SAVANNAH_IT2"] = "/nonexistent/it2 --flag"
+    check(sw.it2_argv() == ["/nonexistent/it2", "--flag"], "it2_argv splits SAVANNAH_IT2 like a shell line")
+    os.environ["SAVANNAH_IT2"] = "   "
+    try:
+        sw.it2_argv()
+        check(False, "empty SAVANNAH_IT2 raises")
+    except sw.UserError:
+        pass
+    os.environ.pop("SAVANNAH_IT2", None)
+    check(sw.it2_argv()[0].endswith("it2"), "it2_argv without the override names an it2")
+    # The claude launch line: cd, claude named after the session, prompt quoted.
+    check(sw.claude_command("/w t", "nm", 'say "hi"') == "cd '/w t' && claude -n nm 'say \"hi\"'",
+          "claude_command quotes the worktree and the prompt")
+    check(sw.claude_command("/w", "nm", "", resume=True) == "cd /w && claude -n nm --continue",
+          "claude_command resumes with --continue and no prompt")
+    os.environ["SAVANNAH_CLAUDE_BIN"] = "echo claude"
+    check(sw.claude_command("/w", "nm", "") == "cd /w && echo claude -n nm",
+          "SAVANNAH_CLAUDE_BIN replaces the claude command as a shell fragment")
+    os.environ.pop("SAVANNAH_CLAUDE_BIN", None)
 
     # ---- bad usage -> 2 ----------------------------------------------------
     check(run([]).returncode == 2, "no verb exits 2")
     check(run(["bogus"]).returncode == 2, "unknown verb exits 2")
     check(run(["new"]).returncode == 2, "new without name exits 2")
     check(run(["say", "x"]).returncode == 2, "say without text exits 2")
+    check(run(["rename", "x"]).returncode == 2, "rename without a new name exits 2")
+    check(run(["status"]).returncode == 2, "status without a name or --here exits 2")
     p = run(["new", "nb", "--no-worktree", "--branch", "main", "--repo", repo])
     check(p.returncode == 2 and "--branch" in p.stderr and "--no-worktree" in p.stderr,
           f"--branch with --no-worktree exits 2 with a clear message ({p.stderr.strip()})")
@@ -201,7 +255,9 @@ def main():
 
     # ---- unknown name -> 1 on every verb -----------------------------------
     for verb in (["notes", "nope"], ["note", "nope", "x"], ["say", "nope", "x"],
-                 ["sh", "nope", "x"], ["jump", "nope"], ["rm", "nope"]):
+                 ["sh", "nope", "x"], ["jump", "nope"], ["rm", "nope"],
+                 ["move", "nope", "--later"], ["rename", "nope", "nope2"], ["status", "nope"],
+                 ["status", "nope", "x"], ["status", "nope", "--clear"]):
         p = run(verb)
         check(p.returncode == 1 and "nope" in p.stderr and p.stderr.count("\n") == 1,
               f"{verb[0]} unknown name exits 1 with one stderr line")
@@ -213,47 +269,68 @@ def main():
     check(rec.get("worktree") == os.path.abspath(repo), "no-worktree: worktree == repo")
     check(rec.get("branch") == "", "no-worktree: branch empty")
     check(rec.get("terminal") == "iterm", "terminal is iterm")
-    check(rec.get("tab_id") == "TAB-1", "tab id from fake osascript")
+    check(rec.get("tab_id") == "TAB-1", "tab id from fake it2")
     check(rec.get("claude_pane") == "PANE-C-1" and rec.get("shell_pane") == "PANE-S-1",
-          "pane ids from fake osascript")
+          "pane ids from fake it2")
     check(rec.get("prompt") == 'say hi "there"', "prompt recorded")
     check(set(rec) == {"name", "repo", "worktree", "branch", "created", "updated", "terminal",
-                       "tab_id", "claude_pane", "shell_pane", "prompt"}, "record has exactly the contract fields")
+                       "tab_id", "claude_pane", "shell_pane", "prompt", "adopted", "priority", "rank",
+                       "title"},
+          "record has exactly the contract fields")
+    check(rec.get("priority") == "active" and rec.get("rank") == rec.get("created"),
+          "a new session is active, ranked by its creation time")
+    check(rec.get("adopted") is False, "a session made by new is not adopted")
     check(isinstance(rec.get("created"), int) and rec.get("created") > 0, "created is epoch int")
     check(record("flat") == rec, "record.json on disk matches --json output")
     with open(os.path.join(workroot, "flat", "notes.md")) as f:
         check(f.read().endswith(" local\nfirst note\n\n"), "--note appended to notes.md")
 
-    # The exact AppleScript: cd into the worktree in both panes, prompt shlex-quoted.
-    sent = read_log()
+    # The exact it2 calls: a tab in a named window (it2 has no "current
+    # window" from a script, found live 11/3/2026), the session named after
+    # the work session, cd + claude in the upper pane, a split, cd below.
     rq = os.path.abspath(repo)
-    check(f'write text "cd {rq} && claude ' + "'say hi \\\"there\\\"'\"" in sent,
-          "upper pane gets cd <worktree> && claude <shlex-quoted prompt>, AppleScript-escaped")
-    check(f'write text "cd {rq}"' in sent, "lower pane gets cd <worktree>")
-    check('set name to "flat"' in sent, "session named after the work session")
-    check("create tab with default profile" in sent and "split horizontally with same profile" in sent,
-          "tab created then split horizontally")
-    # No-window path: the freshly created window's own tab is used, no stray tab.
-    check("set madeWindow to true" in sent and "set t to current tab of w" in sent,
-          "create script uses the new window's current tab when it had to create the window")
-    check(re.search(r"if madeWindow then\s+set t to current tab of w\s+else\s+tell w\s+"
-                    r"set t to \(create tab with default profile\)", sent) is not None,
-          "create tab only on the else branch (window already existed)")
-    guard = 'if application "iTerm2" is not running then return false'
-    check(guard not in sent, "create script may launch iTerm2 (no running guard)")
-    # Found live 10/27/2026: bare property references on the returned tab do
-    # not coerce, and a failure after the tab exists must not orphan it.
-    check("(get id of w)" in sent and "(get id of cs)" in sent and "(get id of ss)" in sent,
-          "create script reads every id with an explicit get")
-    check("(count of tabs of w)" in sent and "index of t" not in sent,
-          "tab position comes from the tab count, never a tab index")
-    check(re.search(r"on error msg number num\s+try\s+close t\s+end try\s+error msg number num", sent) is not None,
-          "create script closes its own tab on any error before rethrowing")
+    i_tab = called(["tab", "new", "--window", "W1"])
+    i_name = called(["session", "set-name", "--session", "PANE-C-1", "--"], last="flat")
+    # Typed lines start with a space: a shell that reads a key while starting
+    # (oh-my-zsh's update prompt, live 11/3/2026) eats the first character.
+    i_up = called(["session", "run", "--session", "PANE-C-1", "--"],
+                  last=f" cd {rq} && claude -n flat 'say hi \"there\"'")
+    i_split = called(["session", "split", "--session", "PANE-C-1"])
+    i_down = called(["session", "run", "--session", "PANE-S-1", "--"], last=f" cd {rq}")
+    check(i_tab >= 0, f"tab created in the fake's window ({calls()})")
+    check(i_name >= 0, "session named after the work session (after --, so a dashed name is a name)")
+    check(i_up >= 0, f"upper pane gets ' cd <worktree> && claude -n <name> <shlex-quoted prompt>' ({calls()})")
+    check(i_split >= 0, "upper pane split (horizontal divider: shell below)")
+    check(i_down >= 0, "lower pane gets ' cd <worktree>'")
+    check(-1 < i_tab < i_up < i_name < i_split < i_down,
+          "calls happen in that order (the name after the run, or the shell's first prompt resets it)")
+    check(called(["tab", "close"]) < 0, "new never calls `it2 tab close`")
+    check(calls()[0] == ["session", "list", "--json"], "new asks for the session list first (to pick the window)")
 
-    # new without --prompt: bare claude.
+    # new without --prompt: bare claude, still named.
     clear_log()
     run_json(["new", "bare", "--no-worktree", "--repo", repo, "--json"])
-    check(f'write text "cd {rq} && claude"\n' in read_log(), "no prompt: bare claude")
+    check(called(["session", "run", "--session", "PANE-C-1", "--"], last=f" cd {rq} && claude -n bare") >= 0,
+          "no prompt: cd && claude -n <name>")
+
+    # No window at all (iTerm2 just started, or every window closed): the new
+    # window's own tab is the work tab, no stray empty tab.
+    clear_log()
+    rec = run_json(["new", "nowin", "--no-worktree", "--repo", repo, "--json"], {"FAKE_IT2_NO_WINDOW": "1"})
+    check(called(["window", "new"]) >= 0 and called(["tab", "new"]) < 0,
+          "no window: `window new`, never `tab new`")
+    check(rec.get("tab_id") == "TAB-1" and rec.get("claude_pane") == "PANE-C-1"
+          and rec.get("shell_pane") == "PANE-S-1", f"no window: the window's own tab is the work tab ({rec})")
+    check(run(["rm", "nowin"]).returncode == 0, "rm nowin")
+
+    # A failure after the tab exists closes that tab before the error is reported.
+    clear_log()
+    p = run(["new", "halfway", "--no-worktree", "--repo", repo], {"FAKE_IT2_FAIL": "session split"})
+    check(p.returncode == 1 and "split" in p.stderr and "boom" in p.stderr,
+          f"it2 failing mid-create: exit 1 naming the step ({p.stderr.strip()})")
+    check(called(["session", "close", "--session", "PANE-C-1", "--force"]) >= 0,
+          "it2 failing mid-create: the half-made tab is closed")
+    check(not os.path.exists(os.path.join(workroot, "halfway")), "it2 failing mid-create: no record")
 
     # duplicate refused
     p = run(["new", "flat", "--no-worktree", "--repo", repo])
@@ -266,18 +343,19 @@ def main():
 
     # terminal failure: nothing created
     p = run(["new", "nofail", "--no-worktree", "--repo", repo],
-            {"SAVANNAH_OSASCRIPT": "/nonexistent/osascript"})
+            {"SAVANNAH_IT2": "/nonexistent/it2"})
     check(p.returncode == 1 and not os.path.exists(os.path.join(workroot, "nofail")),
-          "osascript missing: exit 1, no record, no claimed dir")
+          "it2 missing: exit 1, no record, no claimed dir")
+    check("it2" in p.stderr and "SAVANNAH_IT2" in p.stderr, f"it2 missing: the message says what to set ({p.stderr.strip()})")
 
     # non-ENOENT OSError (EACCES: a fake with the x bit cleared): still exit 1, nothing left
-    noexec = os.path.join(tmp, "noexec-osascript")
+    noexec = os.path.join(tmp, "noexec-it2")
     shutil.copy(fake, noexec)
     os.chmod(noexec, stat.S_IRUSR | stat.S_IWUSR)
-    p = run(["new", "noexec", "--no-worktree", "--repo", repo], {"SAVANNAH_OSASCRIPT": noexec})
-    check(p.returncode == 1 and p.stderr.count("\n") == 1 and "osascript" in p.stderr,
-          f"osascript not executable: exit 1, one stderr line ({p.stderr.strip()})")
-    check(not os.path.exists(os.path.join(workroot, "noexec")), "osascript not executable: no record dir")
+    p = run(["new", "noexec", "--no-worktree", "--repo", repo], {"SAVANNAH_IT2": noexec})
+    check(p.returncode == 1 and p.stderr.count("\n") == 1 and "it2" in p.stderr,
+          f"it2 not executable: exit 1, one stderr line ({p.stderr.strip()})")
+    check(not os.path.exists(os.path.join(workroot, "noexec")), "it2 not executable: no record dir")
 
     # stale claim (dir without record.json) is reclaimed by new, reported by rm
     os.makedirs(os.path.join(workroot, "stale"))
@@ -303,10 +381,47 @@ def main():
         check(r.returncode == 0, "branch work/feat exists")
         r = git(wt, "rev-parse", "--abbrev-ref", "HEAD")
         check(r.stdout.strip() == "work/feat", "worktree is on work/feat")
-        check(f'write text "cd {wt} && claude"' in read_log(), "upper pane cds into the worktree")
-        check(f'write text "cd {wt}"' in read_log(), "lower pane cds into the worktree")
+        check(called(["session", "run", "--session", "PANE-C-1", "--"], last=f" cd {wt} && claude -n feat") >= 0,
+              "upper pane cds into the worktree")
+        check(called(["session", "run", "--session", "PANE-S-1", "--"], last=f" cd {wt}") >= 0,
+              "lower pane cds into the worktree")
         check(rec.get("tab_id") == "TAB-1" and rec.get("claude_pane") == "PANE-C-1",
               "fake counter restarted after clear")
+
+        # .worktreeinclude: the gitignored files a worktree needs to run are
+        # copied in (paths and globs, comments skipped, existing files kept).
+        with open(os.path.join(repo, ".gitignore"), "w") as f:
+            f.write(".env\nconf/*.local\nsecrets/\n")
+        with open(os.path.join(repo, ".worktreeinclude"), "w") as f:
+            f.write("# what a worktree needs\n\n.env\nconf/*.local\nsecrets\nnot-there.txt\n/README\n")
+        with open(os.path.join(repo, ".env"), "w") as f:
+            f.write("KEY=1\n")
+        os.makedirs(os.path.join(repo, "conf"))
+        for n in ("a.local", "b.local", "c.other"):
+            with open(os.path.join(repo, "conf", n), "w") as f:
+                f.write(n + "\n")
+        os.makedirs(os.path.join(repo, "secrets", "deep"))
+        with open(os.path.join(repo, "secrets", "deep", "k"), "w") as f:
+            f.write("k\n")
+        git(repo, "add", ".gitignore", ".worktreeinclude")
+        git(repo, "commit", "-q", "-m", "include list")
+        p = run(["new", "inc", "--repo", repo, "--json"])
+        check(p.returncode == 0, f"new with .worktreeinclude exits 0 ({p.stderr.strip()})")
+        wti = wt_of("inc")
+        for rel in (".env", "conf/a.local", "conf/b.local", "secrets/deep/k"):
+            check(os.path.isfile(os.path.join(wti, rel)), f".worktreeinclude copied {rel}")
+        check(not os.path.exists(os.path.join(wti, "conf", "c.other")), ".worktreeinclude copies only what it names")
+        with open(os.path.join(wti, "README")) as f:
+            check(f.read() == "hi\n", "a tracked file the list names is left as git checked it out")
+        check("copied 4" in p.stderr and ".env" in p.stderr and "not-there" not in p.stderr,
+              f"new reports what .worktreeinclude copied ({p.stderr.strip()})")
+        check(run(["rm", "inc"]).returncode == 0, "rm after .worktreeinclude: ignored copies keep the worktree clean")
+        for rel in (".gitignore", ".worktreeinclude"):
+            git(repo, "rm", "-q", rel)
+        git(repo, "commit", "-q", "-m", "drop include list")
+        shutil.rmtree(os.path.join(repo, "conf"))
+        shutil.rmtree(os.path.join(repo, "secrets"))
+        os.remove(os.path.join(repo, ".env"))
 
         # --branch existing
         git(repo, "branch", "topic")
@@ -335,20 +450,29 @@ def main():
               "remote-only refusal created nothing")
 
         # terminal failure after worktree add: worktree and branch rolled back
-        p = run(["new", "rollback", "--repo", repo], {"SAVANNAH_OSASCRIPT": "/nonexistent/osascript"})
+        p = run(["new", "rollback", "--repo", repo], {"SAVANNAH_IT2": "/nonexistent/it2"})
         check(p.returncode == 1, "terminal failure: exit 1")
         check(not os.path.isdir(wt_of("rollback")), "terminal failure: worktree rolled back")
         check(git(repo, "rev-parse", "--verify", "refs/heads/work/rollback").returncode != 0,
               "terminal failure: branch rolled back")
         check(not os.path.exists(os.path.join(workroot, "rollback")), "terminal failure: claimed dir removed")
         # same with a non-ENOENT OSError
-        p = run(["new", "rollback2", "--repo", repo], {"SAVANNAH_OSASCRIPT": noexec})
+        p = run(["new", "rollback2", "--repo", repo], {"SAVANNAH_IT2": noexec})
         check(p.returncode == 1 and not os.path.isdir(wt_of("rollback2"))
               and git(repo, "rev-parse", "--verify", "refs/heads/work/rollback2").returncode != 0
               and not os.path.exists(os.path.join(workroot, "rollback2")),
-              "non-ENOENT osascript failure: worktree, branch and record dir rolled back")
+              "non-ENOENT it2 failure: worktree, branch and record dir rolled back")
+        # a failure after the tab exists: tab closed, worktree and branch rolled back
+        clear_log()
+        p = run(["new", "rollback4", "--repo", repo], {"FAKE_IT2_FAIL": "session run"})
+        check(p.returncode == 1 and not os.path.isdir(wt_of("rollback4"))
+              and git(repo, "rev-parse", "--verify", "refs/heads/work/rollback4").returncode != 0
+              and not os.path.exists(os.path.join(workroot, "rollback4")),
+              "it2 failing after the tab exists: worktree, branch and record dir rolled back")
+        check(called(["session", "close", "--session", "PANE-C-1", "--force"]) >= 0,
+              "it2 failing after the tab exists: the tab is closed")
         # rollback with --branch leaves the pre-existing branch alone
-        p = run(["new", "rollback3", "--repo", repo, "--branch", "topic"], {"SAVANNAH_OSASCRIPT": noexec})
+        p = run(["new", "rollback3", "--repo", repo, "--branch", "topic"], {"SAVANNAH_IT2": noexec})
         check(p.returncode == 1 and not os.path.isdir(wt_of("rollback3"))
               and git(repo, "rev-parse", "--verify", "refs/heads/topic").returncode == 0,
               "rollback never deletes a --branch branch")
@@ -407,12 +531,30 @@ def main():
     with open(os.path.join(sessions, "junk.json"), "w") as f:
         f.write("{not json")
 
+    # A session whose tab the fake still has (the resets above dropped the
+    # older tabs from the fake's world, as closing them in iTerm2 would).
+    alive_rec = run_json(["new", "alive", "--no-worktree", "--repo", repo, "--json"])
+    before_ls = len(calls())
     entries = run_json(["ls", "--json"])
     check(isinstance(entries, list), "ls --json is an array")
     by = {e["name"]: e for e in entries}
-    extra = {"claude_session_id", "state", "message", "last_prompt", "last_note", "notes_path", "transcript_path"}
+    extra = {"claude_session_id", "state", "message", "last_prompt", "last_note", "notes_path",
+             "transcript_path", "pane_alive"}
     for e in entries:
         check(extra <= set(e), f"ls entry {e['name']} carries join fields")
+    # pane_alive: one it2 session list for the whole ls; null when it2 is unavailable
+    alive = {e["name"]: e["pane_alive"] for e in entries}
+    check(alive.get("alive") is True, f"ls pane_alive is true for a tab the fake still has ({alive})")
+    check(all(isinstance(v, bool) for v in alive.values()), f"ls pane_alive is a bool on every row when it2 answers ({alive})")
+    check(calls()[before_ls:] == [["session", "list", "--json"]],
+          f"ls asks it2 for the session list exactly once ({calls()[before_ls:]})")
+    e2 = {e["name"]: e for e in run_json(["ls", "--json"], {"FAKE_IT2_MISSING": alive_rec["claude_pane"]})}
+    check(e2["alive"]["pane_alive"] is False, "ls pane_alive is false once the Claude pane is gone")
+    e3 = {e["name"]: e for e in run_json(["ls", "--json"], {"SAVANNAH_IT2": "/nonexistent/it2"})}
+    check(e3[joined_name]["pane_alive"] is None and e3[joined_name]["state"] == "waiting",
+          "ls without it2 still joins, pane_alive null")
+    check(run(["ls"], {"SAVANNAH_IT2": "/nonexistent/it2"}).returncode == 0, "human ls without it2 exits 0")
+    check(run(["rm", "alive"]).returncode == 0, "rm alive")
     e = by.get(joined_name, {})
     check(e.get("claude_session_id") == "s1", "pane match wins over newer session")
     check(e.get("state") == "waiting", "state comes through")
@@ -519,26 +661,21 @@ def main():
     clear_log()
     p = run(["say", "flat", "please", "run", "the", "tests"])
     check(p.returncode == 0, "say exits 0")
-    sent = read_log()
-    check('if id of s is "PANE-C-1"' in sent and 'write text "please run the tests"' in sent,
-          "say writes into the claude pane")
-    check(sent.lstrip().startswith("---- osascript ----\n" + guard + "\n"),
-          "say script begins with the iTerm2-running guard (never launches iTerm2)")
+    check(calls() == [["session", "send", "--session", "PANE-C-1", "--", "please run the tests"],
+                      ["session", "send", "--session", "PANE-C-1", "--", "\r"]],
+          f"say is `session send` of the text then of a carriage return (Enter), text after -- ({calls()})")
     clear_log()
     p = run(["sh", "flat", "git", "status"])
-    sent = read_log()
-    check(p.returncode == 0 and 'if id of s is "PANE-S-1"' in sent
-          and 'write text "git status"' in sent, "sh writes into the shell pane")
-    check(guard in sent, "sh script carries the running guard")
+    check(p.returncode == 0 and calls() == [["session", "send", "--session", "PANE-S-1", "--", "git status"],
+                                            ["session", "send", "--session", "PANE-S-1", "--", "\r"]],
+          f"sh is `session send` of the command then of a carriage return into the shell pane ({calls()})")
     clear_log()
     p = run(["jump", "flat"])
-    sent = read_log()
-    check(p.returncode == 0 and 'if id of s is "PANE-C-1"' in sent and "select s" in sent
-          and "if found then activate" in sent, "jump focuses the claude pane like the dash")
-    check(sent.lstrip().startswith("---- osascript ----\n" + guard + "\n"), "jump script begins with the running guard")
+    check(p.returncode == 0 and calls() == [["session", "focus", "PANE-C-1"], ["app", "activate"]],
+          f"jump focuses the claude pane then brings iTerm2 forward ({calls()})")
     clear_log()
     p = run(["jump", "flat", "--shell"])
-    check(p.returncode == 0 and 'if id of s is "PANE-S-1"' in read_log(), "jump --shell focuses the shell pane")
+    check(p.returncode == 0 and calls()[0] == ["session", "focus", "PANE-S-1"], "jump --shell focuses the shell pane")
 
     # empty text never reaches a pane; leading-dash text goes after --
     for args in (["say", "flat", ""], ["say", "flat", " ", "  "], ["sh", "flat", ""], ["sh", "flat", "\t"]):
@@ -546,22 +683,401 @@ def main():
         p = run(args)
         check(p.returncode == 2 and p.stderr.count("\n") == 1 and p.stdout == "",
               f"{args[0]} with blank text exits 2 with one stderr line ({p.stderr.strip()!r})")
-        check(read_log() == "", f"{args[0]} with blank text never runs osascript")
+        check(read_log() == "", f"{args[0]} with blank text never runs it2")
     clear_log()
     p = run(["say", "flat", "--", "--continue"])
-    check(p.returncode == 0 and 'write text "--continue"' in read_log(), "say x -- --continue types the text")
+    check(p.returncode == 0 and calls()[-2][-2:] == ["--", "--continue"] and calls()[-1][-1] == "\r",
+          "say x -- --continue types the text, then Enter")
     clear_log()
     p = run(["sh", "flat", "--", "-la"])
-    check(p.returncode == 0 and 'write text "-la"' in read_log(), "sh x -- -la types the text")
+    check(p.returncode == 0 and calls()[-2][-2:] == ["--", "-la"] and calls()[-1][-1] == "\r",
+          "sh x -- -la types the text, then Enter")
     check(run(["say", "flat", "--continue"]).returncode == 2, "say with a bare leading-dash word is a usage error")
 
-    missing = {"FAKE_OSASCRIPT_MISSING": "PANE-C-1,PANE-S-1"}
-    check(run(["say", "flat", "x"], missing).returncode == 1, "say to a missing pane exits 1")
+    missing = {"FAKE_IT2_MISSING": "PANE-C-1,PANE-S-1"}
+    p = run(["say", "flat", "x"], missing)
+    check(p.returncode == 1 and "no longer exists" in p.stderr, f"say to a missing pane exits 1 ({p.stderr.strip()})")
     check(run(["sh", "flat", "x"], missing).returncode == 1, "sh to a missing pane exits 1")
     check(run(["jump", "flat"], missing).returncode == 1, "jump to a missing pane exits 1")
     check(run(["jump", "flat", "--shell"], missing).returncode == 1, "jump --shell to a missing pane exits 1")
-    check(run(["say", "flat", "x"], {"FAKE_OSASCRIPT_MISSING": "PANE-S-1"}).returncode == 0,
+    check(run(["say", "flat", "x"], {"FAKE_IT2_MISSING": "PANE-S-1"}).returncode == 0,
           "say still works when only the shell pane is gone")
+    # it2 broken (not a missing pane): say says so, exit 1
+    p = run(["say", "flat", "x"], {"SAVANNAH_IT2": "/nonexistent/it2"})
+    check(p.returncode == 1 and "it2" in p.stderr, "say without it2 exits 1 naming it2")
+
+    # ---- open: focus the tab, or open it again when it is gone ---------------
+    # The fake's world was reset above, so flat's recorded panes are gone (as
+    # after an iTerm2 restart): open makes the tab again, ids restart at 1.
+    clear_log()
+    before_rec = record("flat")
+    j = run_json(["open", "flat", "--json"])
+    check(j.get("action") == "reopened" and j.get("name") == "flat", f"open on a gone tab reopens it ({j})")
+    after_rec = record("flat")
+    check(after_rec["tab_id"] == "TAB-1" and after_rec["claude_pane"] == "PANE-C-1" == j.get("claude_pane")
+          and after_rec["shell_pane"] == "PANE-S-1" == j.get("shell_pane"),
+          f"reopen records the new tab and panes ({after_rec})")
+    check(called(["session", "run", "--session", "PANE-C-1", "--"], last=f" cd {rq} && claude -n flat") >= 0,
+          "reopen with no transcript starts claude fresh (named, no prompt replay)")
+    check(called(["session", "set-name", "--session", "PANE-C-1", "--"], last="flat") >= 0,
+          "reopen names the new session")
+    check(called(["tab", "close"]) < 0, "reopen never calls `it2 tab close`")
+    check(after_rec["updated"] >= before_rec["updated"], "reopen bumps updated")
+    # Now the tab is live: open only focuses it.
+    clear_log(keep_state=True)
+    p = run(["open", "flat"])
+    check(p.returncode == 0 and p.stdout.startswith("flat: focused"), f"open on a live tab focuses it ({p.stdout.strip()})")
+    check(calls() == [["session", "list", "--json"], ["session", "focus", "PANE-C-1"], ["app", "activate"]],
+          f"open on a live tab: list, focus, activate ({calls()})")
+    clear_log(keep_state=True)
+    p = run(["open", "flat", "--shell"])
+    check(p.returncode == 0 and called(["session", "focus", "PANE-S-1"]) >= 0, "open --shell focuses the shell pane")
+    check(record("flat")["tab_id"] == "TAB-1", "open on a live tab leaves the record alone")
+    # Both panes gone while the fake keeps counting: a new tab with new ids.
+    clear_log(keep_state=True)
+    j = run_json(["open", "flat", "--json"], {"FAKE_IT2_MISSING": "PANE-C-1,PANE-S-1"})
+    rec_now = record("flat")
+    check(j.get("action") == "reopened" and rec_now["tab_id"] == "TAB-2"
+          and rec_now["claude_pane"] == j.get("claude_pane") == "PANE-C-2"
+          and rec_now["shell_pane"] == j.get("shell_pane") == "PANE-S-2",
+          f"open on a gone tab reopens it with new ids ({j})")
+    # claude pane gone, shell pane still there: the leftover pane is closed first
+    clear_log(keep_state=True)
+    j = run_json(["open", "flat", "--json"], {"FAKE_IT2_MISSING": rec_now["claude_pane"]})
+    check(j.get("action") == "reopened"
+          and called(["session", "close", "--session", rec_now["shell_pane"], "--force"]) >= 0,
+          "reopen closes a leftover shell pane so one task never has two tabs")
+    rec_now = record("flat")
+    # with a transcript for the worktree, claude resumes it
+    with open(os.path.join(sessions, "flat-old.json"), "w") as f:
+        json.dump({"session_id": "flat-old", "project": rq, "transcript_path": os.path.join(tmp, "flat.jsonl")}, f)
+    with open(os.path.join(tmp, "flat.jsonl"), "w") as f:
+        f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "earlier"}}) + "\n")
+    clear_log(keep_state=True)
+    j = run_json(["open", "flat", "--json"], {"FAKE_IT2_MISSING": f"{rec_now['claude_pane']},{rec_now['shell_pane']}"})
+    rec_now = record("flat")
+    check(called(["session", "run", "--session", rec_now["claude_pane"], "--"],
+                 last=f" cd {rq} && claude -n flat --continue") >= 0,
+          f"reopen with a transcript resumes it with --continue ({calls()})")
+    os.remove(os.path.join(sessions, "flat-old.json"))
+    check(run(["open", "nosuch"]).returncode == 1, "open of an unknown name exits 1")
+    p = run(["open", "flat"], {"SAVANNAH_IT2": "/nonexistent/it2"})
+    check(p.returncode == 1 and "it2" in p.stderr, "open without it2 exits 1")
+    gone_dir = os.path.join(tmp, "gone-wt")
+    os.makedirs(gone_dir)
+    run_json(["new", "gonewt", "--no-worktree", "--repo", gone_dir, "--json"])
+    shutil.rmtree(gone_dir)
+    p = run(["open", "gonewt"], {"FAKE_IT2_MISSING": "PANE-C-9,PANE-S-9," + ",".join(
+        v for k, v in record("gonewt").items() if k in ("claude_pane", "shell_pane"))})
+    check(p.returncode == 1 and "gone" in p.stderr, f"open with a vanished worktree and tab exits 1 ({p.stderr.strip()})")
+    check(run(["rm", "gonewt"]).returncode == 0, "rm gonewt")
+
+    # ---- adopt: a tab you opened yourself becomes a named work session -------
+    # The hook file is the only input: it names the directory (the session's
+    # worktree, as is) and the iTerm2 pane (the join key). No tab is made.
+    hook_adopt = os.path.join(sessions, "adopt-1.json")
+    with open(hook_adopt, "w") as f:
+        json.dump({"session_id": "adopt-1", "project": rq, "state": "idle",
+                   "iterm_session_id": "w0t0p0:ZZ-PANE", "updated": int(time.time()),
+                   "last_prompt": "what was I doing", "transcript_path": ""}, f)
+    clear_log(keep_state=True)
+    j = run_json(["adopt", "mine", "--session=adopt-1", "--json"])
+    head_branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() if have_git else ""
+    check(j.get("adopted") is True and j.get("name") == "mine", f"adopt records adopted: true ({j})")
+    check(j.get("worktree") == rq and j.get("repo") == rq,
+          f"adopt: worktree and repo are the tab's own directory ({j})")
+    check(j.get("branch") == head_branch,
+          f"adopt records the checked-out branch ({j.get('branch')!r} vs {head_branch!r})")
+    check(j.get("claude_pane") == "ZZ-PANE" and j.get("shell_pane") == "" and j.get("tab_id") == "",
+          f"adopt: pane from the hook, no shell pane, no tab id when it2 does not list the pane ({j})")
+    check(j.get("prompt") == "" and j.get("terminal") == "iterm", f"adopt: empty prompt, iterm terminal ({j})")
+    check(os.path.exists(os.path.join(workroot, "mine", "record.json")), "adopt writes the record")
+    check(called(["tab", "new"]) < 0 and called(["session", "split"]) < 0 and called(["session", "run"]) < 0,
+          f"adopt opens nothing in iTerm2 ({calls()})")
+    check(record("mine")["adopted"] is True, "adopted is stored as a boolean")
+    entries = {e["name"]: e for e in run_json(["ls", "--json"])}
+    mine = entries.get("mine", {})
+    check(mine.get("state") == "idle" and mine.get("claude_session_id") == "adopt-1" and mine.get("adopted") is True,
+          f"ls joins the adopted session to its hook file ({mine})")
+    check(mine.get("last_prompt") == "what was I doing", "ls carries the adopted tab's last prompt")
+    check(entries.get("flat", {}).get("adopted") is False, "a session made by new reads adopted: false")
+    check(run(["note", "mine", "--", "first"]).returncode == 0, "note on an adopted session")
+    check("first" in run(["notes", "mine"]).stdout, "notes of an adopted session")
+    p = run(["say", "mine", "--", "hi"], {"FAKE_IT2_MISSING": "ZZ-PANE"})
+    check(p.returncode == 1 and "no longer exists" in p.stderr,
+          f"say to a gone adopted pane exits 1 ({p.stderr.strip()})")
+    clear_log(keep_state=True)
+    check(run(["say", "mine", "--", "hi"]).returncode == 0
+          and called(["session", "send", "--session", "ZZ-PANE", "--"], last="hi") >= 0
+          and called(["session", "send", "--session", "ZZ-PANE", "--"], last="\r") >= 0,
+          f"say types into the adopted tab's pane ({calls()})")
+    p = run(["sh", "mine", "--", "ls"])
+    check(p.returncode == 1 and "shell pane" in p.stderr,
+          f"sh on an adopted session (no shell pane) exits 1 ({p.stderr.strip()})")
+    p = run(["adopt", "again", "--session=adopt-1"])
+    check(p.returncode == 1 and "already work session mine" in p.stderr,
+          f"adopting the same tab twice is refused ({p.stderr.strip()})")
+    check(not os.path.exists(os.path.join(workroot, "again")), "a refused adopt leaves no record dir")
+    p = run(["adopt", "Bad Name", "--session=adopt-1"])
+    check(p.returncode == 1 and "invalid name" in p.stderr, "adopt validates the name")
+    p = run(["adopt", "ghost", "--session=nope"])
+    check(p.returncode == 1 and "no live Claude session nope" in p.stderr,
+          f"adopt of an unknown session exits 1 ({p.stderr.strip()})")
+    check(not os.path.exists(os.path.join(workroot, "ghost")), "a failed adopt leaves no record dir")
+    check(run(["adopt", "noflag"]).returncode == 2, "adopt without --session exits 2")
+    # rm: the directory is the owner's, so git never removes or prunes it;
+    # the record goes, the notes are archived, the pane is closed best effort.
+    wl_before = git(repo, "worktree", "list").stdout if have_git else ""
+    clear_log(keep_state=True)
+    p = run(["rm", "mine", "--force"])
+    check(p.returncode == 0 and "adopted: directory kept" in p.stdout,
+          f"rm of an adopted session keeps the directory, even with --force ({p.stdout.strip()} / {p.stderr.strip()})")
+    check(os.path.isdir(rq) and os.path.exists(os.path.join(rq, "README")),
+          "rm of an adopted session leaves the directory and its files")
+    if have_git:
+        check(git(repo, "worktree", "list").stdout == wl_before and rq in wl_before.split("\n")[0],
+              "rm of an adopted session changes nothing in git worktree list")
+    check(called(["session", "close", "--session", "ZZ-PANE", "--force"]) >= 0,
+          f"rm closes the adopted pane best effort ({calls()})")
+    check(called(["session", "close", "--session", "", "--force"]) < 0, "rm never closes an empty pane id")
+    check(not os.path.exists(os.path.join(workroot, "mine")), "rm of an adopted session deletes the record")
+    adir = os.path.join(workroot, "archive")
+    check(os.path.isdir(adir) and any(f.startswith("mine-") for f in os.listdir(adir)),
+          "rm archives an adopted session's notes")
+    # open: the adopted pane is not in it2's list any more, so open makes a
+    # tab and a split in that directory and the record stays adopted.
+    run_json(["adopt", "back", "--session=adopt-1", "--json"])
+    clear_log(keep_state=True)
+    j = run_json(["open", "back", "--json"])
+    rec_back = record("back")
+    check(j.get("action") == "reopened" and rec_back["adopted"] is True and rec_back["worktree"] == rq,
+          f"open on an adopted session whose pane is gone reopens it and keeps adopted ({j} / {rec_back})")
+    check(rec_back["claude_pane"] == j.get("claude_pane") and rec_back["shell_pane"] == j.get("shell_pane") != "",
+          f"a reopened adopted session has both panes ({rec_back})")
+    check(called(["session", "run", "--session", rec_back["claude_pane"], "--"],
+                 last=f" cd {rq} && claude -n back") >= 0,
+          f"reopen of an adopted session starts a named claude in its directory, no --continue without a transcript ({calls()})")
+    clear_log(keep_state=True)
+    p = run(["open", "back"])
+    check(p.returncode == 0 and p.stdout.startswith("back: focused"), "open on the reopened adopted session focuses it")
+    check(run(["rm", "back"]).returncode == 0, "rm back")
+    os.remove(hook_adopt)
+
+    # ---- move: priority (the board's two sections) and rank -------------------
+    # A record from before the fields existed reads active, ranked by its
+    # creation time; new sessions get the same, so untouched rows keep
+    # arriving in order. move changes the record and nothing else.
+    pri = run_json(["new", "pri", "--no-worktree", "--repo", repo, "--json"])
+    check(pri.get("priority") == "active" and pri.get("rank") == pri.get("created"),
+          f"new records priority active and rank == created ({pri})")
+    write_record("oldrec", {"name": "oldrec", "worktree": other, "repo": other, "created": 1234})
+    write_record("oddrec", {"name": "oddrec", "worktree": other, "repo": other, "created": 77,
+                            "priority": "urgent", "rank": "soon"})
+    write_record("laterrec", {"name": "laterrec", "worktree": other, "repo": other, "created": 5,
+                              "priority": "later", "rank": "12"})
+    by = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check(by["oldrec"]["priority"] == "active" and by["oldrec"]["rank"] == 1234,
+          f"a record without the fields reads active, rank == created ({by['oldrec']})")
+    check(by["oddrec"]["priority"] == "active" and by["oddrec"]["rank"] == 77,
+          f"an unknown priority reads active, an unparsable rank falls back to created ({by['oddrec']})")
+    check(by["laterrec"]["priority"] == "later" and by["laterrec"]["rank"] == 12,
+          f"later and a numeric-string rank are read as stored ({by['laterrec']})")
+    clear_log(keep_state=True)
+    j = run_json(["move", "pri", "--later", "--json"])
+    check(j == {"name": "pri", "priority": "later", "rank": pri["created"]},
+          f"move --later: json names the new section and keeps the rank ({j})")
+    check(record("pri")["priority"] == "later", "move --later is stored")
+    j = run_json(["move", "pri", "--rank", "-5", "--json"])
+    check(j.get("rank") == -5 and j.get("priority") == "later" and record("pri")["rank"] == -5,
+          f"move --rank takes a negative rank and keeps the section ({j})")
+    j = run_json(["move", "pri", "--active", "--rank=10", "--json"])
+    check(j == {"name": "pri", "priority": "active", "rank": 10}, f"move --active --rank together ({j})")
+    p = run(["move", "pri", "--later"])
+    check(p.returncode == 0 and p.stdout == "moved pri: later, rank 10\n", f"move human line ({p.stdout!r})")
+    check(run(["move", "pri"]).returncode == 2, "move without an option exits 2")
+    check(run(["move", "pri", "--active", "--later"]).returncode == 2, "move --active --later exits 2")
+    check(run(["move", "pri", "--rank", "soon"]).returncode == 2, "move --rank wants an integer")
+    check(record("pri")["priority"] == "later" and record("pri")["rank"] == 10,
+          "refused moves change nothing")
+    check(read_log() == "", "move never talks to it2")
+    rec_pri = record("pri")
+    check(set(rec_pri) >= {"priority", "rank", "updated"} and rec_pri["worktree"] == pri["worktree"],
+          "move rewrites the record whole, with the fields")
+    for n in ("oldrec", "oddrec", "laterrec"):
+        shutil.rmtree(os.path.join(workroot, n))
+
+    # ---- rename: the record moves, the worktree and branch stay ----------------
+    rn = run_json(["new", "rn-old", "--no-worktree", "--repo", repo, "--json"])
+    run(["note", "rn-old", "--", "note travels"])
+    run_json(["status", "rn-old", "--json", "--", "poll travels"])
+    clear_log(keep_state=True)
+    j = run_json(["rename", "rn-old", "rn-new", "--json"])
+    check(j == {"name": "rn-new", "old": "rn-old", "worktree": rn["worktree"], "branch": rn["branch"]},
+          f"rename json ({j})")
+    check(read_log() == "", "rename never talks to it2 (the ls below does, once, for pane_alive)")
+    check(not os.path.exists(os.path.join(workroot, "rn-old")), "rename: the old record dir is gone")
+    for fn in ("record.json", "notes.md", "status.json"):
+        check(os.path.exists(os.path.join(workroot, "rn-new", fn)), f"rename: {fn} travels")
+    rec_new = record("rn-new")
+    check(rec_new["name"] == "rn-new" and rec_new["worktree"] == rn["worktree"]
+          and rec_new["claude_pane"] == rn["claude_pane"] and rec_new["created"] == rn["created"]
+          and rec_new["rank"] == rn["rank"],
+          f"rename rewrites the record with the new name, everything else as it was ({rec_new})")
+    check("note travels" in run(["notes", "rn-new"]).stdout, "rename: notes readable under the new name")
+    j = run_json(["status", "rn-new", "--json"])
+    check((j.get("status") or {}).get("text") == "poll travels", f"rename: status readable under the new name ({j})")
+    by = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check("rn-new" in by and "rn-old" not in by and by["rn-new"]["worktree"] == rn["worktree"]
+          and by["rn-new"]["branch"] == rn["branch"], "ls shows the new name with the same worktree and branch")
+    p = run(["rename", "rn-new", "flat"])
+    check(p.returncode == 1 and "exists" in p.stderr, f"rename onto an existing name is refused ({p.stderr.strip()})")
+    check(record("rn-new") == rec_new and record("flat")["name"] == "flat"
+          and os.path.exists(os.path.join(workroot, "rn-new", "notes.md"))
+          and os.path.exists(os.path.join(workroot, "flat", "record.json")),
+          "a refused rename leaves both sessions untouched")
+    p = run(["rename", "rn-new", "Bad Name"])
+    check(p.returncode == 1 and "invalid name" in p.stderr, "rename validates the new name")
+    p = run(["rename", "bad name", "rn-x"])
+    check(p.returncode == 1 and "invalid" in p.stderr and not os.path.exists(os.path.join(workroot, "rn-x")),
+          "rename validates the old name and claims nothing")
+    check(run(["rename", "rn-new", "rn-new"]).returncode == 1, "rename to the same name exits 1")
+    check(record("rn-new") == rec_new, "refused renames change nothing")
+    p = run(["rename", "rn-new", "rn-final"])
+    check(p.returncode == 0 and p.stdout == "renamed rn-new to rn-final (worktree and branch keep their names)\n",
+          f"rename human line ({p.stdout!r})")
+    clear_log(keep_state=True)
+    p = run(["rm", "rn-final"])
+    check(p.returncode == 0 and not os.path.exists(os.path.join(workroot, "rn-final")),
+          f"rm of a renamed session ({p.stderr.strip()})")
+    adir = os.path.join(workroot, "archive")
+    archived = [f for f in os.listdir(adir) if f.startswith("rn-final-")] if os.path.isdir(adir) else []
+    check(archived, "rm of a renamed session archives its notes under the new name")
+    if archived:
+        with open(os.path.join(adir, archived[0])) as f:
+            check("note travels" in f.read(), "the archived notes are the ones that travelled")
+    check(called(["session", "close", "--session", rn["claude_pane"], "--force"]) >= 0,
+          f"rm of a renamed session closes the original panes ({calls()})")
+
+    # ---- status: what a tab's Claude is polling for you ------------------------
+    st_dir = os.path.join(tmp, "herewt")
+    os.makedirs(st_dir)
+    here1 = run_json(["new", "here1", "--no-worktree", "--repo", st_dir, "--json"])
+    p = run(["status", "here1"])
+    check(p.returncode == 0 and p.stdout == "here1: (no status)\n", f"status of a fresh session ({p.stdout!r})")
+    j = run_json(["status", "here1", "--json"])
+    check(j == {"name": "here1", "status": None}, f"status --json of a fresh session ({j})")
+    t0 = int(time.time())
+    j = run_json(["status", "here1", "--json", "--", "waiting for ctest (run 1 of 3)"])
+    check(j.get("name") == "here1" and j.get("text") == "waiting for ctest (run 1 of 3)" and j.get("count") == 1
+          and isinstance(j.get("updated"), int) and j["updated"] >= t0 and set(j) == {"name", "text", "count", "updated"},
+          f"status TEXT writes text, count 1 and an epoch ({j})")
+    with open(os.path.join(workroot, "here1", "status.json")) as f:
+        on_disk = json.load(f)
+    check(on_disk == {"text": "waiting for ctest (run 1 of 3)", "updated": j["updated"], "count": 1},
+          f"status.json shape ({on_disk})")
+    p = run(["status", "here1", "waiting", "for", "ctest", "(run 2 of 3)"])
+    check(p.returncode == 0 and p.stdout == "here1: poll 2: waiting for ctest (run 2 of 3)\n",
+          f"a second report counts 2 and joins the words ({p.stdout!r})")
+    j = run_json(["status", "here1", "--json"])
+    check(j.get("name") == "here1" and (j.get("status") or {}).get("text") == "waiting for ctest (run 2 of 3)"
+          and j["status"]["count"] == 2 and j["status"]["updated"] >= t0, f"status --json reads it back ({j})")
+    p = run(["status", "here1"])
+    check(p.returncode == 0 and re.fullmatch(r"here1: waiting for ctest \(run 2 of 3\) \(2 polls, last \d+s ago\)\n", p.stdout),
+          f"status human read line ({p.stdout!r})")
+    j = run_json(["status", "here1", "--json", "--", "first line\nsecond line"])
+    check(j.get("text") == "first line" and j.get("count") == 3, f"multi-line text keeps its first line ({j})")
+    j = run_json(["status", "here1", "--json", "--", "x" * 300])
+    check(j.get("text") == "x" * 200 and j.get("count") == 4, "text is capped at 200 chars")
+    by = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check(by["here1"]["status"] == {"text": "x" * 200, "count": 4, "updated": j["updated"]}
+          and by["here1"]["priority"] == "active" and by["here1"]["rank"] == here1["created"],
+          f"ls --json carries status, priority and rank ({by['here1']})")
+    check(by["flat"]["status"] is None, "ls --json: status is null without a report")
+    p = run(["ls"])
+    head = p.stdout.splitlines()[0]
+    check(head.split()[:5] == ["NAME", "TITLE", "BRANCH", "STATE", "STATUS"], f"ls human has a STATUS column after STATE ({head})")
+    idx = head.index("STATUS") if "STATUS" in head else 0
+    row = [ln for ln in p.stdout.splitlines() if ln.startswith("here1 ")]
+    check(row and row[0][idx:idx + 30] == "x" * 25 + "~ (4)", f"ls human clips the text to 30 with the count ({row})")
+    row = [ln for ln in p.stdout.splitlines() if ln.startswith("flat ")]
+    check(row and row[0][idx:].startswith("- "), f"ls human shows - without a report ({row})")
+    # a damaged status.json reads as no status, never as an error
+    with open(os.path.join(workroot, "here1", "status.json"), "w") as f:
+        f.write("{not json")
+    check(run_json(["status", "here1", "--json"]) == {"name": "here1", "status": None}, "a damaged status.json reads as none")
+    check(run(["ls"]).returncode == 0, "ls survives a damaged status.json")
+    j = run_json(["status", "here1", "--json", "--", "after damage"])
+    check(j.get("count") == 1, "the count starts over after a damaged file")
+    p = run(["status", "here1", "--clear"])
+    check(p.returncode == 0 and p.stdout == "here1: status cleared\n"
+          and not os.path.exists(os.path.join(workroot, "here1", "status.json")),
+          f"status --clear removes the file ({p.stdout!r})")
+    j = run_json(["status", "here1", "--clear", "--json"])
+    check(j == {"name": "here1", "status": None}, f"--clear twice is fine and json says null ({j})")
+    check(run(["status", "here1"]).stdout == "here1: (no status)\n", "after --clear: (no status)")
+    j = run_json(["status", "here1", "--json", "--", "again"])
+    check(j.get("count") == 1, "the count starts over after --clear")
+    # usage
+    check(run(["status", "here1", "--clear", "--", "text"]).returncode == 2, "status --clear with text exits 2")
+    check(run(["status", "here1", "--", "   "]).returncode == 2, "blank status text exits 2")
+    check(run_json(["status", "here1", "--json"]).get("status", {}).get("count") == 1, "refused reports change nothing")
+    # --here: the Claude pane first (ITERM_SESSION_ID is what Claude Code's Bash inherits)
+    pane_env = {"ITERM_SESSION_ID": f"w1t1p1:{here1['claude_pane']}"}
+    j = run_json(["status", "--here", "--json", "--", "from the pane"], pane_env, cwd=tmp)
+    check(j.get("name") == "here1" and j.get("text") == "from the pane" and j.get("count") == 2,
+          f"--here finds the session by its Claude pane, whatever the cwd ({j})")
+    j = run_json(["status", "--here", "--json"], pane_env, cwd=tmp)
+    check(j.get("name") == "here1" and (j.get("status") or {}).get("text") == "from the pane", f"--here reads too ({j})")
+    j = run_json(["status", "--here", "some", "words", "--json"], pane_env, cwd=tmp)
+    check(j.get("text") == "some words" and j.get("count") == 3, f"with --here every positional is text ({j})")
+    # --here: the cwd when no pane matches (the test env's id matches no record)
+    j = run_json(["status", "--here", "--json", "--", "from the cwd"], cwd=st_dir)
+    check(j.get("name") == "here1" and j.get("count") == 4, f"--here falls back to the one session in the cwd ({j})")
+    j = run_json(["status", "--here", "--json", "--", "no id at all"], {"ITERM_SESSION_ID": ""}, cwd=st_dir)
+    check(j.get("name") == "here1" and j.get("count") == 5, f"--here with an empty ITERM_SESSION_ID uses the cwd ({j})")
+    p = run(["status", "--here", "--", "x"], cwd=rq)
+    check(p.returncode == 1 and "several work sessions share this directory" in p.stderr
+          and "flat" in p.stderr and "bare" in p.stderr and "(name one)" in p.stderr,
+          f"--here in a directory with several sessions names them ({p.stderr.strip()})")
+    nowhere = os.path.join(tmp, "nowhere")
+    os.makedirs(nowhere)
+    p = run(["status", "--here"], cwd=nowhere)
+    check(p.returncode == 1 and "no work session for" in p.stderr and "nowhere" in p.stderr,
+          f"--here outside every session exits 1 ({p.stderr.strip()})")
+    check(run(["status", "--here", "--clear"], pane_env, cwd=tmp).returncode == 0
+          and run_json(["status", "here1", "--json"]) == {"name": "here1", "status": None},
+          "--here --clear clears the pane's session")
+    check(run(["rm", "here1"]).returncode == 0, "rm here1")
+
+    # ---- repos: the folder of repos the board offers ---------------------------
+    folder = os.path.join(tmp, "folder")
+    for n in ("zeta", "alpha", ".hidden", "plain"):
+        os.makedirs(os.path.join(folder, n))
+    for n in ("zeta", "alpha", ".hidden"):
+        os.makedirs(os.path.join(folder, n, ".git"))
+    with open(os.path.join(folder, "wtfile", ), "w") as f:
+        f.write("x")  # a file, not a dir
+    os.makedirs(os.path.join(folder, "linked"))
+    with open(os.path.join(folder, "linked", ".git"), "w") as f:
+        f.write("gitdir: elsewhere\n")  # a worktree or submodule: still a repo
+    j = run_json(["repos", folder, "--json"])
+    check(j.get("repos") == ["alpha", "linked", "zeta"] and j.get("dir") == folder and j.get("picked") == "given"
+          and j.get("scratch") == "", f"repos DIR lists git dirs sorted, skips dotdirs and plain dirs ({j})")
+    with open(os.path.join(tmp, "hub.json")) as f:
+        check(json.load(f).get("dir") == folder, "repos DIR remembers the folder in hub.json")
+    os.makedirs(os.path.join(folder, ".savannah-scratch"))
+    j = run_json(["repos", "--json"], cwd=tmp)
+    check(j.get("dir") == folder and j.get("picked") == "remembered"
+          and j.get("scratch") == os.path.join(folder, ".savannah-scratch"),
+          f"repos without DIR uses the remembered folder and reports scratch ({j})")
+    p = run(["repos"], cwd=tmp)
+    check(p.returncode == 0 and p.stdout.splitlines()[0].startswith(folder) and "  alpha" in p.stdout
+          and "scratch" in p.stdout, f"repos human output ({p.stdout!r})")
+    check(run(["repos", os.path.join(tmp, "nope")]).returncode == 1, "repos on a missing dir exits 1")
+    os.remove(os.path.join(tmp, "hub.json"))
+    j = run_json(["repos", "--json"], cwd=folder)
+    check(os.path.realpath(j.get("dir", "")) == os.path.realpath(folder) and j.get("picked") == "cwd",
+          "repos with nothing remembered uses the cwd")
 
     # ---- rm ----------------------------------------------------------------
     if have_git:
@@ -597,8 +1113,10 @@ def main():
             check("keep me" in f.read(), "archived notes keep their text")
         check(git(repo, "rev-parse", "--verify", "refs/heads/work/feat").returncode == 0,
               "rm leaves the branch alone")
-        check("close target" in read_log() and '"PANE-C-1"' in read_log(), "rm closes the tab by its panes")
-        check(guard in read_log(), "close script carries the running guard")
+        check(called(["session", "close", "--session", "PANE-C-1", "--force"]) >= 0
+              and called(["session", "close", "--session", "PANE-S-1", "--force"]) >= 0,
+              f"rm closes the tab pane by pane ({calls()})")
+        check(called(["tab", "close"]) < 0, "rm never calls `it2 tab close` (it closes nothing)")
         check(git(repo, "worktree", "list").stdout.count("\n") >= 1, "worktree list still sane")
 
         # new after rm of the same name: the branch survived, so new reattaches it
@@ -619,7 +1137,7 @@ def main():
         check(run(["rm", "feat2"]).returncode == 0, "rm feat2")
         # a failure after reattaching must NOT delete the surviving branch
         check(run(["rm", "feat"]).returncode == 0, "rm feat again")
-        p = run(["new", "feat", "--repo", repo], {"SAVANNAH_OSASCRIPT": noexec})
+        p = run(["new", "feat", "--repo", repo], {"SAVANNAH_IT2": noexec})
         check(p.returncode == 1 and not os.path.isdir(wt)
               and git(repo, "rev-parse", "--verify", "refs/heads/work/feat").returncode == 0,
               "failed reattach rolls back the worktree but keeps the pre-existing branch")
@@ -663,20 +1181,20 @@ def main():
     # rm of a --no-worktree session never touches git; tab close is best effort
     hrec = record("human")
     clear_log()
-    p = run(["rm", "human"], {"FAKE_OSASCRIPT_MISSING": f"{hrec['claude_pane']},{hrec['shell_pane']}"})
+    p = run(["rm", "human"], {"FAKE_IT2_MISSING": f"{hrec['claude_pane']},{hrec['shell_pane']}"})
     check(p.returncode == 0 and not os.path.exists(os.path.join(workroot, "human")),
           "rm with a vanished tab still succeeds")
-    sent = read_log()
-    check("close target" in sent and f'"{hrec["claude_pane"]}"' in sent and f'"{hrec["shell_pane"]}"' in sent,
-          "rm with a vanished tab still emitted the close script for its own panes")
+    check(called(["session", "close", "--session", hrec["claude_pane"], "--force"]) >= 0
+          and called(["session", "close", "--session", hrec["shell_pane"], "--force"]) >= 0,
+          "rm with a vanished tab still tried to close its own panes")
     adir = os.path.join(workroot, "archive")
     check(not os.path.isdir(adir) or not any(f.startswith("human-") for f in os.listdir(adir)),
           "no notes, nothing archived")
     check(run(["rm", "human"]).returncode == 1, "rm twice: unknown name exits 1")
-    check(run(["rm", "bare"], {"SAVANNAH_OSASCRIPT": "/nonexistent/osascript"}).returncode == 0,
-          "rm succeeds even when osascript is unavailable")
-    check(run(["rm", "lonely"], {"SAVANNAH_OSASCRIPT": noexec}).returncode == 0,
-          "rm succeeds even when osascript is not executable")
+    check(run(["rm", "bare"], {"SAVANNAH_IT2": "/nonexistent/it2"}).returncode == 0,
+          "rm succeeds even when it2 is unavailable")
+    check(run(["rm", "lonely"], {"SAVANNAH_IT2": noexec}).returncode == 0,
+          "rm succeeds even when it2 is not executable")
 
     # Reserved names: 'archive' is the notes graveyard; new/rm must never
     # treat it as a session (rm archive would otherwise delete every archived note).
@@ -705,7 +1223,7 @@ def main():
           "rm of a plain file in the work dir is refused")
 
     # Rollback closes the tab when a step AFTER create_split_tab fails
-    # (in-process: make the record write fail; the fake osascript logs close).
+    # (in-process: make the record write fail; the fake it2 logs the close).
     import types
     clear_log()
     real_write = sw.atomic_write
@@ -713,9 +1231,10 @@ def main():
     def boom(*a, **k):
         raise OSError(28, "No space left on device")
     # In-process, so the module reads os.environ: point it at the temp dirs
-    # and the fake osascript for the duration (never the real iTerm2).
+    # and the fake it2 for the duration (never the real iTerm2).
     saved_env = {k: os.environ.get(k) for k in
-                 ("SAVANNAH_WORK_DIR", "SAVANNAH_SESSIONS_DIR", "SAVANNAH_OSASCRIPT", "FAKE_OSASCRIPT_LOG")}
+                 ("SAVANNAH_WORK_DIR", "SAVANNAH_SESSIONS_DIR", "SAVANNAH_IT2", "FAKE_IT2_LOG", "ITERM_SESSION_ID",
+                  "SAVANNAH_LOG_DIR")}
     for k in saved_env:
         os.environ[k] = env[k]
     sw.atomic_write = boom
@@ -732,9 +1251,8 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-    sent = read_log()
-    check("close target" in sent and "PANE-C-" in sent,
-          "rollback after a failed record write closes the tab it just created")
+    check(any(c[:3] == ["session", "close", "--session"] and c[3].startswith("PANE-C-") for c in calls()),
+          f"rollback after a failed record write closes the tab it just created ({calls()})")
     check(not os.path.exists(os.path.join(workroot, "nospace")), "rollback removed the claimed dir")
 
     # ---- output: the read side of say --------------------------------------
@@ -835,9 +1353,30 @@ def main():
     hub = os.path.join(tmp, "hub")
     os.makedirs(hub)
     check(run(["hub", os.path.join(tmp, "nope"), "--no-launch"]).returncode == 1, "hub on a missing dir exits 1")
+    check(not os.path.exists(os.path.join(tmp, "hub.json")), "hub on a missing dir remembers nothing")
     h = run_json(["hub", hub, "--no-launch", "--json"])
     check(h.get("mcp_status") == "created" and h.get("claude_md_status") == "created" and h.get("launch") is False,
           f"hub first run creates both files ({h})")
+    check(h.get("picked") == "given" and h.get("scratch_status") == "created"
+          and h.get("hub_file") == os.path.join(tmp, "hub.json"), f"hub first run: scratch + remembered ({h})")
+    settings_path = os.path.join(hub, ".claude", "settings.json")
+    check(h.get("settings_status") == "created" and h.get("settings") == settings_path,
+          f"hub first run creates .claude/settings.json ({h})")
+    with open(settings_path) as f:
+        st = json.load(f)
+    allow = st.get("permissions", {}).get("allow", [])
+    check(st.get("enableAllProjectMcpServers") is True, "hub settings approve project MCP servers")
+    check("mcp__peer__work_new" in allow and "mcp__peer__work_output" in allow and "Bash(sleep *)" in allow,
+          f"hub settings pre-allow the work_* tools and sleep ({allow})")
+    check(not any(r.startswith("mcp__peer__task") or r.startswith("mcp__peer__ask") for r in allow),
+          "hub settings do not pre-allow mesh tools")
+    scratch = os.path.join(hub, ".savannah-scratch")
+    check(os.path.isdir(scratch) and os.path.isfile(os.path.join(scratch, "CLAUDE.md")),
+          "hub creates .savannah-scratch/CLAUDE.md")
+    with open(os.path.join(scratch, "CLAUDE.md")) as f:
+        check("scratch" in f.read().lower(), "scratch CLAUDE.md is the scratch template")
+    with open(os.path.join(tmp, "hub.json")) as f:
+        check(json.load(f).get("dir") == hub, "hub.json remembers the hub dir")
     with open(os.path.join(hub, ".mcp.json")) as f:
         mcp = json.load(f)
     peer = mcp.get("mcpServers", {}).get("peer", {})
@@ -851,8 +1390,25 @@ def main():
         check(word in md, f"hub CLAUDE.md mentions {word}")
     check("—" not in md, "hub CLAUDE.md has no em dashes")
     h = run_json(["hub", hub, "--no-launch", "--json"])
-    check(h.get("mcp_status") == "unchanged" and h.get("claude_md_status") == "kept",
+    check(h.get("mcp_status") == "unchanged" and h.get("claude_md_status") == "kept"
+          and h.get("scratch_status") == "kept" and h.get("settings_status") == "unchanged",
           f"hub second run changes nothing ({h})")
+    with open(settings_path, "w") as f:
+        json.dump({"model": "x", "permissions": {"allow": ["Bash(git status)"], "deny": ["WebFetch"]}}, f)
+    h = run_json(["hub", hub, "--no-launch", "--json"])
+    check(h.get("settings_status") == "updated", "hub merges into an existing settings.json")
+    with open(settings_path) as f:
+        st = json.load(f)
+    check(st.get("model") == "x" and st["permissions"].get("deny") == ["WebFetch"]
+          and st["permissions"]["allow"][0] == "Bash(git status)" and "mcp__peer__work_say" in st["permissions"]["allow"]
+          and st.get("enableAllProjectMcpServers") is True, f"hub settings merge keeps everything else ({st})")
+    with open(settings_path, "w") as f:
+        f.write("[1, 2")
+    p = run(["hub", hub, "--no-launch"])
+    check(p.returncode == 1 and "malformed" in p.stderr, "hub refuses a malformed settings.json")
+    os.remove(settings_path)
+    for word in ("EVERY request", ".savannah-scratch", "sleep 5", "work_output", "waiting", "offline"):
+        check(word in md, f"hub CLAUDE.md covers {word!r}")
     with open(os.path.join(hub, "CLAUDE.md"), "w") as f:
         f.write("mine\n")
     with open(os.path.join(hub, ".mcp.json"), "w") as f:
@@ -873,10 +1429,29 @@ def main():
     with open(os.path.join(hub, ".mcp.json")) as f:
         check(f.read() == "{broken", "hub leaves the malformed file alone")
     os.remove(os.path.join(hub, ".mcp.json"))
-    # default dir is the cwd
+    # no DIR: the remembered hub wins over the cwd
+    elsewhere = os.path.join(tmp, "elsewhere")
+    os.makedirs(elsewhere)
+    h = run_json(["hub", "--no-launch", "--json"], cwd=elsewhere)
+    check(h.get("dir") == hub and h.get("picked") == "remembered" and h.get("mcp_status") == "created",
+          f"hub without DIR opens the remembered hub ({h})")
+    check(not os.path.exists(os.path.join(elsewhere, ".mcp.json")), "remembered hub: cwd untouched")
+    # no DIR and nothing remembered (or a stale memory): the cwd
+    with open(os.path.join(tmp, "hub.json"), "w") as f:
+        json.dump({"dir": os.path.join(tmp, "vanished")}, f)
+    h = run_json(["hub", "--no-launch", "--json"], cwd=elsewhere)
+    check(os.path.realpath(h.get("dir", "")) == os.path.realpath(elsewhere) and h.get("picked") == "cwd",
+          f"hub without DIR and a stale memory falls back to the cwd ({h})")
+    with open(os.path.join(tmp, "hub.json")) as f:
+        check(os.path.realpath(json.load(f).get("dir")) == os.path.realpath(elsewhere), "and remembers the cwd")
+    os.remove(os.path.join(tmp, "hub.json"))
     h = run_json(["hub", "--no-launch", "--json"], cwd=hub)
-    check(os.path.realpath(h.get("dir", "")) == os.path.realpath(hub) and h.get("mcp_status") == "created",
-          "hub defaults to the cwd")
+    check(os.path.realpath(h.get("dir", "")) == os.path.realpath(hub) and h.get("picked") == "cwd",
+          "hub without DIR and no memory uses the cwd")
+    # `hub DIR` re-points the memory
+    run_json(["hub", hub, "--no-launch", "--json"])
+    with open(os.path.join(tmp, "hub.json")) as f:
+        check(json.load(f).get("dir") == hub, "hub DIR re-points hub.json")
     # launch: exec of $SAVANNAH_CLAUDE_BIN in the hub dir (a fake that records its cwd)
     fake_claude = os.path.join(tmp, "fake_claude.py")
     with open(fake_claude, "w") as f:
@@ -888,6 +1463,241 @@ def main():
         check(os.path.realpath(f.read()) == os.path.realpath(hub), "hub launches claude with cwd = hub dir")
     p = run(["hub", hub], extra_env={"SAVANNAH_CLAUDE_BIN": os.path.join(tmp, "no-such-claude")})
     check(p.returncode == 1 and "cannot launch" in p.stderr, "hub reports a missing claude binary")
+
+    # ---- the C++ CLI entry points: savannah [hub|work|<nothing>] -----------
+    cli = os.path.abspath(sys.argv[3]) if len(sys.argv) > 3 else ""
+    if cli and os.path.isfile(cli) and os.access(cli, os.X_OK):
+        def run_cli(args, extra_env=None, cwd=None):
+            e = dict(env)
+            e["SAVANNAH_WORK_PY"] = module
+            if extra_env:
+                e.update(extra_env)
+            return subprocess.run([cli] + args, text=True, capture_output=True, env=e, cwd=cwd or tmp)
+        p = run_cli(["work", "ls", "--json"])
+        check(p.returncode == 0 and isinstance(json.loads(p.stdout or "x"), list) if p.returncode == 0 else False,
+              f"savannah work ls --json runs the module (rc {p.returncode}: {p.stderr.strip()})")
+        p = run_cli(["work"])
+        check(p.returncode == 2, "savannah work with no verb is the module's usage error (2)")
+        p = run_cli(["hub", hub, "--no-launch", "--json"])
+        check(p.returncode == 0 and json.loads(p.stdout).get("dir") == hub,
+              f"savannah hub DIR --no-launch forwards to the module ({p.stderr.strip()})")
+        # Bare savannah is the board: it execs the dash (a fake here that
+        # records its argv, cwd and SAVANNAH_BIN), `mesh` adds --mesh.
+        fake_dash = os.path.join(tmp, "fake-dash.py")
+        with open(fake_dash, "w") as f:
+            f.write("#!" + sys.executable + "\nimport json, os, sys\n"
+                    "open(os.environ['DASH_MARKER'], 'w').write(json.dumps("
+                    "{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'bin': os.environ.get('SAVANNAH_BIN', '')}))\n"
+                    "sys.exit(9)\n")
+        os.chmod(fake_dash, 0o755)
+        dash_marker = os.path.join(tmp, "dash.json")
+        p = run_cli([], extra_env={"SAVANNAH_DASH_BIN": fake_dash, "DASH_MARKER": dash_marker}, cwd=elsewhere)
+        check(p.returncode == 9 and os.path.exists(dash_marker), f"bare savannah execs the dash (rc {p.returncode}: {p.stderr.strip()})")
+        if os.path.exists(dash_marker):
+            with open(dash_marker) as f:
+                d = json.load(f)
+            check(d["argv"] == [] and os.path.realpath(d["cwd"]) == os.path.realpath(elsewhere),
+                  f"bare savannah: dash in work mode, in the cwd ({d})")
+            check(os.path.realpath(d["bin"]) == os.path.realpath(cli),
+                  f"bare savannah tells the dash where the CLI is via SAVANNAH_BIN ({d['bin']})")
+            os.remove(dash_marker)
+        p = run_cli(["mesh", "--key", "k"], extra_env={"SAVANNAH_DASH_BIN": fake_dash, "DASH_MARKER": dash_marker,
+                                                        "SAVANNAH_BIN": "/already/set"})
+        with open(dash_marker) as f:
+            d = json.load(f)
+        check(p.returncode == 9 and d["argv"] == ["--mesh", "--key", "k"] and d["bin"] == "/already/set",
+              f"savannah mesh execs the dash with --mesh and keeps a SAVANNAH_BIN already set ({d})")
+        p = run_cli([], extra_env={"SAVANNAH_DASH_BIN": os.path.join(tmp, "no-dash"), "PATH": tmp})
+        check(p.returncode == 1 and "go build" in p.stderr and "SAVANNAH_DASH_BIN" in p.stderr,
+              f"bare savannah without a dash says how to build it (rc {p.returncode}: {p.stderr.strip()})")
+        p = run_cli(["work", "ls"], extra_env={"SAVANNAH_WORK_PY": os.path.join(tmp, "no-module.py")})
+        check(p.returncode == 1 and "work module not found" in p.stderr, "savannah names a missing work module")
+    else:
+        print("test_work: savannah CLI not given or not built, CLI entry points skipped")
+
+    # ---- title: a free-text title beside the name (the name stays the id) -------
+    tt_dir = os.path.join(tmp, "titlewt")
+    os.makedirs(tt_dir)
+    clear_log(keep_state=True)
+    j = run_json(["new", "tt1", "--no-worktree", "--repo", tt_dir, "--json", "--title", "  Fix The Parser  "])
+    check(j.get("title") == "Fix The Parser", f"new --title stores the stripped title ({j.get('title')!r})")
+    check(record("tt1").get("title") == "Fix The Parser", "the title is in record.json")
+    j = run_json(["new", "tt2", "--no-worktree", "--repo", tt_dir, "--json"])
+    check(j.get("title") == "" and "title" in record("tt2"), 'new without --title writes title: ""')
+    p = run(["title", "tt1"])
+    check(p.returncode == 0 and p.stdout == "tt1: Fix The Parser\n", f"title NAME prints it ({p.stdout!r})")
+    check(run_json(["title", "tt1", "--json"]) == {"name": "tt1", "title": "Fix The Parser"}, "title --json")
+    p = run(["title", "tt2"])
+    check(p.returncode == 0 and p.stdout == "tt2: (no title)\n", f"title of a session without one ({p.stdout!r})")
+    check(run_json(["title", "tt2", "--json"]) == {"name": "tt2", "title": ""}, "title --json without one: empty string")
+    p = run(["title", "tt1", "Parser", "Fix,", "Take", "Two"])
+    check(p.returncode == 0 and p.stdout == "tt1: title set: Parser Fix, Take Two\n",
+          f"title TEXT... joins the words ({p.stdout!r})")
+    check(record("tt1")["title"] == "Parser Fix, Take Two", "the new title is stored")
+    j = run_json(["title", "tt1", "--json", "--", "-leading dash"])
+    check(j == {"name": "tt1", "title": "-leading dash"}, f"text starting with - travels after -- ({j})")
+    # (--json after the text, or -- before it: argparse stops filling a
+    # nargs="*" positional at the first option, like status and note)
+    check(run_json(["title", "tt1", "x" * 150, "--json"])["title"] == "x" * 120, "a title is cut to 120 chars")
+    check(run_json(["title", "tt1", "first line\nsecond line", "--json"])["title"] == "first line",
+          "only the first line of a title is kept")
+    check(run_json(["title", "tt1", "\n  \n  Third try  \nmore", "--json"])["title"] == "Third try",
+          "the first NON-BLANK line, stripped")
+    p = run(["title", "tt1", "   "])
+    check(p.returncode == 2 and "empty" in p.stderr,
+          f"whitespace-only title is a usage error (rc {p.returncode}: {p.stderr.strip()})")
+    check(run(["title", "tt1", "--clear", "x"]).returncode == 2, "title --clear with text is a usage error")
+    p = run(["title", "tt1", "--clear"])
+    check(p.returncode == 0 and p.stdout == "tt1: title cleared\n" and record("tt1")["title"] == "",
+          f"title --clear ({p.stdout!r})")
+    check(run_json(["title", "tt1", "--clear", "--json"]) == {"name": "tt1", "title": ""}, "title --clear --json")
+    p = run(["title", "nope", "x"])
+    check(p.returncode == 1 and "no such work session" in p.stderr, "title of an unknown name exits 1")
+    check(run(["title", "nope"]).returncode == 1, "title read of an unknown name exits 1")
+    # ls: a TITLE column right after NAME (clipped to 24, "-" when none); title in every --json row
+    long_title = "A Rather Long Title That Will Not Fit In The Column"
+    run_json(["title", "tt1", long_title, "--json"])
+    by = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check(by["tt1"]["title"] == long_title and by["tt2"]["title"] == "", "ls --json rows carry title")
+    p = run(["ls"])
+    head = p.stdout.splitlines()[0]
+    check(head.split()[:3] == ["NAME", "TITLE", "BRANCH"], f"ls human has a TITLE column after NAME ({head})")
+    row1 = [ln for ln in p.stdout.splitlines() if ln.startswith("tt1 ")][0]
+    row2 = [ln for ln in p.stdout.splitlines() if ln.startswith("tt2 ")][0]
+    check(long_title[:23] + "~" in row1, f"ls clips the title to 24 columns ({row1})")
+    check(row2.split()[1] == "-", f"ls shows - for no title ({row2})")
+    # the normalizer: a record from before titles, or with a non-string one, reads ""
+    rp = os.path.join(workroot, "tt2", "record.json")
+    with open(rp) as f:
+        raw = json.load(f)
+    del raw["title"]
+    with open(rp, "w") as f:
+        json.dump(raw, f)
+    check(run_json(["title", "tt2", "--json"])["title"] == "", "a record without the field reads an empty title")
+    raw["title"] = 42
+    with open(rp, "w") as f:
+        json.dump(raw, f)
+    check(run_json(["title", "tt2", "--json"])["title"] == "", "a non-string title reads empty")
+    raw["title"] = "  Kept\nnot this"
+    with open(rp, "w") as f:
+        json.dump(raw, f)
+    by = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check(by["tt2"]["title"] == "Kept", f"ls normalizes a stored title: first line, stripped ({by['tt2']['title']!r})")
+    # rename keeps it; adopt --title sets it, adopt without one writes ""
+    run_json(["title", "tt1", "--json", "--", "Survives Rename"])
+    check(run(["rename", "tt1", "tt1b"]).returncode == 0
+          and run_json(["title", "tt1b", "--json"])["title"] == "Survives Rename", "rename keeps the title")
+    for sid, pane in (("adopt-title", "w0t0p0:TT-PANE"), ("adopt-notitle", "")):
+        with open(os.path.join(sessions, sid + ".json"), "w") as f:
+            json.dump({"session_id": sid, "project": tt_dir, "state": "idle",
+                       "iterm_session_id": pane, "updated": int(time.time())}, f)
+    j = run_json(["adopt", "tt3", "--session=adopt-title", "--json", "--title=Adopted Tab"])
+    check(j.get("title") == "Adopted Tab" and j.get("adopted") is True, f"adopt --title ({j})")
+    j = run_json(["adopt", "tt4", "--session=adopt-notitle", "--json"])
+    check(j.get("title") == "" and "title" in j, 'adopt without --title writes title: ""')
+    check(sw.title_text(None) == "" and sw.title_text("  a  ") == "a" and sw.title_text("\n\n") == ""
+          and sw.title_text("y" * 200) == "y" * 120 and sw.TITLE_MAX == 120, "title_text: str, first non-blank line, 120")
+
+    # ---- log: savannah's one log; every verb writes it, `log` reads it ----------
+    log_file = os.path.join(logdir, "savannah.log")
+    check(os.path.isfile(log_file), f"verbs write {log_file} (SAVANNAH_LOG_DIR)")
+
+    def log_lines():
+        try:
+            with open(log_file, encoding="utf-8", errors="replace") as f:
+                return f.read().splitlines()
+        except OSError:
+            return []
+
+    stamp_re = re.compile(r"^time=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d "
+                          r"level=(VERBOSE|DEBUG|INFO|WARN|ERROR) msg=")
+    lines = log_lines()
+    bad = [ln for ln in lines if not stamp_re.match(ln)]
+    check(lines and not bad, f"every line opens with an RFC 3339 ms stamp and a level ({bad[:2]})")
+    check(all(" src=work" in ln for ln in lines), "every line of the work module is stamped src=work")
+    check(any(" level=INFO msg=verb src=work verb=ls args=" in ln and " cwd=" in ln for ln in lines),
+          "a verb writes an INFO line: msg=verb, verb=, args=, cwd=")
+    check(any(" level=DEBUG msg=it2 src=work args=" in ln and " rc=" in ln and " ms=" in ln for ln in lines),
+          "an it2 call writes a DEBUG line with its rc and ms")
+    check(any(' level=VERBOSE msg="it2 output" src=work' in ln for ln in lines), "what it2 printed lands at VERBOSE")
+    check(any(' level=WARN msg="verb refused" src=work verb=title error="no such work session: nope"' in ln
+              for ln in lines), "a refused verb writes a WARN line with the message")
+    check(any(' level=INFO msg="title set" src=work name=tt1 title=' in ln for ln in lines),
+          "a state change (title set) is INFO")
+    check(any(" level=DEBUG msg=join src=work name=" in ln for ln in lines), "the join of a record is DEBUG")
+    check(any(" level=DEBUG msg=verb" in ln or ' level=DEBUG msg="verb done" src=work verb=' in ln for ln in lines),
+          "a finished verb is DEBUG")
+    if have_git:
+        check(any(" level=DEBUG msg=git src=work args=" in ln and " rc=" in ln for ln in lines), "every git call is DEBUG")
+    sl = sw.savannah_log
+    check(sl.log_quote("plain") == "plain" and sl.log_quote(["a", "b"]) == '"[a b]"' and sl.log_quote(["one"]) == '"[one]"'
+          and sl.log_quote("has space") == '"has space"' and sl.log_quote("") == '""' and sl.log_quote(7) == "7"
+          and sl.log_quote("/a/b.c:1") == "/a/b.c:1",
+          "log_quote: a plain word bare, anything else JSON-quoted, a list as [a b]")
+    check(sl.line_level("time=x level=DEBUG msg=y") == "DEBUG" and sl.line_level("no stamp here") == ""
+          and sl.line_level('time=x level=INFO msg="level=VERBOSE"') == "INFO", "line_level reads the stamp")
+    check(sl.shows("level=DEBUG", "normal") is False and sl.shows("level=DEBUG", "debug") is True
+          and sl.shows("level=VERBOSE", "debug") is False and sl.shows("level=VERBOSE", "verbose") is True
+          and sl.shows("no stamp", "normal") is True and sl.shows("level=INFO", "normal") is True
+          and sl.shows("level=WARN", "normal") is True,
+          "shows: normal hides DEBUG and VERBOSE, debug hides VERBOSE, verbose nothing, no stamp always shows")
+    check(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d", sl.log_stamp(1700000000.5)) is not None,
+          "log_stamp is RFC 3339 local time with milliseconds")
+    # the reader
+    p = run(["log"])
+    shown = p.stdout.splitlines()
+    noisy = [ln for ln in shown if " level=DEBUG " in ln or " level=VERBOSE " in ln]
+    check(p.returncode == 0 and shown and not noisy and len(shown) <= 200,
+          f"log (normal) shows INFO, WARN and ERROR only, 200 lines at most ({noisy[:1]})")
+    p = run(["log", "--level", "debug"])
+    shown = p.stdout.splitlines()
+    check(any(" level=DEBUG " in ln for ln in shown) and not any(" level=VERBOSE " in ln for ln in shown),
+          "log --level debug adds DEBUG and hides VERBOSE")
+    p = run(["log", "--level", "verbose"])
+    check(any(" level=VERBOSE " in ln for ln in p.stdout.splitlines()), "log --level verbose shows everything")
+    expect = [ln for ln in log_lines() if " level=DEBUG " not in ln and " level=VERBOSE " not in ln][-3:]
+    p = run(["log", "--lines", "3"])
+    check(p.stdout.splitlines() == expect, f"log --lines 3 is the last 3 passing lines, oldest first ({p.stdout!r})")
+    p = run(["log", "--path"])
+    check(p.stdout == log_file + "\n", f"log --path prints only the path ({p.stdout!r})")
+    j = run_json(["log", "--json", "--lines", "2", "--level", "debug"])
+    check(set(j) == {"path", "level", "lines"} and j["path"] == log_file and j["level"] == "debug"
+          and len(j["lines"]) == 2 and all(isinstance(ln, str) and ln.startswith("time=") for ln in j["lines"]),
+          f"log --json is {{path, level, lines}} ({j})")
+    for bad_args in (["log", "--lines", "0"], ["log", "--level", "loud"], ["log", "--follow", "--json"]):
+        check(run(bad_args).returncode == 2, f"{' '.join(bad_args)} is a usage error")
+    own = [ln for ln in log_lines() if " verb=log " in ln]
+    check(own and all(" level=VERBOSE " in ln for ln in own), f"reading the log logs only at VERBOSE ({own[:1]})")
+    p = run(["log", "--path"], {"SAVANNAH_LOG_DIR": os.path.join(tmp, "elsewhere")})
+    check(p.stdout == os.path.join(tmp, "elsewhere", "savannah.log") + "\n", "SAVANNAH_LOG_DIR moves the file")
+    # a log directory that cannot be made: the verb works, nothing extra is printed
+    p = run(["title", "tt2"], {"SAVANNAH_LOG_DIR": os.path.join(log, "under-a-file")})
+    check(p.returncode == 0 and p.stderr == "" and p.stdout == "tt2: Kept\n",
+          f"an unwritable SAVANNAH_LOG_DIR: the verb runs, nothing extra printed ({p.stderr.strip()!r})")
+    # --follow: a line written after the start shows up; Ctrl-C (SIGINT) ends it with exit 0
+    import select
+    import signal
+    fp = subprocess.Popen([sys.executable, module, "log", "--follow", "--lines", "1"],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False, env=env, cwd=tmp,
+                          preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    time.sleep(0.7)
+    run(["title", "tt2", "--json"])   # one INFO verb line, after the follow started
+    got = b""
+    deadline = time.time() + 8
+    while time.time() < deadline and b"verb=title args=\"[title tt2 --json]\"" not in got:
+        ready, _, _ = select.select([fp.stdout], [], [], 0.5)
+        if ready:
+            got += os.read(fp.stdout.fileno(), 65536)
+    fp.send_signal(signal.SIGINT)
+    try:
+        fp.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        fp.kill()
+        fp.wait()
+    rest, err = fp.communicate()
+    got += rest or b""
+    check(b'verb=title args="[title tt2 --json]"' in got, f"log --follow prints a line written after it started ({got[-300:]!r})")
+    check(fp.returncode == 0 and not err, f"Ctrl-C ends log --follow with exit 0 and no noise (rc {fp.returncode}, {err!r})")
 
     shutil.rmtree(tmp, ignore_errors=True)
     if failures == 0:

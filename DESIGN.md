@@ -159,7 +159,12 @@ hard parts and remain open.
    Code hook plus the dash's LOCAL SESSIONS section and unified "need you"
    count); 5d ✅ local work sessions (10/27/2026, `work/`: one iTerm2 tab
    per work item with interactive Claude in a worktree over a shell,
-   plain-text notes, `work_*` shim tools, dash WORK column; iTerm2 only).
+   plain-text notes, `work_*` shim tools, dash WORK column; iTerm2 only);
+   5e ✅ hub (10/29/2026, `savannah hub DIR`: a coordinating Claude session
+   over the `work_*` tools; optional since 5f); 5f ✅ direction reset
+   (11/3/2026: bare `savannah` is the board, the dash in work mode;
+   `savannah mesh` the mesh board; the Terminal seam on iTerm2's `it2`;
+   `work open`, `work repos`, `.worktreeinclude`).
    Remaining: reviewer pair (author node + clean-context reviewer), tag
    fan-out ("all idle nodes tagged cpp"), file transfer via song's datacopy
    pattern, a tmux Terminal behind the work/ seam, and live-status push via
@@ -400,3 +405,291 @@ hard parts and remain open.
   `say`. Tests: test_work (transcript fixture, projects fallback,
   `CLAUDE_CONFIG_DIR`, hub create/merge/keep/refuse/exec via a fake claude),
   test_shim (`work_output`, `last` validation).
+  Same evening, second live test: the owner started `claude` in the hub and
+  asked for pi to 20 digits; the hub computed it itself with Bash. Two
+  more fixes. The template was too polite ("every real task") and only knew
+  repo tasks; it now says EVERY request becomes a tab, and `hub` creates
+  `DIR/.savannah-scratch/` (own short CLAUDE.md) for tasks that belong to no
+  repo, because a tab opened in the hub dir would read the hub CLAUDE.md
+  and become a hub. And "open claude" was the wrong verb for the owner:
+  `savannah hub DIR` now remembers DIR in `~/.claude/savannah/hub.json`, and
+  the C++ `savannah` binary with no arguments execs that hub (`savannah hub`
+  / `savannah work ...` forward to the python module, path baked in at
+  build as `SAVANNAH_WORK_PY`), so daily use is the one word `savannah`.
+  Rejected: making bare `savannah` hub the cwd (it would scatter
+  `.mcp.json`/`CLAUDE.md` into whatever directory you happened to be in).
+  test_work now also drives the built CLI (bare, `hub`, `work`, missing
+  module) when CMake hands it the binary.
+  Third live test, headless (`claude -p "calculate pi to the 20th digit"`
+  in the hub): the hub now called `work_list` and `work_new` for a scratch
+  tab, exactly as the template says, and was stopped by permission prompts
+  on its own MCP tools. So `hub` also merges `enableAllProjectMcpServers`
+  and allow rules for the nine `work_*` tools plus `Bash(sleep *)` into
+  `DIR/.claude/settings.json` (everything else kept, malformed refused,
+  mesh tools deliberately not pre-allowed). Writing Claude Code settings is
+  the owner's call, so that step was left for them to run.
+- **11/3/2026 (direction reset: the board is the front door, 5f)**: Live
+  use of 5e showed the two previous steps had drifted from the owner's
+  picture. They did not want a Claude session as the thing they open; they
+  wanted a standalone uber terminal: open savannah, see every work item,
+  make a new one (a named tab, Claude on top, the worktree shell below),
+  jump to it, steer it, close it, eight or more at a time across repos. The
+  hub put a model into a loop that should be deterministic (first live run:
+  the hub did the task itself; third: it stopped at its own permission
+  prompts), and the AppleScript seam re-implemented plumbing iTerm2 now
+  ships. Decisions: (1) bare `savannah` execs the dash in work mode, the
+  board (`savannah mesh` is the old mesh board); the C++ CLI stays the one
+  binary on PATH and the dash runs `savannah work ...` for every key, so
+  the board and the CLI cannot disagree. (2) The Terminal seam moves to
+  iTerm2's own `it2` CLI (iTerm2 3.7.6, the copy inside iTerm.app;
+  `$SAVANNAH_IT2`): `tab new --window`, `session set-name/run/split/focus/
+  close`, `app activate`, `session list --json`; AppleScript and
+  `tools/fake_osascript.py` are gone, `tools/fake_it2.py` replaces them and
+  the tests assert exact argv. (3) The hub and the `work_*` MCP tools stay
+  as an optional layer for a Claude that wants to open tabs; the strict
+  "every request is a tab" template and `.savannah-scratch/` stay as they
+  were, parked, no longer the front door; `hub.json` doubles as the memory
+  of the folder of repos the board offers (`work repos DIR`). (4)
+  savannah's own worktree layout stays (`<repo>/.savannah-worktrees/<name>`,
+  branch `work/<name>`), not Claude Code's `-w`, so a work item is
+  savannah's object with a record, notes and an archive; Claude Code's
+  `-n <name>` names the session so the tab title and `/resume` agree. (5)
+  Borrowed from the field (agent-deck, ccmanager, claude-squad): restore
+  after restart (`work open`: focus the tab, or make it again and `claude
+  --continue` when the tab is gone), `.worktreeinclude` (the gitignored
+  files a fresh worktree needs), and archive-before-delete, which 5d
+  already had. Live it2 findings on the owner's Mac, pinned by the fake:
+  `tab new` from a script needs an explicit `--window` ("No current
+  window"), so the module uses the window of the session it runs in
+  (`ITERM_SESSION_ID`), else the first window listed, else `window new`
+  whose own tab becomes the work tab; `tab close --force` prints "Tab
+  closed" and closes nothing, so tabs are closed pane by pane with `session
+  close --force`; `session run --session S -- TEXT` takes the text as an
+  argument, so no quoting layer of ours is involved; every call costs 200
+  to 500 ms; `session get-status` is iTerm2's own Claude Code status hook
+  (installed alongside ours, both kept: ours carries the transcript path
+  and project the join needs). The first end-to-end run then showed the
+  typed line landing in the tty queue before the shell was up: oh-my-zsh's
+  "Would you like to update? [Y/n]" read one key and turned `cd` into `d`
+  (an omz alias, so the rest ran in the wrong directory). Fix: both lines
+  start with a space that nothing misses (and that `hist_ignore_space`
+  keeps out of history); `tab new --command` (a pane that runs Claude
+  directly) was considered and rejected because it runs without the
+  owner's shell environment and the pane closes when Claude exits. Also:
+  the tab name is the terminal title, which the shell's auto-title rewrites
+  at every prompt, so `set-name` moved after the run and is best effort;
+  `claude -n <name>` is what names the tab while Claude is up. Rejected: Claude Code's `--tmux` and `-w` as
+  the substrate (would give up the named-tab habit and savannah's own
+  records), a tmux-first rewrite (the owner lives in iTerm2 tabs; the seam
+  still reserves tmux), and reading pane text through it2 as the reply
+  channel (the transcript file is complete and already there). Tests:
+  test_work rewritten against the fake it2 (argv-level assertions, the
+  no-window path, a mid-create failure closes the tab, `open`
+  focus/reopen/resume/leftover-pane, `repos`, `.worktreeinclude`,
+  `pane_alive`, bare `savannah` execs a fake dash and `savannah mesh` adds
+  `--mesh`), test_shim (`work_open`), Go tests for the work board (dialog,
+  keys, argv per command).
+
+### 11/3/2026, later (the board fills the screen; a note on every row)
+
+The owner's first look at the board on a 2000 px window: the table sat in
+the top-left corner with the rest of the window empty, and a plain tab (one
+opened by hand, no work record) had nowhere to keep a note. Decisions:
+
+1. **The layout follows the terminal.** The sessions table plans its
+   columns from the width: under 120 columns the old compact plan; from 120
+   on a TAB column, a NOTE column (the last note's first line) and PROJECT
+   widened to the full `~/...` path when every path fits in 40 percent of
+   the room, WORK grown to the longest name. The rest of the height is a
+   detail panel for the highlighted row: its notes (every entry of
+   notes.md, oldest first, the newest kept when they overflow) beside the
+   end of its Claude's last reply, with the last prompt and the tab, branch
+   and state above. The reply is `work output --last 1`, fetched when the
+   highlighted row changes and when that row's hook file is updated (every
+   prompt and every finished turn), never on a timer: one transcript parse
+   per turn, not one per tick. The prompt box grows with the width too.
+   Under 90 columns the panel stacks, under about 20 lines it is left out.
+   (`dash/board.go`: sessionColumns, panelLines, refreshPanel.)
+2. **Every row can carry a note; a plain tab is named first.** Ctrl-T on a
+   plain tab turns the prompt line into "name this tab" (prefilled from the
+   directory), Enter runs the new `work adopt <name> --session=<hook id>`,
+   and the note prompt follows. Adopt writes an ordinary record pointing at
+   the tab's directory and Claude pane with `adopted: true` and opens
+   nothing; the pane match in the join rule binds exactly that tab, so two
+   tabs in one directory stay apart. say, output, open, jump and notes work
+   unchanged. `rm` of an adopted record closes the pane and archives the
+   notes but never touches the directory (no git worktree remove, whatever
+   the flags). Rejected: notes keyed by the Claude session id or by
+   directory outside the work records (a second notes mechanism, and a
+   directory key merges two tabs in one repo); `rm` leaving an adopted tab
+   open (its row would come straight back as a plain tab).
+3. Tests: `dash/board_test.go` (column plans never exceed the width, wide
+   and compact headers, the panel for work, plain and offline rows, exact
+   panel height, the Ctrl-T naming flow, suggestName, notes parsing,
+   wrapping); `test/test_work.py` adopt section (record, join, note, say,
+   sh, refusals, rm keeps the directory, open reopens and keeps adopted);
+   `test/test_shim.py` work_adopt. Not verified live: adopting one of the
+   owner's real tabs (rm would close it); the layout itself was checked
+   live through a pty capture of the dash at 200 columns.
+4. Live finding, same evening: `say` through `it2 session run` typed the
+   text into the demo tab's Claude but never submitted it. `run` appends a
+   newline (LF), which Claude Code's input box takes as a line break; the
+   Enter key sends a carriage return. `ITerm.write` (say and sh) is now
+   two `session send` calls, the text then `\r`, and a shell accepts the
+   CR just the same. The smoke test the day before used `echo` in place of
+   claude, which is why a shell newline looked fine; the fake cannot see
+   this either, so it is pinned by the argv checks and this note.
+
+### 11/3/2026, night (sections, drag, names, polling)
+
+Third ask of the evening: "name each session", "session priorities
+draggable: a top section of active high priority and a bottom section that
+is less priority", and "know if a session is polling something for me and
+communicate the status of the polling back to savannah".
+
+1. **Two sections, the owner's order, kept in the records.** Each record
+   carries `priority` ("active" or "later") and `rank`; the board shows
+   ACTIVE then LATER, named rows by (rank, name) inside each, and the
+   attention sort no longer moves a named row: the glyph, the colour and
+   the "N need you" count carry it, because a row that jumps while you
+   reach for it is worse than a glance at the header. Unnamed tabs close
+   LATER in attention order, with their iTerm2 tab title in parentheses in
+   the WORK column (`it2 session list --json` every 5 s; the `title` field
+   is clean, `name` escapes slashes). Shift-Up/Down (Ctrl-Up/Down too)
+   drags one step; the dash renumbers the sections 10, 20, 30 and runs
+   `work move` only for the records whose place changed, after redrawing
+   (optimistic; the 1 s re-read puts back whatever the CLI refused). `new`
+   and `adopt` write `priority: active, rank: <created>`, so a new session
+   lands at the bottom of ACTIVE. Rejected: the order in a dash-side file
+   (two sources of truth, and `work ls` could not show it); a third
+   "unnamed" section (two were asked for; the parenthesised title tells an
+   unnamed row apart); mouse drag (Bubble Tea has it, the keys are enough
+   and work over ssh). (`dash/order.go`; `work move`.)
+2. **Ctrl-R names.** On a plain tab it is `work adopt` without the note
+   that Ctrl-T adds, the name prefilled from the tab title (what Claude
+   Code or the owner called the tab) before the directory; on a work
+   session it is the new `work rename OLD NEW`, which claims NEW, moves
+   record, notes and status and removes OLD. The worktree path and the
+   branch keep the old name: renaming a checked-out worktree and branch
+   under a running Claude is a bigger operation than a label change, and
+   the label was the ask. The join is by path and the hook knows nothing of
+   names, so a renamed session stays joined.
+3. **Polling is self-reported.** `work status NAME -- "text"` writes
+   `status.json` `{text, updated, count}` (count +1 per report; `--clear`
+   removes it; `--here` finds the record from `$ITERM_SESSION_ID`, else
+   the cwd). The SessionStart hook hands a work session's Claude that exact
+   command as `additionalContext`, phrased as statements, not instructions
+   (Claude Code treats imperative hook context with suspicion). The board
+   shows state `polling` with the text, count and age, a panel line and a
+   header count, only while the report is LIVE: the session is working and
+   the report is newer than the hook's `updated`, which the hook stamps at
+   the prompt and touches only at Stop, Notification and SessionStart; a
+   report from an earlier turn stays in the panel as "last status, not
+   live" until cleared. Rejected: inferring polling from tool-call patterns
+   (the hook sees no tool calls, and a guess would be overclaiming);
+   clearing the report from the Stop hook (join logic on a write path, and
+   the liveness rule needs no write). Honest limits: an unreported wait
+   looks like "working"; a permission prompt mid-turn hides the live marker
+   until the turn resumes. (`dash/polling.go`; `work status`;
+   `hooks/session-status.py`.)
+4. Tests: `dash/order_test.go` (sections, planDrag, renumber writes only
+   changes, the drag keys through the model with cursor follow and boundary
+   crossing, Ctrl-R on plain and work rows, rename refusals, section
+   headers and the empty hints, titles, suggestName from the title, polling
+   live, stale and done, readStatus and readWork); `test/test_work.py`
+   move, rename and status sections (incl. `--here`); `test/test_hook.py`
+   the SessionStart context; `test/test_shim.py` work_move, work_rename,
+   work_status. ctest 12/12 (2 skipped by design), `go test` green. Live:
+   the board in tab 11 restarted on the new binary; the demo tab's Claude,
+   asked through `work say` to run `work status demo` before a 45 s sleep,
+   showed on the real board as `polling: waiting for sleep (poll 1 of 1)
+   (1 poll, 14s ago)` with `1 polling` in the header while `work ls`
+   showed the same STATUS; the hook run by hand against the demo worktree
+   printed the context naming `build/savannah work status demo`; the real
+   unnamed tabs showed their titles. Python side by a fork; its one
+   deviation from the brief: `status --here` takes every positional as text
+   (argparse cannot tell a name from text once the name is optional).
+
+### 11/5/2026 (titles, snapshot and restore, one log)
+
+Fourth ask: the name rule refused "Main Claude Code Session", so "a
+separate free-text title (capitals, spaces) that the board shows while the
+slug stays the identifier underneath"; "save all session state if requested
+due to a pending reboot and iTerm relaunch, and when things are back get
+everything set up the way it was with the Claude sessions opened again with
+their state loaded"; and "Savannah needs logging: the raw log always
+verbose, a key in the stamp saying normal, debug or verbose, and the
+interface shows only what the user wanted; is this solved in the Go world
+already?"
+
+1. **Title beside the name, never instead of it.** The record gains
+   `title` (free text, first line, 120 chars); `work title NAME -- TEXT`
+   and `--clear` set it, `new` and `adopt` take `--title`, `ls` shows a
+   TITLE column. The board's WORK column shows the title when there is one
+   (28 columns, cut with `~`), the panel leads with it and keeps the name
+   beside it, prompts say "say to <title>". The name stays what every verb,
+   the worktree, the branch and `claude -n` take, so nothing that works
+   today changes meaning. Where a name is typed (Ctrl-R, Ctrl-T, Ctrl-N) the
+   board now accepts words: a valid name is used as typed, anything else is
+   slugged (`Fix the parser` to `fix-the-parser`, `-2` when taken) and the
+   words become the title; the dialog's hint shows the derived name before
+   Enter. Ctrl-R on a work session edits the title; the slug rename stays a
+   CLI verb (`work rename`), since a label edit is what the key is for and
+   two meanings on one prompt line is a guessing game. Rejected: relaxing
+   the name rule itself (names are directory names, branch names and tab
+   names; spaces and capitals in all three is a tax forever); showing the
+   title in the iTerm2 tab (the tab is named by `claude -n`, and `/resume`
+   relies on it).
+2. **Snapshot and restore are two verbs over the records plus the hook.**
+   `work snapshot [--note]` writes `<work dir>/snapshots/<stamp>.json`
+   (and `latest.json`): every record with its tab, panes, worktree and,
+   from the hook file joined at that moment, Claude Code's session id and
+   transcript path, plus every plain tab (directory, session id, pane,
+   title). `work restore [STAMP|latest] [--dry-run] [--no-plain]` walks
+   it: a record whose pane is gone gets its tab remade in its worktree with
+   `claude -n <name> --resume <session id>` (else `--continue`, else
+   fresh), a plain tab a single pane with `--resume`, a live one is skipped,
+   nothing is ever closed. Claude Code's own state is its transcript, so
+   `--resume` is the whole "state loaded back in"; a turn that was running
+   at the crash is gone and the doc says so. The board's Ctrl-S screen is a
+   thin client over the three verbs (`snapshots --json` lists; `s`, `d`,
+   `r`), with a one-time hint on the board after a start when named rows
+   are offline and a snapshot is under two days old. `snapshots` is a
+   reserved name on both sides. Rejected: restoring from the records alone
+   with no snapshot (the records do not know which tabs were open, and an
+   offline record is the normal state of a parked task, not a crash);
+   driving iTerm2's own window restoration (opaque, and it restores shells,
+   not Claude conversations); a daemon that snapshots on a timer (nothing
+   runs when the board is closed; the owner asked for "if requested").
+3. **One log, always verbose, filtered on read.** Yes, this is solved:
+   Go's `log/slog` (stdlib) writes leveled `key=value` text records to any
+   writer and lets a handler rename levels, Python's `logging` does the same
+   with a `RotatingFileHandler`, and a line with `level=` in it is what a
+   reader filters on. So: one file, `$SAVANNAH_LOG_DIR/savannah.log`
+   (default `~/.claude/savannah/log/`), every piece appends in slog's text
+   form with `src=dash|work|hook|shim`, a VERBOSE level below DEBUG (`-8`
+   in slog, `5` in Python; Python's WARNING is renamed WARN so the stamps
+   agree), 10 MiB rotation with three kept on both sides, and the Go writer
+   reopens when the file under its path was swapped. Readers: `work log
+   [--level normal|debug|verbose] [--lines N] [--follow]` and the board's
+   Ctrl-L view (`n`/`d`/`v`, following the end). What goes where: INFO is
+   what you did and what came of it (every board action, every CLI verb and
+   its refusal), DEBUG is every subprocess with argv, exit and timing plus
+   every change of the row set, VERBOSE is payloads and the periodic polls
+   (titles every 5 s, mesh task lists, the output view) so debug stays
+   readable. No new dependency on either side. Rejected: one file per
+   piece (the point is seeing the board's `say` next to the CLI's `it2`
+   call next to the hook's event, in order); JSON lines (grep-able text was
+   the ask, and slog's text form already quotes what needs quoting); a
+   `--verbose` flag that changes what is written (the raw log is always
+   complete, by the owner's rule).
+4. Tests: `dash/logging_test.go` (level names, the filter, the tail read
+   with a torn first line, rotation at the limit, the writer reopening
+   after a swap, `openLog` output and `run`/`poll` levels, the Ctrl-L view
+   through the model), `dash/snapshot_test.go` (argv, the screen through
+   its keys and messages, the one-time hint), titles in `dash/board_test.go`
+   and `dash/order_test.go` (nameFor, nameSuggestion, the WORK cell and
+   panel, Ctrl-R editing a title, words in the dialog, `snapshots`
+   reserved); `test/test_work.py` title, log and (`test/test_restore.py`)
+   snapshot/restore sections; `test/test_hook.py` and `test/test_shim.py`
+   for their logging and the new tools.

@@ -86,6 +86,21 @@ target_link_libraries(savannahd PRIVATE savannah_core)
 
 add_executable(savannah cli/savannah_main.cpp)
 target_link_libraries(savannah PRIVATE savannah_core)
+# `savannah hub` / `savannah work` exec this module, and a bare `savannah`
+# execs the Go dash (env SAVANNAH_WORK_PY / SAVANNAH_DASH_BIN override).
+target_compile_definitions(savannah PRIVATE
+    SAVANNAH_WORK_PY="${CMAKE_CURRENT_SOURCE_DIR}/work/savannah_work.py"
+    SAVANNAH_DASH_BIN="${CMAKE_CURRENT_SOURCE_DIR}/dash/savannah-dash")
+
+# The dash is a separate Go module; `cmake --build build --target dash` builds
+# it in place when Go is installed (never part of ALL, never a test dependency).
+find_program(GO_EXECUTABLE go)
+if(GO_EXECUTABLE)
+    add_custom_target(dash
+        COMMAND ${GO_EXECUTABLE} build -o savannah-dash .
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/dash
+        COMMENT "go build dash/savannah-dash")
+endif()
 
 add_executable(fake-claude tools/fake_claude.cpp)
 
@@ -152,8 +167,15 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME test_work COMMAND ${Python3_EXECUTABLE}
              ${CMAKE_CURRENT_SOURCE_DIR}/test/test_work.py
              ${CMAKE_CURRENT_SOURCE_DIR}/work/savannah_work.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_osascript.py)
+             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_it2.py
+             $<TARGET_FILE:savannah>)
     set_tests_properties(test_work PROPERTIES TIMEOUT 120)
+
+    add_test(NAME test_restore COMMAND ${Python3_EXECUTABLE}
+             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_restore.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/work/savannah_work.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_it2.py)
+    set_tests_properties(test_restore PROPERTIES TIMEOUT 120)
 else()
     message(STATUS "Python3 not found - shim and hook tests disabled")
 endif()

@@ -392,7 +392,7 @@ func TestOfflineRowsNotAttention(t *testing.T) {
 	if n := countSessionAttention(offline); n != 0 {
 		t.Errorf("countSessionAttention(offline rows) = %d, want 0", n)
 	}
-	m := model{width: 100, noMesh: true, tasks: map[string][]task{}, errs: map[string]string{},
+	m := model{width: 100, tasks: map[string][]task{}, errs: map[string]string{},
 		sessions: offline}
 	m.rebuildRows()
 	if out := m.View(); strings.Contains(out, "need you") {
@@ -410,7 +410,7 @@ func TestOfflineRowsNotAttention(t *testing.T) {
 // work record would flip to offline), and the error line must render even
 // with zero rows.
 func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
-	m := model{width: 100, noMesh: true, tasks: map[string][]task{}, errs: map[string]string{}}
+	m := model{width: 100, tasks: map[string][]task{}, errs: map[string]string{}}
 	hooks := []session{
 		{ID: "s1", Project: "/r/.savannah-worktrees/feat", State: "working", Updated: nowUnix(), ITerm: "w0t0p0:UUID-F"},
 		{ID: "s2", Project: "/other", State: "waiting", Updated: nowUnix()},
@@ -485,7 +485,7 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 
 	// Zero rows and an error: the line must still render (it used to sit
 	// inside the row-count guard).
-	empty := model{width: 100, noMesh: true, tasks: map[string][]task{}, errs: map[string]string{}}
+	empty := model{width: 100, tasks: map[string][]task{}, errs: map[string]string{}}
 	next, _ = empty.Update(sessionsMsg{err: "boom"})
 	empty = next.(model)
 	if len(empty.rows) != 0 {
@@ -495,7 +495,7 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 		t.Errorf("error with zero rows must render:\n%s", out)
 	}
 	// And with no error and no rows, the section stays hidden as before.
-	empty = model{width: 100, noMesh: true, tasks: map[string][]task{}, errs: map[string]string{}}
+	empty = model{width: 100, tasks: map[string][]task{}, errs: map[string]string{}}
 	if out := empty.View(); strings.Contains(out, "LOCAL SESSIONS") {
 		t.Errorf("empty board without error should hide the section:\n%s", out)
 	}
@@ -615,25 +615,32 @@ func TestCtrlXOnOfflineWorkRowKeepsRecord(t *testing.T) {
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("readWork: %v %v", recs, err)
 	}
-	m := model{tasks: map[string][]task{}, errs: map[string]string{}}
+	m := newModel(opts{}, "savannah")
 	m.sessions = joinWork(nil, recs)
 	m.rebuildRows()
 	if len(m.rows) != 1 || !isWorkRow(m.rows[0].s) {
 		t.Fatalf("rows = %+v", m.rows)
 	}
+	// The first Ctrl-X only asks: nothing runs and the record is untouched.
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
 	if cmd != nil {
-		t.Error("Ctrl-X on an offline work row must not dispatch a dismiss")
+		t.Error("the first Ctrl-X on a work row must not run anything")
 	}
-	if st := next.(model).status; !strings.Contains(st, "work rm keepme") {
-		t.Errorf("status should point at work rm: %q", st)
+	m = next.(model)
+	if !strings.Contains(m.status, "keepme") || !strings.Contains(m.status, "again") {
+		t.Errorf("status should ask for a second Ctrl-X and name the session: %q", m.status)
 	}
 	if _, err := os.Stat(recPath); err != nil {
-		t.Errorf("record.json must survive Ctrl-X: %v", err)
+		t.Errorf("record.json must survive the first Ctrl-X: %v", err)
 	}
-	// Enter on it jumps via the Claude pane, like any session row.
+	// The second one hands the session to `work rm` (not run here: the CLI
+	// removes the record, never the dash).
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX}); cmd == nil {
+		t.Error("the second Ctrl-X should produce the work rm command")
+	}
+	// Enter on an offline row reopens it through `work open`.
 	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
-		t.Error("Enter on an offline work row should produce a jump command")
+		t.Error("Enter on an offline work row should produce an open command")
 	}
 }
 
@@ -645,7 +652,6 @@ func TestViewHasWorkColumn(t *testing.T) {
 			offlineWorkRow(workRecord{Name: "parked", Worktree: "/r/.savannah-worktrees/parked",
 				lastNote: "resume at step 3 " + strings.Repeat("and keep going ", 8), Updated: nowUnix()}),
 		},
-		noMesh: true,
 	}
 	m.rebuildRows()
 	out := m.View()

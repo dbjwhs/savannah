@@ -29,6 +29,13 @@ def main():
     workdir = tempfile.mkdtemp(prefix="savannah-hook-test-")
     env = dict(os.environ)
     env["SAVANNAH_SESSIONS_DIR"] = workdir
+    # The work records the SessionStart context reads: a temp dir, so the
+    # user's own sessions never match and nothing prints unless a test says so.
+    work_root = tempfile.mkdtemp(prefix="savannah-hook-work-")
+    env["SAVANNAH_WORK_DIR"] = work_root
+    # savannah's one log: a temp dir, never the user's
+    log_root = tempfile.mkdtemp(prefix="savannah-hook-log-")
+    env["SAVANNAH_LOG_DIR"] = log_root
 
     def fire(event, extra_env=None):
         e = dict(env)
@@ -191,6 +198,127 @@ def main():
     os.makedirs(os.path.join(workdir, "s5.json"))
     p = fire({"session_id": "s5", "hook_event_name": "Stop", "cwd": "/home/u/five"})
     check(p.stderr == "", "directory in place of record: no traceback")
+
+    # ---- SessionStart tells a work session's Claude how to report a poll ----
+    # The hook finds the work record (work/) whose worktree is the event's cwd
+    # and prints one JSON object with additionalContext; on any other event,
+    # or with no matching record, stdout stays empty. The records are read as
+    # files (the module is not imported), archive/ and junk are skipped.
+    wt = tempfile.mkdtemp(prefix="savannah-hook-wt-")
+
+    def put_record(name, rec):
+        os.makedirs(os.path.join(work_root, name), exist_ok=True)
+        with open(os.path.join(work_root, name, "record.json"), "w") as f:
+            json.dump(rec, f)
+
+    def context_of(p):
+        try:
+            out = json.loads(p.stdout)
+        except ValueError:
+            return None
+        if not isinstance(out, dict) or set(out) != {"hookSpecificOutput"}:
+            return None
+        hso = out["hookSpecificOutput"]
+        if hso.get("hookEventName") != "SessionStart":
+            return None
+        return hso.get("additionalContext")
+
+    put_record("fix-parser", {"name": "fix-parser", "worktree": wt, "claude_pane": "PANE-A", "created": 10})
+    put_record("elsewhere", {"name": "elsewhere", "worktree": "/home/u/elsewhere", "claude_pane": "", "created": 11})
+    os.makedirs(os.path.join(work_root, "archive"))
+    with open(os.path.join(work_root, "archive", "record.json"), "w") as f:
+        json.dump({"name": "archive", "worktree": wt, "created": 999}, f)
+    os.makedirs(os.path.join(work_root, "broken"))
+    with open(os.path.join(work_root, "broken", "record.json"), "w") as f:
+        f.write("[1, 2")
+    os.makedirs(os.path.join(work_root, "alist"))
+    with open(os.path.join(work_root, "alist", "record.json"), "w") as f:
+        f.write("[1, 2]")
+    os.makedirs(os.path.join(work_root, "empty"))
+    p = fire({"session_id": "ws1", "hook_event_name": "SessionStart", "cwd": wt, "permission_mode": "default"},
+             {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
+    check(p.stderr == "", f"SessionStart in a work session: no stderr ({p.stderr!r})")
+    ctx = context_of(p)
+    check(isinstance(ctx, str) and p.stdout.count("\n") == 1,
+          f"SessionStart prints exactly one JSON object with additionalContext ({p.stdout!r})")
+    ctx = ctx or ""
+    check(ctx.startswith('This directory is savannah work session "fix-parser", shown on the savannah board. '),
+          f"additionalContext names the session ({ctx})")
+    check(' work status fix-parser -- "waiting for ctest (run 2 of 3)" . Each run counts as one poll; ' in ctx
+          and ctx.endswith(" work status fix-parser --clear removes it."),
+          f"additionalContext carries the status command and the clear ({ctx})")
+    check(" with: /" in ctx and ("/build/savannah work status" in ctx or "/work/savannah_work.py work status" in ctx),
+          f"the command is the built CLI or the module under python3, by absolute path ({ctx})")
+    check("\u2014" not in ctx, "no em dash in the context")
+    r = load("ws1")
+    check(r["state"] == "idle" and r["project"] == wt, "the status file is still written on SessionStart")
+    # another directory: nothing printed, file still written
+    p = fire({"session_id": "ws2", "hook_event_name": "SessionStart", "cwd": "/home/u/proj"},
+             {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
+    check(p.stdout == "" and p.stderr == "", f"SessionStart outside every work session prints nothing ({p.stdout!r})")
+    check(exists("ws2"), "the status file is written when nothing prints")
+    # other events in that directory print nothing
+    for ev in ("UserPromptSubmit", "Notification", "Stop", "PostToolUse"):
+        p = fire({"session_id": "ws1", "hook_event_name": ev, "cwd": wt, "prompt": "x",
+                  "notification_message": "m"}, {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
+        check(p.stdout == "" and p.stderr == "", f"{ev} prints nothing ({p.stdout!r})")
+    # two records on one worktree: the pane decides, else the newest
+    put_record("twin", {"name": "twin", "worktree": wt, "claude_pane": "PANE-B", "created": 99})
+    p = fire({"session_id": "ws3", "hook_event_name": "SessionStart", "cwd": wt},
+             {"ITERM_SESSION_ID": "w0t2p0:PANE-B"})
+    check('work session "twin"' in (context_of(p) or ""), f"two records on one directory: the pane match wins ({p.stdout!r})")
+    p = fire({"session_id": "ws4", "hook_event_name": "SessionStart", "cwd": wt},
+             {"ITERM_SESSION_ID": "w0t2p0:PANE-A"})
+    check('work session "fix-parser"' in (context_of(p) or ""), "the other pane picks the other record")
+    p = fire({"session_id": "ws5", "hook_event_name": "SessionStart", "cwd": wt},
+             {"ITERM_SESSION_ID": "w0t2p0:NEITHER"})
+    check('work session "twin"' in (context_of(p) or ""), "no pane match: the newest record wins")
+    p = fire({"session_id": "ws6", "hook_event_name": "SessionStart", "cwd": wt}, {"ITERM_SESSION_ID": ""})
+    check('work session "twin"' in (context_of(p) or ""), "no ITERM_SESSION_ID at all: still the newest record")
+    # the cwd spelled through a symlink still matches (realpath on both sides)
+    link = os.path.join(tempfile.mkdtemp(prefix="savannah-hook-link-"), "wt")
+    os.symlink(wt, link)
+    p = fire({"session_id": "ws7", "hook_event_name": "SessionStart", "cwd": link},
+             {"ITERM_SESSION_ID": "w0t2p0:PANE-A"})
+    check('work session "fix-parser"' in (context_of(p) or ""), "a symlinked cwd matches by real path")
+    # a work dir that does not exist: nothing printed, nothing broken
+    p = fire({"session_id": "ws8", "hook_event_name": "SessionStart", "cwd": wt},
+             {"SAVANNAH_WORK_DIR": os.path.join(work_root, "missing")})
+    check(p.stdout == "" and p.stderr == "" and exists("ws8"), "a missing work dir: nothing printed, file written")
+    # a cwd that is not a string never breaks the hook
+    p = fire({"session_id": "ws9", "hook_event_name": "SessionStart", "cwd": 42})
+    check(p.stderr == "" and exists("ws9"), "a non-string cwd: exit 0, file written")
+
+    # ---- the hook writes savannah's log (src=hook) and never a word anywhere else ----
+    log_file = os.path.join(log_root, "savannah.log")
+    check(os.path.isfile(log_file), f"events are logged to {log_file} (SAVANNAH_LOG_DIR)")
+    try:
+        with open(log_file, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    check(lines and all(" src=hook " in ln for ln in lines), "every line is stamped src=hook")
+    check(all(ln.startswith("time=") and " level=" in ln for ln in lines), "every line carries a time and a level")
+    check(any(" level=DEBUG msg=event src=hook event=UserPromptSubmit session=" in ln
+              and " state=working " in ln and " file=" in ln and " written=True" in ln for ln in lines),
+          "each event is a DEBUG line: event, session, state, cwd, file")
+    check(any(" level=DEBUG msg=event src=hook event=SessionEnd session=" in ln and " removed=True" in ln
+              for ln in lines), "SessionEnd is a DEBUG line with removed=True")
+    check(any(' level=INFO msg="work context" src=hook session=' in ln and " name=fix-parser cmd=" in ln
+              for ln in lines), "the SessionStart context is INFO with the work session's name and the command")
+    check(not any(" level=INFO " in ln and 'msg="work context"' not in ln for ln in lines),
+          "nothing but the context is INFO")
+    # a log directory that cannot be made: exit 0, file written, nothing printed
+    blocker = os.path.join(log_root, "blocker")
+    open(blocker, "w").close()
+    unwritable = {"SAVANNAH_LOG_DIR": os.path.join(blocker, "log")}
+    p = fire({"session_id": "lg1", "hook_event_name": "Stop", "cwd": "/home/u/proj"}, unwritable)
+    check(p.stdout == "" and p.stderr == "" and exists("lg1") and load("lg1")["state"] == "done",
+          f"an unwritable SAVANNAH_LOG_DIR: exit 0, file written, nothing printed ({p.stderr!r})")
+    p = fire({"session_id": "lg2", "hook_event_name": "SessionStart", "cwd": wt},
+             dict(unwritable, ITERM_SESSION_ID="w0t2p0:PANE-A"))
+    check(p.stderr == "" and 'work session "fix-parser"' in (context_of(p) or ""),
+          "the context still prints when the log cannot be written")
 
     if failures == 0:
         print("test_hook: all passed")
