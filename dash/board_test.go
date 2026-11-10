@@ -49,12 +49,12 @@ func TestSessionColumns(t *testing.T) {
 		{Work: "live", Project: "/Users/x/ng/repo/.savannah-worktrees/live"},
 		{Project: "/Users/x/ng/other"},
 	}
-	compact := sessionColumns(100, rows, "/Users/x", nil)
+	compact := sessionColumns(100, rows, "/Users/x", nil, false)
 	if compact.wide || compact.note != 0 || compact.what != 40 || compact.project != 22 {
 		t.Errorf("compact plan at 100: %+v", compact)
 	}
 	for _, w := range []int{120, 160, 250} {
-		c := sessionColumns(w, rows, "/Users/x", nil)
+		c := sessionColumns(w, rows, "/Users/x", nil, false)
 		if !c.wide || c.note < 8 || c.what < 12 {
 			t.Errorf("wide plan at %d: %+v", w, c)
 		}
@@ -68,10 +68,10 @@ func TestSessionColumns(t *testing.T) {
 	}
 	// A path too long for 40 percent of the room falls back to labels.
 	long := []session{{Project: "/" + strings.Repeat("deep/", 30) + "end"}}
-	if c := sessionColumns(120, long, "", nil); c.paths || c.project > 40 {
+	if c := sessionColumns(120, long, "", nil, false); c.paths || c.project > 40 {
 		t.Errorf("long path should use labels: %+v", c)
 	}
-	if c := sessionColumns(0, nil, "", nil); c.wide || c.what != 40 {
+	if c := sessionColumns(0, nil, "", nil, false); c.wide || c.what != 40 {
 		t.Errorf("unknown width should plan for 100 columns: %+v", c)
 	}
 }

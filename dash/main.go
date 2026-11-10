@@ -92,11 +92,17 @@ type fetchTick time.Time
 type discoverTick time.Time
 
 type model struct {
-	key  string
-	bin  string
-	pin  string // non-empty: single-node mode, skip discovery
-	addr string // single-node --addr (a node off mDNS)
-	mesh bool   // --mesh (or a pinned node): discovery + workers; off = the work board alone
+	key   string
+	bin   string
+	pin   string // non-empty: single-node mode, skip discovery
+	addr  string // single-node --addr (a node off mDNS)
+	mesh  bool   // --mesh (or a pinned node): discovery + workers; off = the work board alone
+	group bool   // rows gathered by repository inside each section (group.go; Ctrl-G)
+
+	// Naming the tabs the owner opened by hand (autoname.go).
+	autoname  bool            // on: plain tabs with a prompt are named through `work autoname`
+	naming    bool            // one `work autoname` is in flight
+	nameTried map[string]bool // hook session ids submitted this run
 
 	nodes    []string          // discovered node names, sorted
 	tasks    map[string][]task // node -> its tasks
@@ -248,7 +254,11 @@ func (m *model) rebuildRows() {
 	var rows []row
 	// Local sessions first (the tab-hell focus), in their sections (order.go),
 	// then mesh workers.
-	for _, s := range orderSessions(m.sessions, m.work) {
+	ordered := orderSessions(m.sessions, m.work)
+	if m.group {
+		ordered = groupSessions(ordered, m.work)
+	}
+	for _, s := range ordered {
 		rows = append(rows, row{kind: rowSession, s: s})
 	}
 	for _, n := range m.nodes {
@@ -305,6 +315,36 @@ func rowSignature(rows []row) string {
 		fmt.Fprintf(&b, "%s=%s ", who, r.s.State)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// toggleGroup is Ctrl-G: the rows regroup (or return to the plain rank
+// order), the cursor stays on the row it was on, and the choice is written
+// to the board file for the next run (a failure to write is a status line,
+// not a refusal: the toggle still holds for this run).
+func (m model) toggleGroup() model {
+	before, had := m.currentRow()
+	m.group = !m.group
+	m.rebuildRows()
+	if had {
+		for i, r := range m.rows {
+			if r.kind == before.kind && r.s.ID == before.s.ID && r.node == before.node && r.t.ID == before.t.ID {
+				m.cursor = i
+				break
+			}
+		}
+	}
+	slog.Info("action", "do", "group", "on", m.group)
+	m.status = "rows in your order (Ctrl-G groups them by repository)"
+	if m.group {
+		m.status = "rows grouped by repository (Ctrl-G returns to your order)"
+	}
+	prefs := loadBoardPrefs(boardFile())
+	prefs.Group = groupPref(m.group)
+	if err := saveBoardPrefs(boardFile(), prefs); err != nil {
+		slog.Warn("board file", "err", err.Error())
+		m.status += warnStyle.Render("; not remembered: " + err.Error())
+	}
+	return m
 }
 
 // currentRow returns the highlighted row, ok=false if there is none.
@@ -385,7 +425,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		m.applySessions(msg)
 		m.snapshotHint()
-		return m, m.refreshPanel()
+		return m, tea.Batch(m.refreshPanel(), m.startAutoname())
+	case autonameMsg:
+		m.naming = false
+		if msg.err != "" {
+			slog.Warn("autoname failed", "tabs", len(msg.ids), "err", msg.err)
+		} else {
+			slog.Info("autonamed", "tabs", len(msg.ids), "named", len(msg.out.Named),
+				"skipped", len(msg.out.Skipped), "failed", len(msg.out.Failed))
+		}
+		m.status = autonameStatus(msg)
+		return m, readSessionsCmd()
 	case jumpMsg:
 		if msg.ok {
 			slog.Info("jumped", "id", msg.id, "how", msg.how)
@@ -519,6 +569,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enterLog()
 	case tea.KeyCtrlS:
 		return m, m.enterSnapshot()
+	case tea.KeyCtrlG:
+		return m.toggleGroup(), nil
 	case tea.KeyUp:
 		if msg.Alt { // Option-Up: a third spelling of the drag (see Shift-Up)
 			return m.dragRow(-1)
@@ -761,6 +813,9 @@ func (m model) viewBoard() string {
 		}
 	}
 	counts := fmt.Sprintf("%d session%s", nSess, plural(nSess))
+	if m.group {
+		counts += "   by repository"
+	}
 	if p := m.countPolling(); p > 0 {
 		counts += fmt.Sprintf("   %d polling", p)
 	}
@@ -785,7 +840,7 @@ func (m model) viewBoard() string {
 	if nSess > 0 || m.sessErr != "" || m.workErr != "" {
 		top = append(top, headerStyle.Render("LOCAL SESSIONS"))
 		if nSess > 0 {
-			top = append(top, m.sessionLines(sessionColumns(width, m.sessions, m.home, m.titles), now)...)
+			top = append(top, m.sessionLines(sessionColumns(width, m.sessions, m.home, m.titles, m.group), now)...)
 		}
 		if m.sessErr != "" {
 			top = append(top, warnStyle.Render("  sessions: "+m.sessErr+" (showing last good list)"))
@@ -895,13 +950,29 @@ func (m model) promptLines(width int) []string {
 		prompt = "send to " + headerStyle.Render(r.node+"/"+r.t.ID) +
 			":  " + m.inputView("prompt for this worker; empty Enter opens the live view")
 	}
-	// Truncated to the width: a wrapped help line would push the layout down.
-	// The work line fits 100 columns whole; the mesh line loses its tail there.
-	help := "Shift-up/down move  Enter say  ^N new  ^R name  ^O out  ^T note  ^S snap  ^L log  ^X rm  ^C quit"
+	// One line, never wrapped (a wrapped help line would push the layout
+	// down): hints are dropped from the end until the line fits, so a
+	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
+	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^O out",
+		"^T note", "^S snap", "^L log", "^X rm", "^C quit"}
 	if m.mesh {
-		help = "Shift-up/down move  Enter say/send  Tab view  ^N new  ^R name  ^O out  ^T note  ^S snap  ^L log  ^X rm  ^C quit"
+		parts[1] = "Enter say/send"
+		parts = append(parts[:2], append([]string{"Tab view"}, parts[2:]...)...)
 	}
-	return []string{"", prompt, "", m.status, helpStyle.Render(trunc(help, width))}
+	if m.group {
+		parts[indexOf(parts, "^G group")] = "^G ungroup"
+	}
+	return []string{"", prompt, "", m.status, helpStyle.Render(fitHelp(parts, width))}
+}
+
+// fitHelp joins the hints with two spaces, dropping hints from the end
+// while the line is wider than the terminal; the first hint always stays
+// (cut if even that does not fit).
+func fitHelp(parts []string, width int) string {
+	for len(parts) > 1 && len([]rune(strings.Join(parts, "  "))) > width {
+		parts = parts[:len(parts)-1]
+	}
+	return trunc(strings.Join(parts, "  "), width)
 }
 
 // labelOf is what the board calls a work session in prompts: its title when
@@ -924,11 +995,14 @@ func plural(n int) string {
 type opts struct {
 	pin, key, addr string
 	mesh, help     bool
+	group          int // --group 1, --no-group -1, 0 = as the board file remembers
+	autoname       int // --autoname 1, --no-autoname -1, 0 = on unless the board file says "off"
 }
 
 // parseArgs reads the argv after the program name. A leading non-flag word
 // pins one node (and implies --mesh). --no-mesh and --sessions, the old way
-// to get the work board, are accepted and mean nothing now.
+// to get the work board, are accepted and mean nothing now. --group and
+// --no-group set the grouping for this run over the remembered choice.
 func parseArgs(args []string) (opts, error) {
 	var o opts
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -949,6 +1023,14 @@ func parseArgs(args []string) (opts, error) {
 			i++
 		case "--mesh":
 			o.mesh = true
+		case "--group":
+			o.group = 1
+		case "--no-group":
+			o.group = -1
+		case "--autoname":
+			o.autoname = 1
+		case "--no-autoname":
+			o.autoname = -1
 		case "--no-mesh", "--sessions", "--work":
 			// The work board is the default; kept so old scripts still run.
 		case "-h", "--help":
@@ -961,10 +1043,14 @@ func parseArgs(args []string) (opts, error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE]")
+	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--no-autoname]")
 	fmt.Fprintln(os.Stderr, "  no flags:  the work board: your work sessions and open Claude Code tabs")
 	fmt.Fprintln(os.Stderr, "  --mesh:    also discover every node via `savannah ls` and show its workers")
 	fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS); implies --mesh")
+	fmt.Fprintln(os.Stderr, "  --group:   gather the rows by repository (Ctrl-G toggles it; the choice is")
+	fmt.Fprintln(os.Stderr, "             remembered in $SAVANNAH_BOARD_FILE, ~/.claude/savannah/board.json)")
+	fmt.Fprintln(os.Stderr, "  --no-autoname:  do not name the tabs you opened by hand (`work autoname`;")
+	fmt.Fprintln(os.Stderr, "             \"autoname\": \"off\" in the board file turns it off for good)")
 	fmt.Fprintln(os.Stderr, "Sessions come from the session-status hook, work sessions from $SAVANNAH_WORK_DIR")
 	fmt.Fprintln(os.Stderr, "(~/.claude/savannah/work). Every action runs `savannah work ...` ($SAVANNAH_BIN).")
 }
@@ -978,8 +1064,9 @@ func newModel(o opts, bin string) model {
 	ti.Width = 64
 	home, _ := os.UserHomeDir()
 	m := model{
-		key: o.key, bin: bin, pin: o.pin, addr: o.addr, mesh: o.mesh,
-		tasks: map[string][]task{}, errs: map[string]string{},
+		key: o.key, bin: bin, pin: o.pin, addr: o.addr, mesh: o.mesh, group: o.group > 0,
+		autoname: o.autoname >= 0,
+		tasks:    map[string][]task{}, errs: map[string]string{},
 		input: ti, home: home,
 	}
 	if o.pin != "" {
@@ -1003,8 +1090,16 @@ func main() {
 	if bin == "" {
 		bin = "savannah"
 	}
+	prefs := loadBoardPrefs(boardFile()) // the remembered choices (group.go)
+	if o.group == 0 && prefs.Group == "repo" {
+		o.group = 1
+	}
+	if o.autoname == 0 && prefs.Autoname == "off" {
+		o.autoname = -1
+	}
 	openLog()
-	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath())
+	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath(),
+		"group", o.group > 0, "autoname", o.autoname >= 0)
 	p := tea.NewProgram(newModel(o, bin), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		slog.Error("board crashed", "err", err.Error())

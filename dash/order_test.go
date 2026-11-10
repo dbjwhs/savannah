@@ -327,7 +327,7 @@ func TestTitleInWorkColumn(t *testing.T) {
 			t.Errorf("view lacks %q:\n%s", want, out)
 		}
 	}
-	if c := sessionColumns(160, m.sessions, "", nil); c.work != len("Main Claude Code Session") {
+	if c := sessionColumns(160, m.sessions, "", nil, false); c.work != len("Main Claude Code Session") {
 		t.Errorf("WORK column should fit the title, got %d", c.work)
 	}
 	// The panel leads with the title and keeps the name beside it.
@@ -418,7 +418,7 @@ func TestUnnamedTabShowsTitle(t *testing.T) {
 	if out := m.View(); !strings.Contains(out, "(Local testing)") {
 		t.Errorf("WORK cell should show the tab title in parentheses:\n%s", out)
 	}
-	if c := sessionColumns(160, m.sessions, "", m.titles); c.work != len("(Local testing)") {
+	if c := sessionColumns(160, m.sessions, "", m.titles, false); c.work != len("(Local testing)") {
 		t.Errorf("WORK column should fit the title, got %d", c.work)
 	}
 	if got := workCell(session{Work: "x"}, m.titles); got != "x" {

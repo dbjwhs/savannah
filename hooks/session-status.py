@@ -33,6 +33,8 @@
 # the tab which session it is and the `work status` command that reports a
 # poll (a test run, CI, a deploy) to the board. Nothing on any other event,
 # nothing when no record matches, nothing else ever on stdout.
+# $SAVANNAH_HOOK_IGNORE set (savannah's own headless `claude -p` calls set
+# it) means: do nothing at all, so those calls are never a row on the board.
 # Everything is best-effort: a missing field or env var is simply omitted,
 # never fatal, and the hook always exits 0 so it can never block or break a
 # Claude session.
@@ -187,6 +189,11 @@ def work_session_for(cwd, iterm_session_id):
 
 
 def run():
+    # savannah's own headless calls (work autoname's `claude -p`) set this so
+    # they never show up as a tab on the board, whatever Claude Code's flags
+    # do with hooks that run.
+    if os.environ.get("SAVANNAH_HOOK_IGNORE"):
+        return 0
     try:
         raw = sys.stdin.read()
         event = json.loads(raw) if raw.strip() else {}

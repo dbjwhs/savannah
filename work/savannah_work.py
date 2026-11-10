@@ -104,7 +104,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 RESERVED_RE = re.compile(r"t-[0-9]+")  # mesh task ids
@@ -1466,24 +1468,21 @@ def current_branch(d):
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
-def cmd_adopt(a):
-    """Take a Claude Code tab you opened yourself into a named work session:
-    no new tab, no worktree, just the record that gives it notes, say,
-    output, open, jump and rm. The hook file for that Claude session is the
-    source of truth: it names the directory the tab runs in (which becomes
-    the session's worktree as it is) and its iTerm2 pane (the join key)."""
-    name = a.name
+def adopt_session(name, h, session_id, title="", note=""):
+    """The shared half of `adopt` and `autoname`: write the record that
+    takes hook session h (its id is session_id) into work session name. The
+    hook file is the source of truth: it names the directory the tab runs in
+    (which becomes the session's worktree as it is) and its iTerm2 pane (the
+    join key). Refuses (UserError, no record left behind) an invalid or taken
+    name, a session whose directory is not here, or a pane some record
+    already claims."""
     if not valid_name(name):
         raise UserError(f"invalid name {name!r}: {NAME_HELP}")
     rdir = claim_record_dir(name)
     try:
-        h = hook_session_by_id(a.session)
-        if h is None:
-            raise UserError(f"no live Claude session {a.session} (no hook file under {sessions_dir()}; "
-                            "hooks/install.py not run, or the tab is closed)")
         project = h.get("project") if isinstance(h.get("project"), str) else ""
         if not project or not os.path.isdir(project):
-            raise UserError(f"session {a.session} runs in {project or 'an unknown directory'}, "
+            raise UserError(f"session {session_id} runs in {project or 'an unknown directory'}, "
                             "which is not a directory here")
         pane = iterm_uuid(h.get("iterm_session_id") if isinstance(h.get("iterm_session_id"), str) else "")
         if pane:
@@ -1520,20 +1519,320 @@ def cmd_adopt(a):
             "adopted": True,
             "priority": "active",
             "rank": now,
-            "title": title_text(getattr(a, "title", "")),
+            "title": title_text(title),
         }
         atomic_write(record_path(name), rec)
-        log_info("adopted", name=name, session=a.session, worktree=project, repo=repo,
+        log_info("adopted", name=name, session=session_id, worktree=project, repo=repo,
                  claude_pane=pane, tab=tab_id, title=rec["title"])
-        if a.note:
-            append_note(name, a.note)
+        if note:
+            append_note(name, note)
     except BaseException:
         shutil.rmtree(rdir, ignore_errors=True)
         raise
+    return rec
+
+
+def cmd_adopt(a):
+    """Take a Claude Code tab you opened yourself into a named work session:
+    no new tab, no worktree, just the record that gives it notes, say,
+    output, open, jump and rm (adopt_session)."""
+    if not valid_name(a.name):
+        raise UserError(f"invalid name {a.name!r}: {NAME_HELP}")
+    h = hook_session_by_id(a.session)
+    if h is None:
+        raise UserError(f"no live Claude session {a.session} (no hook file under {sessions_dir()}; "
+                        "hooks/install.py not run, or the tab is closed)")
+    rec = adopt_session(a.name, h, a.session, title=getattr(a, "title", ""), note=a.note)
     if a.json:
         print(json.dumps(rec))
     else:
-        print(f"{name}: adopted {project} (tab {tab_id or '-'}, claude {pane or '-'})")
+        print(f"{a.name}: adopted {rec['worktree']} (tab {rec['tab_id'] or '-'}, claude {rec['claude_pane'] or '-'})")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# autoname: a name for every tab you opened yourself, from what it is doing
+#
+# The board asks for this when it comes up (and for each new plain tab once
+# it has a prompt): every hook session no record claims gets a title and a
+# name, then is adopted like a Ctrl-R would. The title comes from a headless
+# Claude reading an excerpt of the tab's own transcript (its first prompts,
+# the latest prompt, the head of the latest reply), never by typing into the
+# live session: a question typed into a tab would land as a prompt (or as
+# the answer to a permission prompt), spend that session's context and
+# tokens, and interrupt whatever it is doing. The excerpt is what the tab
+# knows; a fresh small model names it in a few seconds for a fraction of a
+# cent. When the call fails (no claude, no network, a timeout) the first
+# prompt's first line is the title instead, and the result says so.
+
+NAME_SYSTEM_PROMPT = (
+    "You name programming work sessions for a board that lists many of them. You are given "
+    "excerpts of one Claude Code conversation: its directory, its first prompts, its latest "
+    "prompt and the start of the latest reply. Answer with ONE line: a title of two to five "
+    "words in Title Case naming the task being worked on (the what, not the who or the how). "
+    "No quotes, no trailing punctuation, nothing else.")
+NAME_TIMEOUT = 90      # seconds per headless call
+NAME_EXCERPT = 400     # chars of each quoted prompt or reply
+NAME_WORKERS = 4       # headless calls at once
+NAME_FALLBACK_MAX = 60  # chars of a title made from the first prompt
+
+
+def claude_argv():
+    return shlex.split(os.environ.get("SAVANNAH_CLAUDE_BIN", "") or "claude")
+
+
+def name_model():
+    """The model the naming call asks for: $SAVANNAH_NAME_MODEL, default the
+    'haiku' alias (small, quick, cheap); 'default' or empty = the CLI's own."""
+    m = os.environ.get("SAVANNAH_NAME_MODEL")
+    if m is None:
+        return "haiku"
+    return "" if m.strip().lower() == "default" else m.strip()
+
+
+def squeeze(text, limit):
+    """text with its whitespace collapsed to single spaces, cut to limit."""
+    t = " ".join((text or "").split())
+    return t if len(t) <= limit else t[:limit].rstrip() + "..."
+
+
+def is_human_prompt(text):
+    """A prompt a person typed, not a slash command's wrapper, a system
+    marker or an interruption notice."""
+    t = (text or "").strip()
+    return bool(t) and not t.startswith("<") and not t.startswith("[Request interrupted")
+
+
+def unclaimed_sessions(hooks, records):
+    """Hook sessions no record claims (the board's plain tabs), in the order
+    loaded; a session without a usable project is left out."""
+    claimed = set()
+    for rec in records:
+        h = join_session(rec, hooks)
+        if h is not None:
+            claimed.add(id(h))
+    return [h for h in hooks
+            if id(h) not in claimed and isinstance(h.get("project"), str) and h.get("project")]
+
+
+def session_prompts(h):
+    """(prompts, last_reply) of a hook session: the human prompts of its
+    transcript in order (commands and interruptions dropped) and the text
+    of the latest reply, or the hook's last_prompt alone when there is no
+    transcript on disk. ([], "") when nothing has been typed yet."""
+    sid = h.get("session_id", "") if isinstance(h.get("session_id"), str) else ""
+    tp = h.get("transcript_path", "") if isinstance(h.get("transcript_path"), str) else ""
+    project = h.get("project", "")
+    path = transcript_for(sid, tp, project)
+    prompts, reply = [], ""
+    if path:
+        try:
+            turns = transcript_turns(path)
+        except UserError:
+            turns = []
+        for t in turns:
+            if is_human_prompt(t["prompt"]):
+                prompts.append(t["prompt"])
+                reply = t["text"]
+    last = h.get("last_prompt", "")
+    if not prompts and isinstance(last, str) and is_human_prompt(last):
+        prompts = [last]
+    return prompts, reply
+
+
+def session_excerpt(project, prompts, reply):
+    """The few lines the naming call reads: the directory, up to three first
+    prompts, the latest prompt when there are more, the head of the latest
+    reply. Each quote is squeezed to NAME_EXCERPT chars."""
+    lines = [f"Directory: {display_path(project)}"]
+    for i, p in enumerate(prompts[:3], 1):
+        lines.append(f"Prompt {i}: {squeeze(p, NAME_EXCERPT)}")
+    if len(prompts) > 3:
+        lines.append(f"Latest prompt ({len(prompts)} so far): {squeeze(prompts[-1], NAME_EXCERPT)}")
+    if reply:
+        lines.append(f"Latest reply begins: {squeeze(reply, NAME_EXCERPT)}")
+    return "\n".join(lines)
+
+
+def clean_title(text):
+    """Claude's answer as a title: the first non-blank line, a leading
+    'Title:' and surrounding quotes or backticks dropped, trailing
+    punctuation dropped, whitespace squeezed, cut to TITLE_MAX. '' when
+    nothing remains."""
+    if not isinstance(text, str):
+        return ""
+    for line in text.splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        t = re.sub(r"^(title|name)\s*:\s*", "", t, flags=re.IGNORECASE)
+        t = t.strip().strip('"\'`*').strip()
+        t = t.rstrip(".!?:;,").strip()
+        return title_text(" ".join(t.split()))
+    return ""
+
+
+def ask_title(excerpt):
+    """One headless Claude call (claude -p) for a title, or UserError (the
+    caller falls back). --safe-mode: no hooks (so no ghost row on the
+    board), no CLAUDE.md, no MCP servers; no tools, one turn, nothing
+    persisted, run from the temp dir so no project is involved. The hook is
+    told to stand down as well (SAVANNAH_HOOK_IGNORE), belt and braces."""
+    argv = claude_argv() + ["-p", "--safe-mode", "--no-session-persistence", "--strict-mcp-config",
+                            "--tools", "", "--max-turns", "1", "--output-format", "json",
+                            "--system-prompt", NAME_SYSTEM_PROMPT]
+    model = name_model()
+    if model:
+        argv += ["--model", model]
+    argv.append(excerpt)
+    env = dict(os.environ)
+    env["SAVANNAH_HOOK_IGNORE"] = "1"
+    t0 = time.time()
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=NAME_TIMEOUT, env=env,
+                           cwd=tempfile.gettempdir())
+    except OSError as e:
+        raise UserError(f"cannot run {argv[0]}: {e.strerror or e} (set SAVANNAH_CLAUDE_BIN)")
+    except subprocess.TimeoutExpired:
+        raise UserError(f"{argv[0]} took over {NAME_TIMEOUT}s")
+    ms = int((time.time() - t0) * 1000)
+    log_debug("claude", argv=argv[:-1], rc=p.returncode, ms=ms, out=len(p.stdout))
+    if p.returncode != 0:
+        raise UserError(f"{argv[0]} exited {p.returncode}: {squeeze(p.stderr, 160) or 'no message'}")
+    try:
+        d = json.loads(p.stdout)
+    except ValueError:
+        raise UserError(f"{argv[0]} printed no JSON result")
+    if not isinstance(d, dict) or d.get("is_error"):
+        why = d.get("result") if isinstance(d, dict) else ""
+        raise UserError(f"{argv[0]} reported an error: {squeeze(str(why or ''), 160) or d.get('subtype', '?')}")
+    title = clean_title(d.get("result"))
+    if not title:
+        raise UserError(f"{argv[0]} gave no title")
+    log_debug("named by claude", title=title, ms=ms, cost=d.get("total_cost_usd"), model=model or "default")
+    return title
+
+
+def slug_name(src):
+    """Free text (or a path, whose last component counts) as a valid work
+    session name, or "": lowered, letters and digits kept, '.', '_' and '-'
+    kept after the start, any other run one '-', trailing '.-_' dropped,
+    60 chars. The same rule as the board's nameFor (dash/board.go)."""
+    base = (src or "").strip().rstrip("/").lower()
+    base = base.rsplit("/", 1)[-1]
+    out = []
+    last = ""
+    for ch in base:
+        if ("a" <= ch <= "z") or ("0" <= ch <= "9"):
+            out.append(ch)
+        elif out and ch in "._-":
+            out.append(ch)
+        elif out and last != "-":
+            ch = "-"
+            out.append(ch)
+        else:
+            continue
+        last = ch
+    name = "".join(out).rstrip(".-_")
+    if len(name) > 60:
+        name = name[:60].rstrip(".-_")
+    return name if valid_name(name) else ""
+
+
+def unique_name(name, taken):
+    """name, or name-2, name-3, ... when it is taken."""
+    if name not in taken:
+        return name
+    i = 2
+    while f"{name}-{i}" in taken:
+        i += 1
+    return f"{name}-{i}"
+
+
+def cmd_autoname(a):
+    """Name every Claude Code tab no record claims (or the given session
+    ids) from what it is doing: a title from a headless Claude over the
+    tab's transcript excerpt (the first prompt's first line when that
+    fails, or with --no-claude), a name derived from the title, then adopt.
+    A tab nothing has been typed into yet is skipped (nothing to name it
+    by) and named on a later run. Exit 0 whenever the verb ran: each tab's
+    outcome is in the output (named / skipped / failed)."""
+    hooks = load_hook_sessions()
+    records = list_records()
+    plain = unclaimed_sessions(hooks, records)
+    wanted = list(dict.fromkeys(a.session or []))
+    named, skipped, failed = [], [], []
+    if wanted:
+        by_id = {h.get("session_id"): h for h in plain}
+        chosen = []
+        for sid in wanted:
+            if sid in by_id:
+                chosen.append(by_id[sid])
+            elif hook_session_by_id(sid) is not None:
+                skipped.append({"session_id": sid, "why": "already a work session"})
+            else:
+                skipped.append({"session_id": sid, "why": "no live Claude session"})
+        plain = chosen
+    jobs = []
+    for h in plain:
+        sid = h.get("session_id", "") if isinstance(h.get("session_id"), str) else ""
+        project = h["project"]
+        prompts, reply = session_prompts(h)
+        if not prompts:
+            skipped.append({"session_id": sid, "project": project, "why": "no prompt yet"})
+            continue
+        jobs.append({"session_id": sid, "project": project, "h": h, "prompts": prompts,
+                     "excerpt": session_excerpt(project, prompts, reply)})
+    log_info("autoname", candidates=len(plain), asking=len(jobs), skipped=len(skipped),
+             claude=not a.no_claude, dry_run=a.dry_run)
+
+    def title_for(job):
+        if a.no_claude:
+            return squeeze(job["prompts"][0].splitlines()[0] if job["prompts"][0].strip() else "",
+                           NAME_FALLBACK_MAX), "prompt", ""
+        try:
+            return ask_title(job["excerpt"]), "claude", ""
+        except UserError as e:
+            log_warn("autoname fallback", session=job["session_id"], error=str(e))
+            first = job["prompts"][0].strip().splitlines()[0]
+            return squeeze(first, NAME_FALLBACK_MAX), "prompt", str(e)
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(NAME_WORKERS, len(jobs))) as pool:
+            results = list(pool.map(title_for, jobs))
+    else:
+        results = []
+    taken = {r["name"] for r in records}
+    for job, (title, how, err) in zip(jobs, results):
+        name = unique_name(slug_name(title) or slug_name(job["project"]) or "tab", taken)
+        taken.add(name)
+        entry = {"session_id": job["session_id"], "project": job["project"], "name": name,
+                 "title": title, "how": how}
+        if err:
+            entry["claude_error"] = err
+        if a.dry_run:
+            named.append(entry)
+            continue
+        try:
+            adopt_session(name, job["h"], job["session_id"], title=title)
+        except UserError as e:
+            failed.append({"session_id": job["session_id"], "project": job["project"], "error": str(e)})
+            continue
+        named.append(entry)
+    out = {"dry_run": bool(a.dry_run), "named": named, "skipped": skipped, "failed": failed}
+    log_info("autoname done", named=len(named), skipped=len(skipped), failed=len(failed), dry_run=a.dry_run)
+    if a.json:
+        print(json.dumps(out))
+        return 0
+    verb = "would name" if a.dry_run else "named"
+    for e in named:
+        print(f"{verb} {e['session_id']}: {e['name']}  \"{e['title']}\"  ({e['how']}, {display_path(e['project'])})")
+    for e in skipped:
+        print(f"skipped {e['session_id']}: {e['why']}")
+    for e in failed:
+        print(f"failed {e['session_id']}: {e['error']}")
+    if not (named or skipped or failed):
+        print("nothing to name: every live Claude Code tab is a work session already")
     return 0
 
 
@@ -2471,6 +2770,17 @@ def build_parser():
     p.add_argument("--title", help=f"free-text title the board shows (first line, {TITLE_MAX} chars)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_adopt)
+
+    p = sub.add_parser("autoname", help="name every Claude Code tab that is not a work session yet from "
+                                        "what it is doing: a headless claude titles an excerpt of its "
+                                        "transcript, the name is derived, the tab is adopted (the board "
+                                        "runs this when it comes up)")
+    p.add_argument("session", nargs="*", metavar="SESSION_ID", help="only these tabs (default: every unnamed one)")
+    p.add_argument("--dry-run", action="store_true", help="print the names, adopt nothing")
+    p.add_argument("--no-claude", action="store_true",
+                   help="no headless call: the first prompt's first line is the title")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_autoname)
 
     p = sub.add_parser("move", help="where the row sits on the board: --active (the top section) or "
                                     "--later (the bottom one), and/or --rank N (order inside a section)")

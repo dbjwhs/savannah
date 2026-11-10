@@ -863,6 +863,182 @@ def main():
     check(run(["rm", "back"]).returncode == 0, "rm back")
     os.remove(hook_adopt)
 
+    # ---- autoname: names for the tabs you opened yourself, from their transcripts ----
+    # A fake claude stands in for the headless call: it records its argv and
+    # environment and answers with a title; FAKE_CLAUDE_FAIL makes it exit 1
+    # (the first prompt's first line is the title then). Transcripts are
+    # small jsonl files in the shape Claude Code writes.
+    fake_claude = os.path.join(tmp, "fake-claude.py")
+    claude_log = os.path.join(tmp, "claude-calls.jsonl")
+    with open(fake_claude, "w") as f:
+        f.write("#!" + sys.executable + "\nimport json, os, sys\n"
+                "with open(os.environ['FAKE_CLAUDE_LOG'], 'a') as f:\n"
+                "    f.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
+                "        'hook_ignore': os.environ.get('SAVANNAH_HOOK_IGNORE', '')}) + '\\n')\n"
+                "if os.environ.get('FAKE_CLAUDE_FAIL'):\n"
+                "    sys.stderr.write('boom\\n'); sys.exit(1)\n"
+                "prompt = sys.argv[-1]\n"
+                "title = 'Parser Rewrite' if 'parser' in prompt else 'ZFS Send Resume Review'\n"
+                "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,\n"
+                "    'result': '\"' + title + '.\"\\n', 'total_cost_usd': 0.0002}))\n")
+    os.chmod(fake_claude, 0o755)
+    claude_env = {"SAVANNAH_CLAUDE_BIN": fake_claude, "FAKE_CLAUDE_LOG": claude_log}
+
+    def claude_calls():
+        try:
+            with open(claude_log) as f:
+                return [json.loads(ln) for ln in f if ln.strip()]
+        except OSError:
+            return []
+
+    def write_transcript(path, turns):
+        with open(path, "w") as f:
+            for prompt, reply in turns:
+                f.write(json.dumps({"type": "user", "timestamp": "2026-11-09T10:00:00.000Z",
+                                    "message": {"role": "user", "content": prompt}}) + "\n")
+                if reply:
+                    f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-09T10:00:05.000Z",
+                                        "message": {"role": "assistant",
+                                                    "content": [{"type": "text", "text": reply}]}}) + "\n")
+
+    an_dir = os.path.join(tmp, "autoname-dirs")
+    zfs_dir, parser_dir, fresh_dir = (os.path.join(an_dir, n) for n in ("zfs", "parser", "fresh"))
+    for d in (zfs_dir, parser_dir, fresh_dir):
+        os.makedirs(d)
+    t_zfs, t_parser = os.path.join(tmp, "an-zfs.jsonl"), os.path.join(tmp, "an-parser.jsonl")
+    write_transcript(t_zfs, [("<command-name>/clear</command-name>", ""),
+                             ("review PR 2353 for the zfs send resume fix", "Looking at the PR now."),
+                             ("is CI green yet?", "CI is still running.")])
+    write_transcript(t_parser, [("rewrite the parser\nit is slow", "On it.")])
+    hooks_an = {
+        "an-zfs": {"project": zfs_dir, "transcript_path": t_zfs, "last_prompt": "is CI green yet?",
+                   "iterm_session_id": "w0t0p0:AN-ZFS"},
+        "an-zfs2": {"project": zfs_dir, "transcript_path": t_zfs, "last_prompt": "is CI green yet?",
+                    "iterm_session_id": "w0t0p0:AN-ZFS2"},
+        "an-parser": {"project": parser_dir, "transcript_path": "", "last_prompt": "rewrite the parser",
+                      "iterm_session_id": "w0t0p0:AN-PARSER"},
+        "an-fresh": {"project": fresh_dir, "transcript_path": "", "last_prompt": "",
+                     "iterm_session_id": "w0t0p0:AN-FRESH"},
+    }
+    for sid, h in hooks_an.items():
+        h.update({"session_id": sid, "state": "idle", "updated": int(time.time())})
+        with open(os.path.join(sessions, sid + ".json"), "w") as f:
+            json.dump(h, f)
+    # The in-process helpers first: prompts, excerpt, title cleaning, slugs.
+    prompts, reply = sw.session_prompts(hooks_an["an-zfs"])
+    check(prompts == ["review PR 2353 for the zfs send resume fix", "is CI green yet?"] and reply == "CI is still running.",
+          f"session_prompts reads the human prompts (commands dropped) and the latest reply ({prompts}, {reply!r})")
+    prompts, reply = sw.session_prompts(hooks_an["an-parser"])
+    check(prompts == ["rewrite the parser"] and reply == "",
+          f"session_prompts falls back to the hook's last_prompt without a transcript ({prompts})")
+    check(sw.session_prompts(hooks_an["an-fresh"]) == ([], ""), "session_prompts: nothing typed yet is ([], '')")
+    ex = sw.session_excerpt(zfs_dir, ["a", "b", "c", "d"], "x" * 500)
+    check(ex.startswith("Directory: ") and "Prompt 3: c" in ex and "Latest prompt (4 so far): d" in ex
+          and "Prompt 4" not in ex and ex.endswith("...") and len(ex) < 600,
+          f"session_excerpt: three first prompts, the latest, the reply head squeezed ({ex!r})")
+    for raw, want in (('"Fix The Parser."\n', "Fix The Parser"), ("Title: ZFS Review!", "ZFS Review"),
+                      ("\n\n  `Two   Words`  ", "Two Words"), ("", ""), (None, ""), ("...", "")):
+        check(sw.clean_title(raw) == want, f"clean_title({raw!r}) = {sw.clean_title(raw)!r}, want {want!r}")
+    for raw, want in (("Fix The Parser", "fix-the-parser"), ("ZFS Send Resume Review", "zfs-send-resume-review"),
+                      ("/a/b/My Repo", "my-repo"), ("!!!", ""), ("t-12", ""), ("a" * 70, "a" * 60),
+                      ("v1.2_x-y", "v1.2_x-y"), ("..a", "a")):
+        check(sw.slug_name(raw) == want, f"slug_name({raw!r}) = {sw.slug_name(raw)!r}, want {want!r}")
+    check(sw.unique_name("a", {"a", "a-2"}) == "a-3" and sw.unique_name("b", {"a"}) == "b", "unique_name")
+    # --dry-run: names and titles from the fake claude, nothing adopted, the
+    # fresh tab skipped, two tabs with one title get distinct names.
+    clear_log(keep_state=True)
+    def mine(entries):
+        return [e for e in entries if e.get("session_id") in hooks_an]
+
+    j = run_json(["autoname", "--dry-run", "--json"], claude_env)
+    by_sid = {e["session_id"]: e for e in mine(j.get("named", []))}
+    check(j.get("dry_run") is True and set(by_sid) == {"an-zfs", "an-zfs2", "an-parser"},
+          f"autoname --dry-run names every unnamed tab with a prompt ({j})")
+    check(by_sid.get("an-zfs", {}).get("title") == "ZFS Send Resume Review"
+          and by_sid.get("an-zfs", {}).get("how") == "claude",
+          f"autoname: the title is claude's answer, cleaned ({by_sid.get('an-zfs')})")
+    names_an = sorted(e["name"] for e in by_sid.values())
+    check(names_an == ["parser-rewrite", "zfs-send-resume-review", "zfs-send-resume-review-2"],
+          f"autoname derives names from the titles and keeps them unique ({names_an})")
+    check([(e.get("session_id"), e.get("why")) for e in mine(j.get("skipped", []))] == [("an-fresh", "no prompt yet")],
+          f"autoname skips a tab nothing was typed into ({j.get('skipped')})")
+    check(not any(os.path.exists(os.path.join(workroot, n)) for n in names_an), "autoname --dry-run adopts nothing")
+    ccalls = claude_calls()
+    check(len(ccalls) == 3 + len(j.get("named", [])) - len(by_sid),
+          f"autoname asks claude once per tab ({len(ccalls)} calls for {len(j.get('named', []))} tabs)")
+    # The calls run on a thread pool, so find the zfs tabs' calls by content
+    # (two tabs share that transcript, so two calls carry it).
+    zfs_calls = [c for c in ccalls if "review PR 2353" in c["argv"][-1]]
+    check(len(zfs_calls) == 2, f"autoname asks claude once per zfs tab, two tabs ({len(zfs_calls)} calls)")
+    if zfs_calls:
+        c0 = zfs_calls[0]
+        check("--safe-mode" in c0["argv"] and "--no-session-persistence" in c0["argv"] and "-p" in c0["argv"]
+              and "--strict-mcp-config" in c0["argv"] and c0["argv"][c0["argv"].index("--tools") + 1] == ""
+              and c0["argv"][c0["argv"].index("--model") + 1] == "haiku" and "--output-format" in c0["argv"],
+              f"autoname runs claude -p in safe mode, no tools, haiku, json ({c0['argv']})")
+        check(c0["hook_ignore"] == "1", "autoname tells the session hook to stand down")
+        check(os.path.realpath(c0["cwd"]) != os.path.realpath(tmp) and "Directory:" in c0["argv"][-1]
+              and "Prompt 1: review PR 2353" in c0["argv"][-1] and "/clear" not in c0["argv"][-1],
+              f"autoname runs claude away from the project with the excerpt as the prompt ({c0['cwd']}, {c0['argv'][-1]!r})")
+    # The real run: records with adopted true and the title; the hook ids
+    # given on the command line limit it; a named or unknown id is skipped.
+    clear_log(keep_state=True)
+    j = run_json(["autoname", "an-zfs", "an-parser", "nope", "--json"], claude_env)
+    check(sorted(e["session_id"] for e in j.get("named", [])) == ["an-parser", "an-zfs"]
+          and {e["session_id"]: e["why"] for e in j.get("skipped", [])} == {"nope": "no live Claude session"},
+          f"autoname SESSION_ID... names only those, an unknown id is skipped ({j})")
+    rec_zfs = record("zfs-send-resume-review")
+    check(rec_zfs.get("adopted") is True and rec_zfs.get("title") == "ZFS Send Resume Review"
+          and rec_zfs.get("worktree") == zfs_dir and rec_zfs.get("claude_pane") == "AN-ZFS",
+          f"autoname adopts the tab with the title ({rec_zfs})")
+    check(record("parser-rewrite").get("claude_pane") == "AN-PARSER", "autoname adopts the second tab too")
+    entries = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check(entries.get("zfs-send-resume-review", {}).get("claude_session_id") == "an-zfs",
+          "ls joins the auto-named session to its hook file")
+    j = run_json(["autoname", "an-zfs", "--json"], claude_env)
+    check(j.get("named") == [] and j.get("skipped") == [{"session_id": "an-zfs", "why": "already a work session"}],
+          f"autoname of a tab that is a work session already is skipped ({j})")
+    # A second plain tab in the zfs directory still gets named: the pane is
+    # the join key, so the first record does not claim it.
+    j = run_json(["autoname", "an-zfs2", "an-fresh", "--json"], claude_env)
+    check([e["session_id"] for e in j.get("named", [])] == ["an-zfs2"]
+          and j["named"][0]["name"] == "zfs-send-resume-review-2",
+          f"autoname names the remaining tab with a -2 name ({j})")
+    check([e["session_id"] for e in j.get("skipped", [])] == ["an-fresh"], f"the fresh tab is still skipped ({j})")
+    # Fallback: claude fails -> the first prompt's first line is the title,
+    # and the result says why; --no-claude never calls it.
+    hooks_an["an-fresh"]["last_prompt"] = "look at the flaky test\nin ctest"
+    with open(os.path.join(sessions, "an-fresh.json"), "w") as f:
+        json.dump(hooks_an["an-fresh"], f)
+    j = run_json(["autoname", "an-fresh", "--dry-run", "--json"], dict(claude_env, FAKE_CLAUDE_FAIL="1"))
+    e = (j.get("named") or [{}])[0]
+    check(e.get("title") == "look at the flaky test" and e.get("how") == "prompt" and "exited 1" in e.get("claude_error", "")
+          and e.get("name") == "look-at-the-flaky-test",
+          f"autoname falls back to the first prompt when claude fails, and says so ({e})")
+    n_calls = len(claude_calls())
+    j = run_json(["autoname", "an-fresh", "--dry-run", "--no-claude", "--json"], claude_env)
+    e = (j.get("named") or [{}])[0]
+    check(e.get("how") == "prompt" and "claude_error" not in e and len(claude_calls()) == n_calls,
+          f"autoname --no-claude never runs claude ({e})")
+    p = run(["autoname", "an-fresh", "--dry-run", "--no-claude"], claude_env)
+    check(p.returncode == 0 and p.stdout.startswith('would name an-fresh: look-at-the-flaky-test  "look at the flaky test"  (prompt, '),
+          f"autoname's human output ({p.stdout.strip()!r})")
+    p = run(["autoname", "an-fresh", "--dry-run"], {"SAVANNAH_CLAUDE_BIN": os.path.join(tmp, "no-claude")})
+    check(p.returncode == 0 and "(prompt," in p.stdout,
+          f"autoname without a claude binary still names from the prompt ({p.stdout.strip()!r} / {p.stderr.strip()!r})")
+    with open(os.path.join(logdir, "savannah.log")) as f:
+        sav_log = f.read()
+    check(any("autoname fallback" in ln and "level=WARN" in ln for ln in sav_log.splitlines()),
+          "the fallback is a WARN line in savannah's log")
+    for n in ("zfs-send-resume-review", "zfs-send-resume-review-2", "parser-rewrite"):
+        check(run(["rm", n]).returncode == 0, f"rm {n}")
+    for sid in hooks_an:
+        os.remove(os.path.join(sessions, sid + ".json"))
+    empty_sessions = os.path.join(tmp, "no-sessions")
+    os.makedirs(empty_sessions)
+    p = run(["autoname"], dict(claude_env, SAVANNAH_SESSIONS_DIR=empty_sessions))
+    check(p.returncode == 0 and "nothing to name" in p.stdout, f"autoname with no plain tabs says so ({p.stdout!r})")
+
     # ---- move: priority (the board's two sections) and rank -------------------
     # A record from before the fields existed reads active, ranked by its
     # creation time; new sessions get the same, so untouched rows keep
@@ -1507,6 +1683,15 @@ def main():
             d = json.load(f)
         check(p.returncode == 9 and d["argv"] == ["--mesh", "--key", "k"] and d["bin"] == "/already/set",
               f"savannah mesh execs the dash with --mesh and keeps a SAVANNAH_BIN already set ({d})")
+        # Flags before any verb are the board's: `savannah --group` is the
+        # dash with --group (the mesh verbs all start with a word).
+        p = run_cli(["--group"], extra_env={"SAVANNAH_DASH_BIN": fake_dash, "DASH_MARKER": dash_marker})
+        with open(dash_marker) as f:
+            d = json.load(f)
+        check(p.returncode == 9 and d["argv"] == ["--group"],
+              f"savannah --group execs the dash with its flags ({d})")
+        p = run_cli(["--help"], extra_env={"SAVANNAH_DASH_BIN": fake_dash, "DASH_MARKER": dash_marker})
+        check(p.returncode == 2 and "usage: savannah" in p.stderr, "savannah --help is the CLI's usage, not the dash")
         p = run_cli([], extra_env={"SAVANNAH_DASH_BIN": os.path.join(tmp, "no-dash"), "PATH": tmp})
         check(p.returncode == 1 and "go build" in p.stderr and "SAVANNAH_DASH_BIN" in p.stderr,
               f"bare savannah without a dash says how to build it (rc {p.returncode}: {p.stderr.strip()})")

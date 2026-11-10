@@ -232,6 +232,12 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 		m.status = warnStyle.Render("name this tab first (Ctrl-R); then it can be moved")
 		return m, nil
 	}
+	if m.group {
+		// The drag edits the rank order, and the grouped view does not show
+		// that order in full: a move here would reorder rows it hides.
+		m.status = warnStyle.Render("rows are grouped by repository; Ctrl-G back to your order to move one")
+		return m, nil
+	}
 	name := r.s.Work
 	active, later := m.sectionNames()
 	newActive, newLater, can := planDrag(active, later, name, delta)

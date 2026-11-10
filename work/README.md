@@ -30,6 +30,7 @@ work jump fix-parser [--shell]              # focus the pane
 work output fix-parser [--last N] [--json]  # what that Claude said: last N turns (prompt + reply)
 work open fix-parser [--shell] [--json]     # focus the tab; make it again (claude --continue) when it is gone
 work adopt old-tab --session ID [--note T] [--title T] [--json]  # a tab you opened yourself becomes a named session (no new tab)
+work autoname [SESSION_ID...] [--dry-run] [--no-claude] [--json]  # name every such tab from what it is doing (the board runs this)
 work move fix-parser --later [--rank N] [--json]   # which board section (--active/--later) and the order inside it
 work rename fix-parser parser-fix [--json]         # a new record name; worktree, branch and tab keep the old one
 work status fix-parser -- "waiting for ctest (run 2 of 3)"   # report one poll (that tab's Claude runs this)
@@ -117,6 +118,43 @@ is gone makes a tab and a split in that directory (`claude --continue` when
 a transcript exists), after which it has a shell pane like a session made
 by `new`. The board does all of this from Ctrl-T on a plain row (name it,
 then the note).
+
+### Naming the tabs you opened yourself, from what they are doing
+
+`autoname` is `adopt` for every plain tab at once, with the name found for
+you. The board runs it when it comes up (and again for each new plain tab
+once something has been typed into it), so the tabs you opened by hand
+arrive on the board named; `savannah work autoname` runs the same by hand.
+For every hook session no record claims (or only the `SESSION_ID`s given)
+it reads the tab's own transcript (the hook's `transcript_path`, else
+Claude Code's per-project directory), takes the human prompts (slash
+commands and interruption notices dropped) and the latest reply, and asks a
+headless Claude for a two-to-five word title over an excerpt: the
+directory, the first three prompts, the latest prompt when there are more,
+the head of the latest reply, each squeezed to 400 characters. The call is
+`claude -p --safe-mode --no-session-persistence --strict-mcp-config --tools
+"" --max-turns 1 --output-format json --model haiku`, run from the temp
+directory with `SAVANNAH_HOOK_IGNORE=1` in its environment: no hooks (so
+the call is never a row on the board), no CLAUDE.md, no MCP servers, no
+tools, nothing persisted, a small model (`$SAVANNAH_NAME_MODEL` picks
+another; `default` means the CLI's own), about three seconds and a
+fraction of a cent per tab, four tabs at a time. Nothing is typed into the
+live tab: a question typed there would be a prompt, or the answer to a
+permission prompt. The title is cleaned (first line, quotes and a trailing
+period dropped, 120 chars), the name is derived from it the way the board
+derives one from words (`Fix The Parser` is `fix-the-parser`; `-2`, `-3`
+when taken), and the tab is adopted with that title. When the call fails
+(no `claude`, no network, a timeout of 90 s, a non-zero exit) the first
+prompt's first line is the title instead, cut to 60 characters, and the
+result says so (`how: prompt`, `claude_error`); `--no-claude` does that
+on purpose (no tokens). A tab nothing has been typed into yet is skipped
+(`no prompt yet`) and named on a later run. `--dry-run` prints what would
+be named and adopts nothing. Exit 0 whenever the verb ran; the outcome per
+tab is in the output: `--json` is `{dry_run, named: [{session_id,
+project, name, title, how, claude_error?}], skipped: [{session_id, why}],
+failed: [{session_id, error}]}`. Ctrl-R on the board edits a title you do
+not like, `rename` changes the name. The hook honours `SAVANNAH_HOOK_IGNORE`
+regardless of how Claude Code treats hooks in safe mode (belt and braces).
 
 `new` also copies into a fresh worktree whatever `<repo>/.worktreeinclude`
 names: one path or glob per line, relative to the repository root (a leading
@@ -707,6 +745,17 @@ name and the log lines.
   tab decides whether to run `work status`, and Claude Code adds the context
   only when the hook is installed and the session starts inside a work
   session's worktree (a tab adopted after it started never saw it).
+- `autoname` names from an excerpt, not the whole conversation: the first
+  three prompts, the latest one and the head of the latest reply. A tab
+  whose topic changed halfway may be named for where it started. The
+  title is the model's: two to five words were asked for, six have been
+  seen, Title Case is not guaranteed; the name derived from it can be
+  long (`session-naming-via-claude-headless-prompt`). It needs the `claude`
+  CLI logged in (`$SAVANNAH_CLAUDE_BIN` points elsewhere) and spends a few
+  hundred tokens per tab; without it the first prompt's first line is the
+  title. The board submits each tab once per run, so a tab it skipped for
+  having no prompt is named only when the board next starts or when
+  `autoname` is run by hand.
 - `say` and `sh` press Enter by sending a carriage return after the text,
   which is what Claude Code's input box and a shell both take as Enter (the
   newline `it2 session run` appends is a line break to Claude Code, not

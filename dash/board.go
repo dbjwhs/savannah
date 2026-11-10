@@ -46,8 +46,10 @@ type sessCols struct {
 // the longest full path when every path fits in 40 percent of the room (else
 // to the longest repo/name label), and the rest is split between NOTE and
 // WHAT. Every cell but WHAT is padded by two columns (pad), so the widths
-// here sum to at most the width.
-func sessionColumns(width int, rows []session, home string, titles map[string]string) sessCols {
+// here sum to at most the width. Grouped (group.go), PROJECT holds the
+// path inside the repository, so it is sized to the longest of those and
+// never the full path (the group header carries that).
+func sessionColumns(width int, rows []session, home string, titles map[string]string, grouped bool) sessCols {
 	if width <= 0 {
 		width = 100
 	}
@@ -69,13 +71,13 @@ func sessionColumns(width int, rows []session, home string, titles map[string]st
 		if n := len([]rune(tilde(s.Project, home))); n > longestPath {
 			longestPath = n
 		}
-		if n := len([]rune(projectLabel(s.Project))); n > longestLabel {
+		if n := len([]rune(projectCell(s, home, grouped))); n > longestLabel {
 			longestLabel = n
 		}
 	}
 	c.work = clampInt(longestName, 4, maxWorkCol)
 	rest := width - (2 + 2) - (9 + 2) - (c.work + 2) - (c.tab + 2) - (c.age + 2)
-	if longestPath <= rest*4/10 {
+	if !grouped && longestPath <= rest*4/10 {
 		c.paths = true
 		c.project = longestPath
 	} else {
@@ -136,10 +138,21 @@ func workCell(s session, titles map[string]string) string {
 	return ""
 }
 
+// projectCell is the PROJECT column's text: repo/name (projectLabel), or
+// grouped the path inside the row's repository (inRepoLabel).
+func projectCell(s session, home string, grouped bool) string {
+	if !grouped {
+		return projectLabel(s.Project)
+	}
+	root, _ := repoRoot(s.Project)
+	return inRepoLabel(s.Project, root, home)
+}
+
 // sessionLines renders the LOCAL SESSIONS table for the column plan: the
 // column header once, then each section (ACTIVE, LATER) under its own
 // header with one styled line per session row. Section membership and order
-// come from the records (order.go); a row's state is the hook's, or
+// come from the records (order.go); grouped, a dim header names each
+// repository inside a section (group.go); a row's state is the hook's, or
 // "polling" while its Claude's progress report is live (polling.go).
 func (m model) sessionLines(c sessCols, now int64) []string {
 	hdr := pad("", 2) + pad("STATE", 9) + pad("WORK", c.work) + pad("PROJECT", c.project)
@@ -153,12 +166,16 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 	lines := []string{colStyle.Render(hdr + "WHAT")}
 	recs := recordMap(m.work)
 	var counts [2]int
+	groupCounts := map[[2]string]int{} // (section, repo root) -> rows
 	for _, r := range m.rows {
 		if r.kind == rowSession {
-			counts[sectionOf(r.s, recs)]++
+			sec := sectionOf(r.s, recs)
+			counts[sec]++
+			groupCounts[[2]string{sectionName(sec), groupKey(r.s)}]++
 		}
 	}
 	section := -1
+	group := ""
 	for i, r := range m.rows {
 		if r.kind != rowSession {
 			continue
@@ -166,14 +183,22 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		s := r.s
 		for sec := sectionOf(s, recs); section < sec; {
 			section++
+			group = ""
 			lines = append(lines, sectionLines(section, counts[section])...)
+		}
+		if m.group {
+			if root, isRepo := repoRoot(s.Project); root != group || group == "" {
+				group = root
+				n := groupCounts[[2]string{sectionName(section), root}]
+				lines = append(lines, groupHeader(root, isRepo, n, m.home, c.wide))
+			}
 		}
 		rec, hasRec := recs[s.Work]
 		state, glyph, what := s.State, stateGlyph(s.State), sessionDetail(s)
 		if isPolling(s, rec) {
 			state, glyph, what = "polling", pollGlyph, pollingDetail(rec.status, now)
 		}
-		proj := projectLabel(s.Project)
+		proj := projectCell(s, m.home, m.group)
 		if c.paths {
 			proj = tilde(s.Project, m.home)
 		}

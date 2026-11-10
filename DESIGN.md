@@ -693,3 +693,84 @@ already?"
    reserved); `test/test_work.py` title, log and (`test/test_restore.py`)
    snapshot/restore sections; `test/test_hook.py` and `test/test_shim.py`
    for their logging and the new tools.
+
+### 11/9/2026 (the board grouped by repository)
+
+Fifth ask: "one of the columns savannah shows is the project, I would
+like that organized a little better so I can see all ZFS Claude sessions".
+
+1. **Group inside the sections, never instead of them.** Ctrl-G (and
+   `savannah --group`, `--no-group`) gathers each section's rows by
+   repository, repositories in the order their first row appears, the
+   owner's rank order kept inside each group, a dim `  zfs (4)` header per
+   group (with the full path on a wide board), and the PROJECT cell as the
+   path inside the repository (`.`, `dash`, the worktree's name). The
+   repository is read from the directory, never from a git subprocess:
+   `<repo>/.savannah-worktrees/<name>` is that repo, else the nearest
+   `.git` walking up, a `.git` file (`git worktree add`) followed to its
+   main repository, a directory under no repository its own group; cached
+   per path for the run. The choice is remembered in `$SAVANNAH_BOARD_FILE`
+   (`~/.claude/savannah/board.json`), the board's first and only
+   preference file (a UI preference, not session state, so the "dash owns
+   no state" rule stands). Dragging is refused while grouped: a drag edits
+   the rank order, and writing ranks in the grouped order would silently
+   rewrite the owner's own order. Rejected: a third section per repo (the
+   sections are the owner's priority, not the filesystem's); sorting by
+   PROJECT (loses the rank order); a filter typed on the prompt line (the
+   ask was to see them organised, not one at a time); `git rev-parse` per
+   row (a subprocess per row per second, for an answer a stat gives).
+2. Tests: `dash/group_test.go` (the root finder on temp directories with a
+   `.git` dir, a `.git` file and none, the labels, the grouped order and
+   its headers in the view, Ctrl-G with the cursor following and the file
+   written or refused, the drag refusal, the flags, the help line that
+   drops its last hint when narrow); `test/test_work.py` checks that
+   `savannah --group` reaches the dash and `--help` does not.
+
+### 11/9/2026, later (the tabs you opened by hand, named for you)
+
+Sixth ask: "when savannah comes up, figure out a good name for each
+Claude session by asking them; later I can change them if needed".
+
+1. **Ask the transcript, not the tab.** Typing a question into a live tab
+   would be a prompt to that session (or the answer to a permission
+   prompt waiting there), would spend its context and its tokens, and
+   would interrupt whatever it is doing. The tab's transcript is what the
+   tab knows, so `work autoname` reads it: the human prompts (slash
+   commands and interruption notices dropped) and the latest reply, and
+   asks a headless Claude for a two-to-five word title over an excerpt
+   (directory, first three prompts, the latest prompt, the head of the
+   latest reply). The call is `claude -p --safe-mode
+   --no-session-persistence --strict-mcp-config --tools "" --max-turns 1
+   --output-format json --model haiku`, from the temp directory, with
+   `SAVANNAH_HOOK_IGNORE=1` so the session hook writes nothing: safe mode
+   turns hooks off (verified live: no session file), the env var is the
+   guarantee that does not depend on that. Three seconds and about two
+   hundredths of a cent per tab in the live check, four tabs at a time.
+   The name is derived from the title the way the board derives one from
+   words, `-2` when taken, and the tab is adopted with the title
+   (`adopt_session`, the shared half of `adopt`). The fallback is the first
+   prompt's first line, and the result says which (`how`, `claude_error`).
+2. **The board asks once per tab, when it has something to go on.** On
+   every sessions read the dash hands every plain row with a prompt that
+   it has not submitted this run to one `work autoname --json <ids>`,
+   reports the result on the status line, and re-reads. A tab with no
+   prompt yet is submitted once it has one; a refused tab is not retried
+   until the next start (no retry storm on a broken CLI). Off with
+   `--no-autoname` or `"autoname": "off"` in the board file (hand-written,
+   nothing on the board sets it; the board file's writers load before they
+   save so Ctrl-G never wipes it). Rejected: naming at the first prompt
+   from the hook (one prompt is a thin excerpt, and the hook stays a
+   recorder); a name typed back into the tab's title (iTerm2's auto-title
+   beats set-name, found 11/5); asking the live session (above); a
+   confirmation dialog per name (the ask was names on arrival, with
+   Ctrl-R and `rename` as the correction).
+3. Tests: `test/test_work.py` autoname section (a fake `claude` that records
+   its argv and environment: safe mode, no tools, haiku, the excerpt as the
+   prompt, the hook told to stand down; prompts and excerpt from a
+   transcript and from the hook alone; title cleaning and slugs; dry run;
+   unique names for one title; the id filter; already named and unknown
+   ids skipped; the fallback on a failing or missing claude; `--no-claude`);
+   `test/test_hook.py` (`SAVANNAH_HOOK_IGNORE` writes nothing);
+   `dash/autoname_test.go` (which tabs are pending and once only, the
+   sessions tick starting a run, the status lines, the flags, the board
+   file keeping both keys).

@@ -68,6 +68,12 @@ def main():
           "transcript_path captured")
     check(r["last_prompt"] == "", "last_prompt empty before any prompt")
 
+    # SAVANNAH_HOOK_IGNORE: savannah's own headless claude calls set it, and
+    # the hook then writes nothing (no ghost tab on the board).
+    fire({"session_id": "ghost", "hook_event_name": "SessionStart", "cwd": "/tmp/x"},
+         {"SAVANNAH_HOOK_IGNORE": "1"})
+    check(not exists("ghost"), "SAVANNAH_HOOK_IGNORE: no session file is written")
+
     # UserPromptSubmit -> working; last_prompt from the alternate
     # "user_prompt" field; transcript_path survives an event that omits it.
     fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",

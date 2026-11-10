@@ -62,7 +62,7 @@ namespace {
 
 int usage() {
     std::cerr <<
-        "usage: savannah                    the work board (your Claude tabs; needs dash/savannah-dash built)\n"
+        "usage: savannah [--group]          the work board (your Claude tabs; needs dash/savannah-dash built)\n"
         "       savannah mesh [--key FILE]  the board with the mesh workers too\n"
         "       savannah hub [DIR] [--no-launch] [--json]\n"
         "       savannah work <new|ls|open|repos|note|notes|say|sh|jump|output|rm> ...\n"
@@ -542,6 +542,12 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
 
 int main(int argc, char** argv) {
     if (argc == 1) return exec_dash(argv[0], {});
+    if (std::strncmp(argv[1], "--", 2) == 0 && std::strcmp(argv[1], "--help") != 0) {
+        // Flags before any verb are the board's (`savannah --group`).
+        std::vector<std::string> rest;
+        for (int i = 1; i < argc; ++i) rest.emplace_back(argv[i]);
+        return exec_dash(argv[0], rest);
+    }
     if (std::strcmp(argv[1], "mesh") == 0) {
         std::vector<std::string> rest = {"--mesh"};
         for (int i = 2; i < argc; ++i) rest.emplace_back(argv[i]);

@@ -36,6 +36,20 @@ gives you one key for each thing you used to do by hand:
   the highlighted session one row: within its section, or over the line
   between ACTIVE and LATER at the ends. The order lives in the records (`work move`), so it
   survives a restart and `work ls` sees the same.
+- The tabs you opened by hand get **named for you** when the board comes
+  up: each plain tab that has a prompt is handed to `savannah work
+  autoname`, which asks a headless Claude (safe mode, no tools, haiku,
+  about three seconds and a fraction of a cent per tab) for a title over
+  an excerpt of the tab's own transcript, derives the name and adopts the
+  tab. The status line says what was named; Ctrl-R changes a title you do
+  not like. `--no-autoname` turns it off for one run, `"autoname": "off"`
+  in the board file for good.
+- **Ctrl-G** groups the rows by repository: inside ACTIVE and LATER every
+  repository's sessions come together under a dim header naming it (and
+  counting them), so every ZFS tab is one glance. The PROJECT column then
+  shows where in the repository the tab sits. The choice is remembered
+  (`~/.claude/savannah/board.json`); `savannah --group` and `--no-group`
+  set it for one run.
 - **Ctrl-X**, pressed twice, removes a finished session: closes the tab,
   removes a clean worktree, keeps the branch.
 - **Ctrl-S** is the snapshot screen: save every session's state before a
@@ -84,6 +98,43 @@ parentheses in the WORK column (from `it2 session list --json`, every five
 seconds) and cannot be moved until Ctrl-R names it: there is no record to
 hold its rank. Both empty sections say where a move would land.
 
+**Ctrl-G** gathers each section's rows by repository. The sections and
+the rank order inside them stay; what changes is that one repository's
+rows sit together, repositories in the order their first row appears (so
+the row you ranked first still decides which repository leads), each
+under a dim header `  zfs (4)` (plus the full path on a wide board). A
+row's repository is read from its directory, never from a git
+subprocess: `<repo>/.savannah-worktrees/<name>` is that repo, otherwise
+the nearest ancestor holding `.git` (a `.git` file from `git worktree add`
+is followed to its main repository), and a directory under no repository
+is its own group, named by its path. The PROJECT column shows the path
+inside the repository (`.` at the root, `dash` for a subdirectory, the
+session name for a savannah worktree) since the header already names the
+repository. Dragging is refused while grouped (the drag edits the rank
+order, which the grouped view does not show in full): Ctrl-G back first.
+The header says "by repository", the help line "^G ungroup". The choice
+is written to `$SAVANNAH_BOARD_FILE` (default
+`~/.claude/savannah/board.json`, `{"group": "repo"}`) so the next board
+starts the same way; `--group` and `--no-group` on the command line
+(`savannah --group`) win for one run.
+
+**Naming the tabs you opened by hand.** On every sessions read the board
+looks for plain rows (a hook session no record claims) that have a prompt
+(the hook's `last_prompt`) and have not been submitted this run, and hands
+them all to one `savannah work autoname --json <ids>` (see `../work/`: a
+headless Claude titles an excerpt of each tab's transcript, the name is
+derived from the title, the tab is adopted with it; the first prompt's
+first line is the title when the call fails). One run at a time; the
+status line reads "naming 3 tabs from what they are doing..." then "named
+3 tabs: ZFS Send Resume Review (zfs-send-resume-review), ..." (with "; N
+from the first prompt (claude unavailable)" when the fallback was used,
+and the first failure when one failed), and the names show on the next
+read. A tab is submitted once per board run: a tab with no prompt yet is
+submitted once it has one, a tab the CLI refused is not retried. Nothing
+is ever typed into a tab for this. Off with `--no-autoname` for one run
+(`savannah --no-autoname`) or `"autoname": "off"` in the board file
+(written by hand; nothing on the board sets it).
+
 A session's Claude can tell the board what it is waiting on. `savannah work
 status <name> -- "waiting for ctest (run 2 of 3)"` from the tab (the
 SessionStart hook tells that Claude the command, see `../hooks/`) writes
@@ -103,8 +154,9 @@ The board uses the whole terminal. Under 120 columns the table is the
 compact one (STATE, WORK, PROJECT, AGE, WHAT). From 120 columns on it adds
 a TAB column (the iTerm2 tab number from the record), a NOTE column (the
 first line of the last note) and widens PROJECT to the full `~/...` path
-when every path fits in 40 percent of the room; WORK grows to the longest
-name. The rest of the height is a **detail panel** for the highlighted
+when every path fits in 40 percent of the room (grouped, PROJECT stays
+the path inside the repository and the group header carries the full
+path instead); WORK grows to the longest name. The rest of the height is a **detail panel** for the highlighted
 row: its name, path, branch, tab and state on one line (plus "later" when
 it sits in LATER and "polling" while a report is live), the last prompt
 its Claude was given under that, its progress report when there is one,
@@ -208,6 +260,8 @@ Board:
   removes it if finished (`task rm`; a running worker is refused, cancel
   first)
 - **Ctrl-N** opens the new-task dialog from anywhere on the board
+- **Ctrl-G** groups the rows by repository inside each section, and back
+  (remembered in the board file; a drag is refused while grouped)
 - **Ctrl-S** opens the snapshot screen, **Ctrl-L** the log view
 - **Ctrl-C** quits; **Esc** quits too, unless a note, a name or a title
   is being typed
@@ -333,6 +387,8 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-N | `savannah work repos --json`, then `savannah work new <name> --repo=<path> [--title=<words>] [--prompt=<text>] [--no-worktree] --json` |
 | Ctrl-S | `savannah work snapshots --json` on entry; **s** `savannah work snapshot --json`; **d** `savannah work restore --dry-run --json`; **r** `savannah work restore --json` |
 | Ctrl-L | none: the dash reads `$SAVANNAH_LOG_DIR/savannah.log` itself (`savannah work log` is the shell's reader) |
+| Ctrl-G | none: the rows regroup in the dash; the choice is written to `$SAVANNAH_BOARD_FILE` (`~/.claude/savannah/board.json`) |
+| (start, and each new plain tab with a prompt) | `savannah work autoname --json <hook session ids>`, one run at a time |
 
 Values travel in the `=` form or after `--`, so text that begins with `-`
 is never read as an option.
@@ -389,6 +445,21 @@ file under its path has been swapped. Nothing here is stdlib-external:
 - A plain tab has no notes and no reply column until Ctrl-R or Ctrl-T names
   it, and naming needs the tab's hook file: a tab still sitting at a trust
   or MCP prompt has none yet.
+- Naming the tabs you opened by hand costs tokens (a few hundred per tab,
+  on haiku) and needs the `claude` CLI logged in; without it the first
+  prompt's first line is the name. The title is the model's reading of an
+  excerpt (first prompts, latest prompt and reply): a tab that changed
+  topic may be named for where it started, and six-word titles happen.
+  Each tab is tried once per board run; a tab with no prompt yet is tried
+  once it has one, a refused one not again until the board restarts. The
+  board file key `"autoname": "off"` is hand-written; no key sets it.
+- Grouping (Ctrl-G) is by directory, not by project: two checkouts of one
+  repository in two directories are two groups, and a directory under no
+  `.git` is a group of its own named by its path. The repository of a
+  directory is looked up once per board run and cached, so a `git init`
+  under a running board shows after a restart. Dragging is refused while
+  grouped; the help line's "^C quit" is the first hint dropped when the
+  terminal is narrower than the help (106 columns for the work board).
 - Moving a row is one step per Shift-Up/Down; there is no mouse drag and no
   multi-select. An unnamed tab cannot move (nothing holds its rank): name
   it first. Two boards open at once each write the order they last saw;

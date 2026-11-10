@@ -39,6 +39,12 @@ Two fields exist so you can remember what a tab was doing:
 Both are always present, as empty strings until known. The hook reads
 `prompt` from the event (and accepts `user_prompt` as an alternate name).
 
+`SAVANNAH_HOOK_IGNORE` set in the environment makes the hook do nothing at
+all (no file written, no log line, exit 0). savannah's own headless
+`claude -p` calls (`work autoname`) set it so they are never a row on the
+board; `--safe-mode` already keeps hooks from running, this is the
+guarantee that does not depend on that.
+
 The hook does no joining of its own. Work sessions (`work/`, one iTerm tab
 per work item) find their live Claude Code session at read time: a hook file
 belongs to a work session when its `project` is the same real path as the
