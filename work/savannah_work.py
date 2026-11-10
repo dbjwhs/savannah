@@ -701,11 +701,23 @@ def load_hook_sessions():
             skipped += 1
             continue
         if isinstance(s, dict):
-            out.append(s)
+            out.append(normalize_hook(s))
         else:
             skipped += 1
     log_debug("hook sessions", dir=d, loaded=len(out), skipped=skipped)
     return out
+
+
+def normalize_hook(h):
+    """A hook file read the way today's hook writes it, like the board's
+    normalizeSession: an older hook stamped the idle nudge (Notification
+    idle_prompt) as waiting, and nothing rewrites that file until the tab's
+    next event, so such a file reads as idle with no message. A real
+    permission prompt or question (any other notify_type) stays waiting."""
+    if h.get("state") == "waiting" and h.get("notify_type") == "idle_prompt":
+        h["state"] = "idle"
+        h["message"] = ""
+    return h
 
 
 def iterm_uuid(iterm_session_id):

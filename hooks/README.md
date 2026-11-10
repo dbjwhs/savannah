@@ -28,8 +28,12 @@ One Notification is not a `waiting`: the idle nudge (`notification_type`
 `idle_prompt`, which Claude Code sends once a tab has sat unused for a
 minute) refreshes the timestamp and leaves the state alone, recording
 `notify_type` and no message. A tab that is merely idle does not need you,
-so the board shows it green, not yellow. (Files an older hook stamped
-`waiting` for the nudge are read as `idle` by the board.)
+so the board shows it green, not yellow. A file an older hook stamped
+`waiting` for the nudge (state `waiting`, `notify_type` `idle_prompt`) is
+read as `idle` by both the board and `savannah work` (so `work ask` asks
+that tab), and the hook rewrites it as `idle` on the tab's next nudge. A
+nudge that lands on a real permission prompt leaves that prompt's state,
+type and message alone.
 
 The file is deleted on SessionEnd. It also captures the project directory, the
 permission mode, and the terminal identity (`ITERM_SESSION_ID` or

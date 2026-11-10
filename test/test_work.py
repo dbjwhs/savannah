@@ -1078,7 +1078,9 @@ def main():
     ask_dir = os.path.join(tmp, "ask-dirs")
     ask_hooks = {}
     for sid, state, extra in (("ask-a", "done", {}), ("ask-b", "working", {}), ("ask-p", "idle", {}),
-                              ("ask-w", "waiting", {"message": "use Bash"}), ("ask-me", "idle", {"pid": os.getpid()})):
+                              ("ask-w", "waiting", {"message": "use Bash", "notify_type": "permission_prompt"}),
+                              ("ask-o", "waiting", {"message": "Claude is waiting for your input", "notify_type": "idle_prompt"}),
+                              ("ask-me", "idle", {"pid": os.getpid()})):
         d = os.path.join(ask_dir, sid)
         os.makedirs(d)
         h = {"session_id": sid, "project": d, "state": state, "iterm_session_id": "w0t0p0:" + sid.upper(),
@@ -1101,6 +1103,9 @@ def main():
           and sw.ask_skip_reason({"state": "done", "iterm_session_id": ""}, set()) == "no iTerm2 pane recorded"
           and sw.ask_skip_reason({"state": "done", "iterm_session_id": "w0t0p0:X"}, set()) == "",
           "ask_skip_reason: working, waiting, the asker, no pane; else asked")
+    check(sw.normalize_hook({"state": "waiting", "notify_type": "idle_prompt", "message": "x"}) == {"state": "idle", "notify_type": "idle_prompt", "message": ""}
+          and sw.normalize_hook({"state": "waiting", "notify_type": "permission_prompt", "message": "x"})["state"] == "waiting",
+          "normalize_hook: an old hook's waiting-for-the-nudge file is idle, a permission prompt stays waiting")
     check(run(["ask"]).returncode == 2, "ask with neither names nor --all is a usage error")
     check(run(["ask", "--all", "--timeout", "0"]).returncode == 2, "ask --timeout 0 is a usage error")
 
@@ -1113,7 +1118,8 @@ def main():
     proc = subprocess.Popen([sys.executable, module, "ask", "--all", "-q", question, "--timeout", "8", "--json"],
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=e, cwd=tmp)
     time.sleep(1.5)
-    for sid, reply in (("ask-a", "Reviewing the parser.\nNext: the tests."), ("ask-p", "Reading the wifi logs.")):
+    for sid, reply in (("ask-a", "Reviewing the parser.\nNext: the tests."), ("ask-p", "Reading the wifi logs."),
+                       ("ask-o", "Idle since the nudge.")):
         write_transcript(ask_hooks[sid]["transcript_path"], [("earlier", "ok"), (question, reply)])
         ask_hooks[sid].update({"state": "done", "last_prompt": question, "updated": int(time.time())})
         put_ask_hook(sid)
@@ -1126,7 +1132,9 @@ def main():
         check(False, f"ask --all emits JSON ({out!r})")
     asked = {a_["session_id"]: a_ for a_ in j.get("asked", [])}
     skipped = {a_["session_id"]: a_["why"] for a_ in j.get("skipped", [])}
-    check(set(asked) == {"ask-a", "ask-p"}, f"ask --all asks the done and idle tabs only ({sorted(asked)})")
+    check(set(asked) == {"ask-a", "ask-p", "ask-o"}, f"ask --all asks the done and idle tabs only ({sorted(asked)})")
+    check(asked.get("ask-o", {}).get("how") == "answered",
+          f"a file an older hook stamped waiting for the idle nudge is an idle tab, asked ({asked.get('ask-o')})")
     check(asked.get("ask-a", {}).get("how") == "answered" and asked["ask-a"]["reply"] == "Reviewing the parser.\nNext: the tests."
           and asked["ask-a"]["name"] == "ask-a",
           f"the work session's reply is read from its transcript ({asked.get('ask-a')})")
@@ -1137,7 +1145,7 @@ def main():
     check(j.get("question") == question and j.get("waited", 0) < 8, f"the result carries the question and the wait ({j.get('waited')})")
     sends = [c for c in calls() if c[:2] == ["session", "send"]]
     panes = [c[c.index("--session") + 1] for c in sends]
-    check(sorted(set(panes)) == ["ASK-A", "ASK-P"] and len(sends) == 4
+    check(sorted(set(panes)) == ["ASK-A", "ASK-O", "ASK-P"] and len(sends) == 6
           and all(c[-1] in (question, "\r") for c in sends),
           f"the question (then Enter) is typed into exactly the asked panes ({sends})")
     rec_a = record("ask-a")

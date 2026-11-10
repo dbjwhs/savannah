@@ -248,7 +248,9 @@ all my sessions: what are you working on, where are you with it, and
 what comes next?"; `-q TEXT` asks something else. A tab is asked only
 when its hook file says `idle` or `done`: a `working` tab is not
 interrupted, a `waiting` tab has a permission prompt or a question up
-that typed text would answer, a tab with no recorded pane cannot be typed
+that typed text would answer (a file an older hook stamped `waiting` for
+the idle nudge counts as `idle`, as on the board), a tab with no
+recorded pane cannot be typed
 into, and the session running the command (a Claude asking from its own
 shell) is never asked itself; each skipped tab is listed with the reason.
 The question goes in through `it2 session send` like `say`, and then the

@@ -273,16 +273,25 @@ def run():
     notify_type = event.get("notification_type", "") if name == "Notification" else ""
     if not isinstance(notify_type, str):
         notify_type = ""
-    if name in EVENT_STATE and notify_type != "idle_prompt":
+    nudge = name == "Notification" and notify_type == "idle_prompt"
+    if name in EVENT_STATE and not nudge:
         record["state"] = EVENT_STATE[name]
-    record.setdefault("state", "idle" if notify_type == "idle_prompt" else "working")
+    record.setdefault("state", "idle" if nudge else "working")
+    # A file an older hook stamped waiting for the nudge itself (state
+    # waiting, notify_type idle_prompt) heals on the next nudge: idle.
+    if nudge and record["state"] == "waiting" and record.get("notify_type") == "idle_prompt":
+        record["state"] = "idle"
 
     # A notification carries why it needs you (notification_message is the
     # documented field; message is an older/alternate name we also accept).
     # notification_type says which kind, so the dash can say why. The idle
     # nudge carries no message (nothing needs you) and keeps the state it
-    # found. Any non-notification event clears both.
-    if name == "Notification" and notify_type == "idle_prompt":
+    # found; when that state is a real waiting (a permission prompt still
+    # up), its message and type stay too. Any non-notification event clears
+    # both.
+    if nudge and record["state"] == "waiting":
+        pass
+    elif nudge:
         record["message"] = ""
         record["notify_type"] = notify_type
     elif name == "Notification":

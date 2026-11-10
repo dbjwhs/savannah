@@ -149,6 +149,25 @@ def main():
     check(load("s9")["state"] == "idle", "idle_prompt on a session with no file yet is idle")
     check(r["transcript_path"] == "/home/u/.claude/projects/p/s1b.jsonl",
           "transcript_path preserved through Stop")
+    # A nudge on top of a real permission prompt leaves the prompt's
+    # message and type in place (it still needs you).
+    fire({"session_id": "s8", "hook_event_name": "UserPromptSubmit", "cwd": "/home/u/proj", "prompt": "go"})
+    fire({"session_id": "s8", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+          "notification_type": "permission_prompt", "notification_message": "use Bash"})
+    fire({"session_id": "s8", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+          "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
+    r = load("s8")
+    check(r["state"] == "waiting" and r["notify_type"] == "permission_prompt" and r["message"] == "use Bash",
+          f"a nudge over a permission prompt keeps it waiting with its message ({r['state']}, {r['notify_type']!r})")
+    # A file an older hook stamped waiting for the nudge heals on the next
+    # nudge: idle, no message.
+    with open(os.path.join(workdir, "s7.json"), "w") as f:
+        json.dump({"session_id": "s7", "project": "/home/u/proj", "state": "waiting",
+                   "notify_type": "idle_prompt", "message": "Claude is waiting for your input"}, f)
+    fire({"session_id": "s7", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+          "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
+    r = load("s7")
+    check(r["state"] == "idle" and r["message"] == "", f"an old waiting-for-the-nudge file heals to idle ({r['state']})")
 
     # A session that never saw a transcript_path or prompt still has both
     # fields, as empty strings, so consumers never need to guard the key.

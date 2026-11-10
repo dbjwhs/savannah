@@ -903,3 +903,30 @@ answer's first line; the board's note parser only takes a `## ` line of
 the stamp's exact shape as a heading, since a reply may carry headings of
 its own. The summary field stays: it is the latest reply whatever notes
 come after it.
+
+### 11/10/2026, night (the board and the CLI must read a hook file the same way)
+
+The first Ctrl-A on a board of thirty tabs said it would ask most of
+them; the run asked three and listed the rest as "waiting for you".
+Their files had been stamped `waiting` for the idle nudge by the hook
+from before this morning's fix, and nothing rewrites such a file until
+the tab's next event (the new hook's nudge kept whatever state it
+found). The board already read those files as idle (`normalizeSession`),
+the CLI did not, so the count and the run disagreed.
+
+1. **One reading rule, in both readers.** `work/savannah_work.py` now
+   runs every hook file through `normalize_hook` (state `waiting` with
+   `notify_type` `idle_prompt` is `idle`, no message), the mirror of the
+   board's `normalizeSession`. Everything built on `load_hook_sessions`
+   (`ls`, the join, `ask`, `autoname`) sees the same state the board
+   shows.
+2. **The hook heals the file.** On an idle nudge, a record in that old
+   shape is rewritten `idle`. And a nudge that lands on a real `waiting`
+   (a permission prompt still up) now leaves its message and type in
+   place, where before it overwrote them with `idle_prompt` and an empty
+   message, which would have made the board read a pending prompt as
+   idle.
+3. **Tests.** `test/test_hook.py` (the heal; a nudge over a permission
+   prompt keeps it), `test/test_work.py` (`normalize_hook`; an old-shape
+   file is asked and answers). Docs: hooks and work READMEs, CLAUDE.md.
+
