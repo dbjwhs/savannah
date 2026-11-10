@@ -49,6 +49,8 @@ roadmap, append-only decision log). One-liners:
 ## Build
 
 ```bash
+./install.sh            # all of the below plus the hook and ~/.local/bin/savannah; --pull, --test, --dry-run
+# or by hand:
 # song checked out AND BUILT as a sibling (or pass -DSONG_ROOT=/path/to/song).
 # CMake hard-fails unless ../song/build has libsong.a and songc.
 git clone https://github.com/dbjwhs/song ../song
@@ -67,6 +69,7 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 
 | Path | What |
 |---|---|
+| `install.sh` | One-shot build on a machine: tool check (git, cmake, c++, python3; go, claude and it2 warned about), song cloned beside the checkout when missing and built when `libsong.a`/`songc` are missing (or `--pull`), savannah configured (Debug unless the cache says otherwise, `--release`) and built, the dash target when go exists, `hooks/install.py`, `build/savannah` linked into `--bin DIR` (default `~/.local/bin`, warns when off PATH). `--pull` (ff-only, both repos), `--test` (ctest), `--dry-run` (prints `+ cmd` lines, runs nothing), `--no-hook`, `--no-link`, `--song DIR` (`$SONG_ROOT`). Tested by `test/test_install.py` (dry-run only). |
 | `idl/agent.song` | The AgentNode contract. Compiles via songc. |
 | `src/config.{hpp,cpp}` | Hand-written TOML-subset parser + `NodeConfig`. |
 | `src/json.{hpp,cpp}` | Hand-written minimal JSON parser (stream-json needs). |
@@ -83,7 +86,7 @@ ctest --test-dir build -R test_json --output-on-failure   # single test
 | `docs/handoff.md` | Session handoff (human-in-the-loop over the mesh): an unattended worker ends its turn with a final `DECISION_NEEDED {json}` line; pending decision = idle/incomplete task with the marker as its last output line; answer = ordinary `task_send`. Convention + dash inbox + contract test, zero server changes. |
 | `tools/fake_savannah.py` | Fake savannah CLI for shim tests (canned ls/ask/status). |
 | `tools/fake_it2.py` | Fake `it2` for work-session tests: logs every call as one JSON argv line to `$FAKE_IT2_LOG`, keeps its world (counter, windows, panes) in `$FAKE_IT2_LOG.state`; tab n = `TAB-n` / `PANE-C-n` / `PANE-S-n`; ids in `$FAKE_IT2_MISSING` (comma list) are absent (`not found`, rc 3; set-name rc 1); `$FAKE_IT2_FAIL="session split"` fails the call with that argv prefix (rc 1); `FAKE_IT2_NO_WINDOW=1` = no window (the `window new` path); `tab close` prints success and closes nothing, like the real one. No real iTerm2 is ever driven in tests. |
-| `test/` | Unit tests per component + end-to-end echo integration. Python suites in ctest: `test_shim` (MCP frames against `fake_savannah.py` plus the real work module with a temp repo and the fake it2), `test_hook`, `test_work` (temp work dir, temp sessions dir, throwaway git repo, fake it2, and the built CLI with a fake dash when CMake hands it the binary; skips the worktree cases with a message, still exit 0, when git is missing), `test_restore` (snapshot/restore against the fake it2 with `--no-worktree` records, so no git needed). |
+| `test/` | Unit tests per component + end-to-end echo integration. Python suites in ctest: `test_shim` (MCP frames against `fake_savannah.py` plus the real work module with a temp repo and the fake it2), `test_hook`, `test_install` (`install.sh --dry-run` against temp song dirs: the steps and their order, nothing built or written), `test_work` (temp work dir, temp sessions dir, throwaway git repo, fake it2, and the built CLI with a fake dash when CMake hands it the binary; skips the worktree cases with a message, still exit 0, when git is missing), `test_restore` (snapshot/restore against the fake it2 with `--no-worktree` records, so no git needed). |
 
 fake-claude scenarios (`--scenario NAME`, plus `--chunks N`, `--delay-ms D`,
 `--giant-bytes N`): `echo`, `chunks`, `tool_storm`, `giant_chunk`,

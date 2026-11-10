@@ -164,6 +164,11 @@ if(Python3_Interpreter_FOUND)
              ${CMAKE_CURRENT_SOURCE_DIR}/hooks/session-status.py)
     set_tests_properties(test_hook PROPERTIES TIMEOUT 60)
 
+    add_test(NAME test_install COMMAND ${Python3_EXECUTABLE}
+             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_install.py
+             ${CMAKE_CURRENT_SOURCE_DIR}/install.sh)
+    set_tests_properties(test_install PROPERTIES TIMEOUT 60)
+
     add_test(NAME test_work COMMAND ${Python3_EXECUTABLE}
              ${CMAKE_CURRENT_SOURCE_DIR}/test/test_work.py
              ${CMAKE_CURRENT_SOURCE_DIR}/work/savannah_work.py

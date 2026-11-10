@@ -802,3 +802,26 @@ should be yellow."
    `dash/sessions_test.go` (`normalizeSession` turns the legacy file into
    idle and keeps a permission prompt waiting; `TestRowStyle` pins the
    colour per state).
+
+### 11/10/2026, later (install.sh)
+
+Eighth ask: "on my other system, what do I do, pull and then how do I
+build; can we create an install script to make this easier".
+
+1. **One script, every step idempotent.** `install.sh` is the README's
+   build section as a program: tool check, song sibling (clone when
+   missing, build when `libsong.a`/`songc` are missing or after `--pull`),
+   cmake configure and build, the dash target when go exists, the hook
+   installer, a symlink into `~/.local/bin`. Running it again after a pull
+   is the upgrade path; `--pull` does the pull too, fast-forward only, so
+   a diverged checkout stops rather than merges.
+2. **Dry run as the test seam.** `--dry-run` prints each command as
+   `+ cmd` and runs none; `test/test_install.py` drives that against temp
+   song directories (built, missing) and checks the commands and their
+   order. The real steps are cmake, git and the hook installer, each
+   tested elsewhere; what the script adds is the sequencing, and that is
+   what the test pins.
+3. **Stated limits.** It installs none of the tools (brew or apt do), does
+   not configure the mesh, and cannot restart open Claude Code tabs. Bash,
+   not Python, because it is the thing that runs before anything else is
+   known to work; bash 3.2 (the Mac's) is enough.

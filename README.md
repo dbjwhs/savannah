@@ -90,13 +90,38 @@ Stated on purpose; this list shrinks phase by phase (see `DESIGN.md`).
 ## Build
 
 Requires CMake 3.16+, a C++20 compiler, and song built as a sibling
-(or pass `-DSONG_ROOT=/path/to/song`).
+(or pass `-DSONG_ROOT=/path/to/song`). The board needs Go; the work
+sessions need iTerm2 3.5+ on a Mac.
+
+The short way, on a fresh machine or after every pull:
+
+```bash
+./install.sh            # song sibling, CLI, board, hook, ~/.local/bin/savannah
+./install.sh --pull     # git pull savannah and song first, then the same
+./install.sh --test     # ... and run ctest
+./install.sh --dry-run  # print every step, run nothing
+```
+
+It clones song beside this checkout when it is missing, builds it when
+`libsong.a` or `songc` is missing (or after `--pull`), configures and
+builds savannah, builds `dash/savannah-dash` when `go` is on PATH, merges
+the session hook into `~/.claude/settings.json` (`hooks/install.py`,
+idempotent, backs the file up) and links `build/savannah` into
+`~/.local/bin` (`--bin DIR` for elsewhere; it tells you if that directory
+is not on your PATH). Every step is safe to repeat. It does not install
+git, cmake, a compiler, Go, Python or iTerm2, does not configure the mesh
+(`savannahd`, keys, mDNS), and does not restart Claude Code tabs that are
+already open. `--no-hook`, `--no-link`, `--release`, `--song DIR`.
+
+By hand:
 
 ```bash
 git clone https://github.com/dbjwhs/song ../song
 cmake -S ../song -B ../song/build && cmake --build ../song/build --target song songc
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
+cmake --build build --target dash
+python3 hooks/install.py
 ctest --test-dir build --output-on-failure
 ```
 
