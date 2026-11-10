@@ -234,7 +234,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		if i == m.cursor {
 			line = selectedStyle.Render(line)
 		} else {
-			line = rowStyle(s).Render(line)
+			line = rowStyleAt(s, now, m.fade).Render(line)
 		}
 		lines = append(lines, line)
 	}

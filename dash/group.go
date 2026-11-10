@@ -257,6 +257,7 @@ func groupHeader(root string, isRepo bool, n int, home string, wide bool) string
 type boardPrefs struct {
 	Group    string `json:"group"`              // "repo" | ""
 	Autoname string `json:"autoname,omitempty"` // "off" | "" (autoname.go)
+	Fade     string `json:"fade,omitempty"`     // "3h" | "off" | "" = the default (fade.go)
 }
 
 func boardFile() string {

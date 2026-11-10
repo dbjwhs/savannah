@@ -94,10 +94,11 @@ type discoverTick time.Time
 type model struct {
 	key   string
 	bin   string
-	pin   string // non-empty: single-node mode, skip discovery
-	addr  string // single-node --addr (a node off mDNS)
-	mesh  bool   // --mesh (or a pinned node): discovery + workers; off = the work board alone
-	group bool   // rows gathered by repository inside each section (group.go; Ctrl-G)
+	pin   string        // non-empty: single-node mode, skip discovery
+	addr  string        // single-node --addr (a node off mDNS)
+	mesh  bool          // --mesh (or a pinned node): discovery + workers; off = the work board alone
+	group bool          // rows gathered by repository inside each section (group.go; Ctrl-G)
+	fade  time.Duration // rows untouched longer than this are dimmed; 0 = never (fade.go; Ctrl-F)
 
 	// Naming the tabs the owner opened by hand (autoname.go).
 	autoname  bool            // on: plain tabs with a prompt are named through `work autoname`
@@ -577,6 +578,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enterLog()
 	case tea.KeyCtrlS:
 		return m, m.enterSnapshot()
+	case tea.KeyCtrlF:
+		return m.toggleFade(), nil
 	case tea.KeyCtrlG:
 		return m.toggleGroup(), nil
 	case tea.KeyCtrlA:
@@ -965,7 +968,7 @@ func (m model) promptLines(width int) []string {
 	// One line, never wrapped (a wrapped help line would push the layout
 	// down): hints are dropped from the end until the line fits, so a
 	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
-	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^O out",
+	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^F fade", "^O out",
 		"^A ask", "^T note", "^S snap", "^L log", "^X rm", "^C quit"}
 	if m.mesh {
 		parts[1] = "Enter say/send"
@@ -1007,8 +1010,9 @@ func plural(n int) string {
 type opts struct {
 	pin, key, addr string
 	mesh, help     bool
-	group          int // --group 1, --no-group -1, 0 = as the board file remembers
-	autoname       int // --autoname 1, --no-autoname -1, 0 = on unless the board file says "off"
+	group          int    // --group 1, --no-group -1, 0 = as the board file remembers
+	autoname       int    // --autoname 1, --no-autoname -1, 0 = on unless the board file says "off"
+	fade           string // --fade DUR|off; "" = as the board file remembers, else 3h
 }
 
 // parseArgs reads the argv after the program name. A leading non-flag word
@@ -1023,14 +1027,20 @@ func parseArgs(args []string) (opts, error) {
 	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--key", "--addr":
+		case "--key", "--addr", "--fade":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("%s needs a value", args[i])
 			}
-			if args[i] == "--key" {
+			switch args[i] {
+			case "--key":
 				o.key = args[i+1]
-			} else {
+			case "--addr":
 				o.addr = args[i+1]
+			default:
+				if _, err := parseFade(args[i+1]); err != nil {
+					return o, err
+				}
+				o.fade = args[i+1]
 			}
 			i++
 		case "--mesh":
@@ -1055,12 +1065,14 @@ func parseArgs(args []string) (opts, error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--no-autoname]")
+	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--fade DUR|off] [--no-autoname]")
 	fmt.Fprintln(os.Stderr, "  no flags:  the work board: your work sessions and open Claude Code tabs")
 	fmt.Fprintln(os.Stderr, "  --mesh:    also discover every node via `savannah ls` and show its workers")
 	fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS); implies --mesh")
 	fmt.Fprintln(os.Stderr, "  --group:   gather the rows by repository (Ctrl-G toggles it; the choice is")
 	fmt.Fprintln(os.Stderr, "             remembered in $SAVANNAH_BOARD_FILE, ~/.claude/savannah/board.json)")
+	fmt.Fprintln(os.Stderr, "  --fade DUR: dim the rows untouched for longer than DUR (3h unless set; off = never;")
+	fmt.Fprintln(os.Stderr, "             Ctrl-F cycles 1h, 3h, 8h, 24h, off and remembers it in the board file)")
 	fmt.Fprintln(os.Stderr, "  --no-autoname:  do not name the tabs you opened by hand (`work autoname`;")
 	fmt.Fprintln(os.Stderr, "             \"autoname\": \"off\" in the board file turns it off for good)")
 	fmt.Fprintln(os.Stderr, "Sessions come from the session-status hook, work sessions from $SAVANNAH_WORK_DIR")
@@ -1075,10 +1087,14 @@ func newModel(o opts, bin string) model {
 	ti.CharLimit = 4000
 	ti.Width = 64
 	home, _ := os.UserHomeDir()
+	fade, err := parseFade(o.fade)
+	if err != nil {
+		fade = fadeDefault
+	}
 	m := model{
 		key: o.key, bin: bin, pin: o.pin, addr: o.addr, mesh: o.mesh, group: o.group > 0,
-		autoname: o.autoname >= 0,
-		tasks:    map[string][]task{}, errs: map[string]string{},
+		autoname: o.autoname >= 0, fade: fade,
+		tasks: map[string][]task{}, errs: map[string]string{},
 		input: ti, home: home,
 	}
 	if o.pin != "" {
@@ -1109,9 +1125,12 @@ func main() {
 	if o.autoname == 0 && prefs.Autoname == "off" {
 		o.autoname = -1
 	}
+	if o.fade == "" {
+		o.fade = prefs.Fade // "" stays the default; a bad value in the file is the default too
+	}
 	openLog()
 	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath(),
-		"group", o.group > 0, "autoname", o.autoname >= 0)
+		"group", o.group > 0, "autoname", o.autoname >= 0, "fade", o.fade)
 	p := tea.NewProgram(newModel(o, bin), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		slog.Error("board crashed", "err", err.Error())

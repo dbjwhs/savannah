@@ -200,7 +200,7 @@ func TestRepoMatches(t *testing.T) {
 func TestBoardHeaderByMode(t *testing.T) {
 	m := boardWith(t, false)
 	out := m.View()
-	for _, want := range []string{"savannah  work", "2 sessions", "LOCAL SESSIONS", "^N new", "^O out", "^S snap", "^L log"} {
+	for _, want := range []string{"savannah  work", "2 sessions", "LOCAL SESSIONS", "^N new", "^F fade", "^O out", "^S snap"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("work board missing %q:\n%s", want, out)
 		}

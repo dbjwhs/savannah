@@ -930,3 +930,30 @@ the CLI did not, so the count and the run disagreed.
    prompt keeps it), `test/test_work.py` (`normalize_hook`; an old-shape
    file is asked and answers). Docs: hooks and work READMEs, CLAUDE.md.
 
+### 11/10/2026, late (rows fade with age)
+
+"A top section, RECENT, for sessions touched in the last three hours
+(configurable)?" Talked through and turned into a fade instead: on a
+board of thirty tabs the question is where the eye lands first, and a
+section would move rows as they are touched, on top of the ACTIVE/LATER
+order the owner set by hand and the Ctrl-G grouping. So nothing moves:
+
+1. **Faint by age, in place.** A row whose last activity is older than
+   the fade (3 h unless set) is rendered faint in its state colour
+   (`rowStyleAt`, `faded`). A row that needs you or is working never
+   fades: it has your attention by definition. Activity is the hook's
+   `updated` stamp, refreshed by every event; the idle nudge lands a
+   minute after a turn ends, so the fade is "no turn for three hours" to
+   within a minute. An offline row goes by its record's stamp. Stated
+   limit: reading a tab without typing is not activity the hook sees.
+2. **Configurable three ways.** Ctrl-F cycles 1h, 3h, 8h, 24h, off and
+   writes `"fade"` to the board file beside `group`; `--fade DUR|off`
+   wins for one run (`parseFade`: a Go duration, a bare number of hours,
+   or off; a bad value on the command line is refused, a bad value in
+   the file is the default). The help line grew to 123 columns; under
+   that it drops hints from the end as before.
+3. **Tests.** `dash/fade_test.go` (parsing and labels, the cycle, which
+   rows fade, the style flags, Ctrl-F writing and the file read back,
+   the flag). Docs: dash README (intro, layout, keys, limitations),
+   CLAUDE.md.
+

@@ -60,6 +60,13 @@ gives you one key for each thing you used to do by hand:
   the checkout and where in it the tab sits. The choice is remembered
   (`~/.claude/savannah/board.json`); `savannah --group` and `--no-group`
   set it for one run.
+- **Ctrl-F** sets the fade: a row you have not touched for three hours
+  (the default) is drawn faint, in its state colour, exactly where it is,
+  so on a board of thirty green rows the ones with activity today stand
+  out. Nothing moves and nothing hides; a row that needs you or is
+  working never fades. Ctrl-F cycles 1h, 3h, 8h, 24h and off, remembered
+  in the board file; `savannah --fade 90m` (or `--fade off`) sets it for
+  one run.
 - **Ctrl-X**, pressed twice, removes a finished session: closes the tab,
   removes a clean worktree, keeps the branch.
 - **Ctrl-S** is the snapshot screen: save every session's state before a
@@ -186,6 +193,15 @@ pending), faint for an offline work session. Claude Code's idle nudge, a
 notification sent once a tab has sat unused for a minute, is not "needs
 you": the hook records it as a heartbeat, so an idle tab stays green.
 
+On top of the colour, age: a row whose last activity is older than the
+fade (3 hours unless Ctrl-F or `--fade` says otherwise) is drawn faint in
+that same colour, where it is. Activity is the hook file's `updated`
+stamp, which every event refreshes; the idle nudge lands about a minute
+after a turn ends, so a row fades about three hours after its last turn.
+An offline row goes by its record's stamp. A row that needs you or is
+working is never faded. The AGE column still gives the exact age; the
+fade only decides where your eye lands first.
+
 The board uses the whole terminal. Under 120 columns the table is the
 compact one (STATE, WORK, PROJECT, AGE, WHAT). From 120 columns on it adds
 a TAB column (the iTerm2 tab number from the record), a NOTE column (the
@@ -303,6 +319,8 @@ Board:
 - **Ctrl-N** opens the new-task dialog from anywhere on the board
 - **Ctrl-G** groups the rows by repository inside each section, and back
   (remembered in the board file; a drag is refused while grouped)
+- **Ctrl-F** cycles the fade (1h, 3h, 8h, 24h, off): rows untouched for
+  longer are drawn faint (remembered in the board file)
 - **Ctrl-S** opens the snapshot screen, **Ctrl-L** the log view
 - **Ctrl-C** quits; **Esc** quits too, unless a note, a name or a title
   is being typed
@@ -430,6 +448,7 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-S | `savannah work snapshots --json` on entry; **s** `savannah work snapshot --json`; **d** `savannah work restore --dry-run --json`; **r** `savannah work restore --json` |
 | Ctrl-L | none: the dash reads `$SAVANNAH_LOG_DIR/savannah.log` itself (`savannah work log` is the shell's reader) |
 | Ctrl-G | none: the rows regroup in the dash; the choice is written to `$SAVANNAH_BOARD_FILE` (`~/.claude/savannah/board.json`) |
+| Ctrl-F | none: the fade changes in the dash; `"fade": "8h"` (or `"off"`) is written to the board file |
 | (start, and each new plain tab with a prompt) | `savannah work autoname --json <hook session ids>`, one run at a time |
 
 Values travel in the `=` form or after `--`, so text that begins with `-`
@@ -510,7 +529,11 @@ file under its path has been swapped. Nothing here is stdlib-external:
   directory is looked up once per board run and cached, so a `git init`
   under a running board shows after a restart. Dragging is refused while
   grouped; the help line's "^C quit" is the first hint dropped when the
-  terminal is narrower than the help (114 columns for the work board).
+  terminal is narrower than the help (123 columns for the work board).
+- The fade goes by the hook file's `updated` stamp, so a tab whose Claude
+  has been running one long turn for four hours is not faded (it is
+  working), while a tab you read but did not type into fades on schedule:
+  reading is not activity the hook can see.
 - Moving a row is one step per Shift-Up/Down; there is no mouse drag and no
   multi-select. An unnamed tab cannot move (nothing holds its rank): name
   it first. Two boards open at once each write the order they last saw;
