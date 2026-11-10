@@ -33,6 +33,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type jumpMsg struct {
@@ -143,6 +144,7 @@ func readSessions(dir string) ([]session, error) {
 			continue
 		}
 		s.file = p
+		normalizeSession(&s)
 		out = append(out, s)
 	}
 	sortSessions(out)
@@ -414,6 +416,34 @@ func joinWork(sessions []session, work []workRecord) []session {
 	return out
 }
 
+// normalizeSession reads a file the way today's hook writes it: an idle
+// nudge (Notification idle_prompt) is not a session that needs you, so a
+// file from an older hook that stamped it "waiting" reads as idle.
+func normalizeSession(s *session) {
+	if s.State == "waiting" && s.Notify == "idle_prompt" {
+		s.State = "idle"
+		s.Message = ""
+	}
+}
+
+// rowStyle colours a session row by state, like a traffic light: red for
+// a tab that needs you, yellow for one still working (polling too), green
+// for one idle or done (ready for you, nothing pending), faint for an
+// offline work session. The cursor row is reversed instead (board.go).
+func rowStyle(s session) lipgloss.Style {
+	switch {
+	case sessionAttention(s):
+		return needStyle
+	case s.State == "working": // a polling row is a working one with a live report
+		return warnStyle
+	case s.State == "idle", s.State == "done":
+		return okStyle
+	case s.State == "offline":
+		return helpStyle
+	}
+	return lipgloss.NewStyle()
+}
+
 // attentionRank orders states for display: what needs you first.
 func attentionRank(state string) int {
 	switch state {
@@ -529,8 +559,6 @@ func sessionDetail(s session) string {
 				return "needs permission: " + s.Message
 			}
 			return "needs permission"
-		case "idle_prompt":
-			return "idle, waiting for you"
 		}
 		if s.Message != "" {
 			return s.Message

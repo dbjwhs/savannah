@@ -154,8 +154,9 @@ var (
 	colStyle      = lipgloss.NewStyle().Bold(true).Faint(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	helpStyle     = lipgloss.NewStyle().Faint(true)
-	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green: idle, done, good news
+	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow: working, refusals, errors
+	needStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red: needs you
 )
 
 func cliError(err error) string {
@@ -827,7 +828,7 @@ func (m model) viewBoard() string {
 	attention := countSessionAttention(m.sessions) + countDecisions(m.rows)
 	deco := ""
 	if attention > 0 {
-		deco = "   " + warnStyle.Render(fmt.Sprintf("%d need you", attention))
+		deco = "   " + needStyle.Render(fmt.Sprintf("%d need you", attention))
 	}
 	top := []string{fmt.Sprintf("%s   %s   %s%s",
 		headerStyle.Render("savannah  "+scope), counts,
@@ -887,7 +888,7 @@ func (m model) viewBoard() string {
 				case i == m.cursor:
 					line = selectedStyle.Render(line)
 				case pending:
-					line = warnStyle.Render(line)
+					line = needStyle.Render(line)
 				}
 				top = append(top, line)
 			}

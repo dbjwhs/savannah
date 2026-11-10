@@ -14,9 +14,14 @@
 # The state we record, and what fires it:
 #   idle     SessionStart          fresh session, nothing pending
 #   working  UserPromptSubmit      you asked; Claude is on it
-#   waiting  Notification          NEEDS YOU: a permission prompt or an
-#                                  idle-too-long nudge (this is the attention
-#                                  signal the dash counts and highlights)
+#   waiting  Notification          NEEDS YOU: a permission prompt or a
+#                                  question (this is the attention signal the
+#                                  dash counts and highlights). The idle nudge
+#                                  (notification_type idle_prompt, sent once a
+#                                  tab has sat unused for a minute) is NOT
+#                                  that: it refreshes the timestamp and leaves
+#                                  the state alone, an idle tab is green, not
+#                                  one that needs you.
 #   done     Stop                  finished responding; ready for your read
 #   (file removed on SessionEnd)
 #
@@ -265,18 +270,25 @@ def run():
             record["last_prompt"] = first_line(prompt, 200)
     record.setdefault("last_prompt", "")
 
-    if name in EVENT_STATE:
+    notify_type = event.get("notification_type", "") if name == "Notification" else ""
+    if not isinstance(notify_type, str):
+        notify_type = ""
+    if name in EVENT_STATE and notify_type != "idle_prompt":
         record["state"] = EVENT_STATE[name]
-    record.setdefault("state", "working")
+    record.setdefault("state", "idle" if notify_type == "idle_prompt" else "working")
 
     # A notification carries why it needs you (notification_message is the
     # documented field; message is an older/alternate name we also accept).
-    # notification_type distinguishes a permission prompt from an idle nudge,
-    # so the dash can say which. Any non-notification event clears both.
-    if name == "Notification":
+    # notification_type says which kind, so the dash can say why. The idle
+    # nudge carries no message (nothing needs you) and keeps the state it
+    # found. Any non-notification event clears both.
+    if name == "Notification" and notify_type == "idle_prompt":
+        record["message"] = ""
+        record["notify_type"] = notify_type
+    elif name == "Notification":
         record["message"] = (event.get("notification_message")
                              or event.get("message") or "needs attention")
-        record["notify_type"] = event.get("notification_type", "")
+        record["notify_type"] = notify_type
     else:
         record["message"] = ""
         record["notify_type"] = ""

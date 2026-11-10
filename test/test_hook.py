@@ -133,6 +133,20 @@ def main():
     check(r["state"] == "done", "Stop -> done")
     check(r["message"] == "" and r["notify_type"] == "", "Stop clears message")
     check(r["last_prompt"] == "fix the parser", "last_prompt preserved through Stop")
+
+    # The idle nudge (Claude Code's idle_prompt notification, a minute after
+    # the last turn) is not a session that needs you: the state stays done,
+    # no message is recorded, the timestamp is refreshed.
+    before = r["updated"]
+    fire({"session_id": "s1", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+          "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
+    r = load("s1")
+    check(r["state"] == "done", f"idle_prompt keeps the state ({r['state']})")
+    check(r["message"] == "" and r["notify_type"] == "idle_prompt", "idle_prompt records its type and no message")
+    check(r["updated"] >= before, "idle_prompt refreshes the timestamp")
+    fire({"session_id": "s9", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+          "notification_type": "idle_prompt"})
+    check(load("s9")["state"] == "idle", "idle_prompt on a session with no file yet is idle")
     check(r["transcript_path"] == "/home/u/.claude/projects/p/s1b.jsonl",
           "transcript_path preserved through Stop")
 

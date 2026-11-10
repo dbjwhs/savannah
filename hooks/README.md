@@ -21,8 +21,15 @@ session, and `savannah-dash` reads them.
 |-----------|------------------|------------------------------------------------|
 | `idle`    | SessionStart     | fresh session, nothing pending                 |
 | `working` | UserPromptSubmit | you asked, Claude is on it                     |
-| `waiting` | Notification     | NEEDS YOU: a permission prompt or idle nudge   |
+| `waiting` | Notification     | NEEDS YOU: a permission prompt or a question   |
 | `done`    | Stop             | finished responding, ready for your read       |
+
+One Notification is not a `waiting`: the idle nudge (`notification_type`
+`idle_prompt`, which Claude Code sends once a tab has sat unused for a
+minute) refreshes the timestamp and leaves the state alone, recording
+`notify_type` and no message. A tab that is merely idle does not need you,
+so the board shows it green, not yellow. (Files an older hook stamped
+`waiting` for the nudge are read as `idle` by the board.)
 
 The file is deleted on SessionEnd. It also captures the project directory, the
 permission mode, and the terminal identity (`ITERM_SESSION_ID` or

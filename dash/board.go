@@ -231,15 +231,10 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 			}
 		}
 		line += trunc(what, c.what)
-		switch {
-		case i == m.cursor:
+		if i == m.cursor {
 			line = selectedStyle.Render(line)
-		case sessionAttention(s):
-			line = warnStyle.Render(line)
-		case s.State == "done":
-			line = okStyle.Render(line)
-		case s.State == "idle", s.State == "offline":
-			line = helpStyle.Render(line)
+		} else {
+			line = rowStyle(s).Render(line)
 		}
 		lines = append(lines, line)
 	}

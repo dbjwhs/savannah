@@ -774,3 +774,31 @@ Claude session by asking them; later I can change them if needed".
    `dash/autoname_test.go` (which tabs are pending and once only, the
    sessions tick starting a run, the status lines, the flags, the board
    file keeping both keys).
+
+### 11/10/2026 (idle is green, working is yellow)
+
+Seventh ask: "all the sessions savannah is monitoring, when idle, are
+yellow; that looks odd. I want them green, and if they are working they
+should be yellow."
+
+1. **The cause was the hook, not the palette.** Claude Code sends a
+   Notification of type `idle_prompt` once a tab has sat unused for a
+   minute, and the hook mapped every Notification to `waiting`: so every
+   idle tab turned into one that "needs you" after sixty seconds, yellow,
+   counted in the header. The nudge now refreshes the timestamp and leaves
+   the state alone (its type is recorded, no message); a session with no
+   file yet is `idle`. The board reads files an older hook stamped
+   `waiting` for the nudge as `idle` (`normalizeSession`), so nothing has
+   to be cleaned up by hand.
+2. **A traffic light.** With the nudge out of the way the colours follow
+   the states the way the owner asked: red for `waiting` (a permission
+   prompt or a question; the "N need you" count and a pending mesh
+   decision are red too), yellow for `working` (a polling row is a working
+   one), green for `idle` and `done`, faint for `offline`. One function,
+   `rowStyle`, so the rule lives in one place. Status-line warnings stay
+   yellow: they are refusals and errors, not rows.
+3. **Tests.** `test/test_hook.py` (the nudge keeps `done`, records its
+   type and no message, refreshes the timestamp; first-seen is `idle`);
+   `dash/sessions_test.go` (`normalizeSession` turns the legacy file into
+   idle and keeps a permission prompt waiting; `TestRowStyle` pins the
+   colour per state).

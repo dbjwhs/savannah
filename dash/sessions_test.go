@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestHumanAge(t *testing.T) {
@@ -52,9 +53,20 @@ func TestSessionDetail(t *testing.T) {
 	if got := sessionDetail(perm); got != "needs permission: use Bash" {
 		t.Errorf("permission detail: %q", got)
 	}
-	idle := session{State: "waiting", Notify: "idle_prompt"}
-	if got := sessionDetail(idle); got != "idle, waiting for you" {
+	// A file an older hook stamped "waiting" for the idle nudge reads as
+	// idle: a tab sitting unused does not need you.
+	idle := session{State: "waiting", Notify: "idle_prompt", Message: "Claude is waiting for your input"}
+	normalizeSession(&idle)
+	if idle.State != "idle" || idle.Message != "" || sessionAttention(idle) {
+		t.Errorf("idle nudge normalized = %+v", idle)
+	}
+	if got := sessionDetail(idle); got != "idle" {
 		t.Errorf("idle detail: %q", got)
+	}
+	keep := session{State: "waiting", Notify: "permission_prompt", Message: "use Bash"}
+	normalizeSession(&keep)
+	if keep.State != "waiting" || keep.Message == "" {
+		t.Errorf("a permission prompt must stay waiting: %+v", keep)
 	}
 	working := session{State: "working", Mode: "acceptEdits"}
 	if got := sessionDetail(working); got != "working (acceptEdits)" {
@@ -691,5 +703,28 @@ func TestFitLabel(t *testing.T) {
 	}
 	if fitLabel("short", 200, hint) != "short" {
 		t.Errorf("roomy width leaves the label alone")
+	}
+}
+
+// The traffic light: red needs you, yellow working, green idle or done,
+// faint offline, plain for anything else.
+func TestRowStyle(t *testing.T) {
+	for _, c := range []struct {
+		s    session
+		want lipgloss.Style
+	}{
+		{session{State: "waiting", Notify: "permission_prompt"}, needStyle},
+		{session{State: "waiting"}, needStyle},
+		{session{State: "working"}, warnStyle},
+		{session{State: "idle"}, okStyle},
+		{session{State: "done"}, okStyle},
+		{session{State: "offline"}, helpStyle},
+	} {
+		if got := rowStyle(c.s).Render("x"); got != c.want.Render("x") {
+			t.Errorf("rowStyle(%s) = %q, want %q", c.s.State, got, c.want.Render("x"))
+		}
+	}
+	if got := rowStyle(session{State: "odd"}).Render("x"); got != "x" {
+		t.Errorf("unknown state should be plain: %q", got)
 	}
 }

@@ -150,6 +150,13 @@ shows it as "last status ... not live" until `work status <name> --clear`.
 
 ## The layout
 
+Rows are coloured like a traffic light: red for a session that needs you
+(a permission prompt or a question), yellow for one still working (a
+polling row too), green for one idle or done (ready for you, nothing
+pending), faint for an offline work session. Claude Code's idle nudge, a
+notification sent once a tab has sat unused for a minute, is not "needs
+you": the hook records it as a heartbeat, so an idle tab stays green.
+
 The board uses the whole terminal. Under 120 columns the table is the
 compact one (STATE, WORK, PROJECT, AGE, WHAT). From 120 columns on it adds
 a TAB column (the iTerm2 tab number from the record), a NOTE column (the
