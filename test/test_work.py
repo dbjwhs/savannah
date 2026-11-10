@@ -1070,6 +1070,108 @@ def main():
     p = run(["autoname"], dict(claude_env, SAVANNAH_SESSIONS_DIR=empty_sessions))
     check(p.returncode == 0 and "nothing to name" in p.stdout, f"autoname with no plain tabs says so ({p.stdout!r})")
 
+    # ---- ask: one question into every tab that is safe to interrupt ----------
+    # Hook files are the input: which tabs are live, their state, their pane.
+    # Two work sessions (one done, one working), a plain tab (idle), a
+    # waiting tab, and the asking session itself (this test's pid is the
+    # CLI's ancestor, as a Claude session's would be).
+    ask_dir = os.path.join(tmp, "ask-dirs")
+    ask_hooks = {}
+    for sid, state, extra in (("ask-a", "done", {}), ("ask-b", "working", {}), ("ask-p", "idle", {}),
+                              ("ask-w", "waiting", {"message": "use Bash"}), ("ask-me", "idle", {"pid": os.getpid()})):
+        d = os.path.join(ask_dir, sid)
+        os.makedirs(d)
+        h = {"session_id": sid, "project": d, "state": state, "iterm_session_id": "w0t0p0:" + sid.upper(),
+             "updated": int(time.time()), "last_prompt": "earlier", "transcript_path": os.path.join(tmp, sid + ".jsonl")}
+        h.update(extra)
+        ask_hooks[sid] = h
+
+    def put_ask_hook(sid):
+        with open(os.path.join(sessions, sid + ".json"), "w") as f:
+            json.dump(ask_hooks[sid], f)
+
+    for sid in ask_hooks:
+        put_ask_hook(sid)
+    run_json(["adopt", "ask-a", "--session=ask-a", "--json"])
+    run_json(["adopt", "ask-b", "--session=ask-b", "--json"])
+    check(sw.first_prompt_line("\n  What are you doing?\nreally") == "What are you doing?", "first_prompt_line")
+    check(sw.ask_skip_reason({"state": "working"}, set()) == "working (not interrupted)"
+          and sw.ask_skip_reason({"state": "waiting"}, set()).startswith("waiting for you")
+          and sw.ask_skip_reason({"state": "idle", "pid": 7, "iterm_session_id": "w:X"}, {7}) == "the session asking"
+          and sw.ask_skip_reason({"state": "done", "iterm_session_id": ""}, set()) == "no iTerm2 pane recorded"
+          and sw.ask_skip_reason({"state": "done", "iterm_session_id": "w0t0p0:X"}, set()) == "",
+          "ask_skip_reason: working, waiting, the asker, no pane; else asked")
+    check(run(["ask"]).returncode == 2, "ask with neither names nor --all is a usage error")
+    check(run(["ask", "--all", "--timeout", "0"]).returncode == 2, "ask --timeout 0 is a usage error")
+
+    # The run: the question goes to ask-a and ask-p only; the replies land
+    # (hook files flipped to done with our prompt, transcripts written) while
+    # the CLI waits; each work session's reply becomes its summary.
+    question = "What are you doing?"
+    clear_log(keep_state=True)
+    e = dict(env)
+    proc = subprocess.Popen([sys.executable, module, "ask", "--all", "-q", question, "--timeout", "8", "--json"],
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=e, cwd=tmp)
+    time.sleep(1.5)
+    for sid, reply in (("ask-a", "Reviewing the parser.\nNext: the tests."), ("ask-p", "Reading the wifi logs.")):
+        write_transcript(ask_hooks[sid]["transcript_path"], [("earlier", "ok"), (question, reply)])
+        ask_hooks[sid].update({"state": "done", "last_prompt": question, "updated": int(time.time())})
+        put_ask_hook(sid)
+    out, err = proc.communicate(timeout=30)
+    check(proc.returncode == 0, f"ask --all exits 0 ({err.strip()[:200]})")
+    try:
+        j = json.loads(out)
+    except ValueError:
+        j = {}
+        check(False, f"ask --all emits JSON ({out!r})")
+    asked = {a_["session_id"]: a_ for a_ in j.get("asked", [])}
+    skipped = {a_["session_id"]: a_["why"] for a_ in j.get("skipped", [])}
+    check(set(asked) == {"ask-a", "ask-p"}, f"ask --all asks the done and idle tabs only ({sorted(asked)})")
+    check(asked.get("ask-a", {}).get("how") == "answered" and asked["ask-a"]["reply"] == "Reviewing the parser.\nNext: the tests."
+          and asked["ask-a"]["name"] == "ask-a",
+          f"the work session's reply is read from its transcript ({asked.get('ask-a')})")
+    check(asked.get("ask-p", {}).get("how") == "answered" and asked["ask-p"]["reply"] == "Reading the wifi logs."
+          and asked["ask-p"]["name"] == "", f"a plain tab is asked too, by its hook file ({asked.get('ask-p')})")
+    check(skipped.get("ask-b") == "working (not interrupted)" and (skipped.get("ask-w") or "").startswith("waiting for you")
+          and skipped.get("ask-me") == "the session asking", f"working, waiting and the asker are skipped ({skipped})")
+    check(j.get("question") == question and j.get("waited", 0) < 8, f"the result carries the question and the wait ({j.get('waited')})")
+    sends = [c for c in calls() if c[:2] == ["session", "send"]]
+    panes = [c[c.index("--session") + 1] for c in sends]
+    check(sorted(set(panes)) == ["ASK-A", "ASK-P"] and len(sends) == 4
+          and all(c[-1] in (question, "\r") for c in sends),
+          f"the question (then Enter) is typed into exactly the asked panes ({sends})")
+    rec_a = record("ask-a")
+    check(rec_a.get("summary") == "Reviewing the parser.\nNext: the tests." and isinstance(rec_a.get("summary_at"), int),
+          f"the reply is kept as the work session's summary ({rec_a.get('summary')!r})")
+    check("summary" not in record("ask-b"), "a skipped session gets no summary")
+    entries = {e_["name"]: e_ for e_ in run_json(["ls", "--json"])}
+    check(entries.get("ask-a", {}).get("summary") == rec_a["summary"], "ls --json carries the summary")
+
+    # A tab that does not answer in time: how timeout, no reply, the old
+    # summary kept; --no-wait returns at once with how sent; the default
+    # question; a named session with no live tab is skipped as offline.
+    j = run_json(["ask", "ask-a", "-q", "Still there?", "--timeout", "1", "--json"])
+    e1 = (j.get("asked") or [{}])[0]
+    check(e1.get("how") == "timeout" and e1.get("reply") == "" and record("ask-a")["summary"] == rec_a["summary"],
+          f"no answer in time is a timeout with the old summary kept ({e1})")
+    j = run_json(["ask", "ask-a", "--no-wait", "--json"])
+    e1 = (j.get("asked") or [{}])[0]
+    check(e1.get("how") == "sent" and j.get("question") == sw.ASK_DEFAULT, f"--no-wait sends and returns; the default question ({j})")
+    os.remove(os.path.join(sessions, "ask-b.json"))
+    j = run_json(["ask", "ask-b", "--json"])
+    check(j.get("asked") == [] and (j.get("skipped") or [{}])[0].get("why", "").startswith("no live Claude session"),
+          f"a named session with no live tab is skipped as offline ({j})")
+    p = run(["ask", "ask-a", "ask-b", "-q", "Still there?", "--timeout", "1"])
+    check(p.returncode == 0 and p.stdout.startswith("## ask-a  (") and "(no reply within 1" in p.stdout
+          and "skipped ask-b: no live Claude session" in p.stdout, f"ask's human output ({p.stdout!r})")
+    for n in ("ask-a", "ask-b"):
+        check(run(["rm", n]).returncode == 0, f"rm {n}")
+    for sid in ask_hooks:
+        try:
+            os.remove(os.path.join(sessions, sid + ".json"))
+        except OSError:
+            pass
+
     # ---- move: priority (the board's two sections) and rank -------------------
     # A record from before the fields existed reads active, ranked by its
     # creation time; new sessions get the same, so untouched rows keep

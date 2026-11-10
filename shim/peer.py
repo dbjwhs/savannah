@@ -20,6 +20,8 @@
 #   work_notes(name)                -> read those notes
 #   work_say(name, text)            -> type into that tab's interactive Claude pane
 #   work_output(name, last?)        -> the last N turns (prompt + reply) of that tab
+#   work_ask(question?, names?, all?, timeout?) -> one question typed into every tab that is
+#                                      idle or done, the replies collected (one turn per tab)
 #   work_shell(name, cmd)           -> type into that tab's shell pane
 #   work_jump(name, shell?)         -> focus the tab
 #   work_open(name, shell?)         -> focus the tab, or reopen it when it is gone
@@ -492,6 +494,44 @@ TOOLS = [
                 },
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "work_ask",
+        "description": (
+            "Ask every local Claude Code tab that is safe to interrupt one "
+            "question and collect the replies: the text is typed into each "
+            "tab that is idle or done (a working tab is not interrupted, a "
+            "waiting tab has a permission prompt up, the asking session is "
+            "skipped), the call waits for each tab to stop, reads its reply "
+            "from its transcript, and keeps a work session's reply as its "
+            "summary. Costs one turn of each asked tab's context. Default "
+            "question: what are you working on, where are you with it, what "
+            "comes next. Returns the replies, the skipped tabs with reasons, "
+            "and the timeouts (their replies arrive in work_output later)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "What to ask (default: a three-line status question)",
+                },
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Work session names to ask; omit with all=true",
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "Every live tab, plain tabs too (default true when names is empty)",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Seconds to wait for the replies (default 120)",
+                    "minimum": 1,
+                },
+            },
         },
     },
     {
@@ -1023,6 +1063,27 @@ def tool_work_say(args):
     return [text_block(proc.stdout.strip() or "ok")], False
 
 
+def tool_work_ask(args):
+    names = args.get("names") or []
+    if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names):
+        raise RuntimeError("names must be a list of work session names")
+    cli = ["ask"] + [n.strip() for n in names]
+    if args.get("all", not names) is True or not names:
+        cli.append("--all")
+    question = args.get("question")
+    if question is not None:
+        if not isinstance(question, str) or not question.strip():
+            raise RuntimeError("question must be a non-empty string")
+        cli += ["-q", question]
+    timeout = args.get("timeout")
+    if timeout is not None:
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+            raise RuntimeError("timeout must be a positive integer (seconds)")
+        cli += ["--timeout", str(timeout)]
+    proc = run_work(cli, timeout_s=(timeout or 120) + 30)
+    return [text_block(proc.stdout.strip() or "nothing to ask")], False
+
+
 def tool_work_output(args):
     cli = ["output", work_name(args)]
     last = args.get("last")
@@ -1144,6 +1205,7 @@ HANDLERS = {
     "work_notes": tool_work_notes,
     "work_say": tool_work_say,
     "work_output": tool_work_output,
+    "work_ask": tool_work_ask,
     "work_shell": tool_work_shell,
     "work_jump": tool_work_jump,
     "work_open": tool_work_open,

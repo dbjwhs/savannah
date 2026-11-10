@@ -135,10 +135,11 @@ type model struct {
 	panel        panelState        // the detail panel's reply fetch (board.go)
 	lg           logState          // the log view (modeLog, logview.go)
 	snap         snapState         // the snapshot screen (modeSnapshot, snapshot.go)
+	ask          askState          // Ctrl-A: one question to every tab (modeAsk, ask.go)
 	sessTicks    int               // sessions reads so far (the snapshot hint waits for the first)
 
 	// Full-screen worker view (view.go).
-	mode     int // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot
+	mode     int // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk
 	viewNode string
 	viewID   string
 	vp       viewport.Model
@@ -413,7 +414,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshOutput()
 		case modeLog:
 			m.refreshLog()
+		case modeAsk:
+			m.refreshAsk()
 		}
+	case askMsg:
+		return m.updateAsk(msg)
 	case discoverTick:
 		return m, tea.Batch(m.discoverCmd(), discoverTickCmd())
 	case fetchTick:
@@ -521,6 +526,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateLogKeys(msg)
 		case modeSnapshot:
 			return m.updateSnapshotKeys(msg)
+		case modeAsk:
+			return m.updateAskKeys(msg)
 		}
 		return m.updateBoardKeys(msg)
 	}
@@ -572,6 +579,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enterSnapshot()
 	case tea.KeyCtrlG:
 		return m.toggleGroup(), nil
+	case tea.KeyCtrlA:
+		return m.pressAsk()
 	case tea.KeyUp:
 		if msg.Alt { // Option-Up: a third spelling of the drag (see Shift-Up)
 			return m.dragRow(-1)
@@ -791,6 +800,8 @@ func (m model) View() string {
 		return m.viewLog()
 	case modeSnapshot:
 		return m.viewSnapshot()
+	case modeAsk:
+		return m.viewAsk()
 	}
 	return m.viewBoard()
 }
@@ -955,7 +966,7 @@ func (m model) promptLines(width int) []string {
 	// down): hints are dropped from the end until the line fits, so a
 	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
 	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^O out",
-		"^T note", "^S snap", "^L log", "^X rm", "^C quit"}
+		"^A ask", "^T note", "^S snap", "^L log", "^X rm", "^C quit"}
 	if m.mesh {
 		parts[1] = "Enter say/send"
 		parts = append(parts[:2], append([]string{"Tab view"}, parts[2:]...)...)

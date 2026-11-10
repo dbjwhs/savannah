@@ -25,6 +25,8 @@ line" | work note fix-parser  # stdin when no text args
 work notes fix-parser
 work say fix-parser "run the tests again"   # types into the Claude pane
 work say fix-parser -- --continue           # text starting with "-" goes after "--"
+work ask --all [-q TEXT] [--timeout S] [--no-wait] [--json]   # one question into every idle or done tab, the replies collected
+work ask fix-parser review-2353 -q "where are you?"            # or only these
 work sh fix-parser git status               # types into the shell pane
 work jump fix-parser [--shell]              # focus the pane
 work output fix-parser [--last N] [--json]  # what that Claude said: last N turns (prompt + reply)
@@ -235,6 +237,40 @@ error (exit 2), an unknown name exit 1. `new --title TEXT` and `adopt
 --title TEXT` set it at birth; the record always carries the field (`""`
 when unset; a record from before titles, or one whose field is not a
 string, reads `""`), and `rename` keeps it.
+
+### Asking every tab what it is doing
+
+`ask` types one question into every tab that is safe to interrupt and
+collects the replies. `savannah work ask --all` asks every live Claude
+Code tab, work sessions and plain tabs alike; `savannah work ask NAME...`
+asks only those. The default question is "In three lines, for a board of
+all my sessions: what are you working on, where are you with it, and
+what comes next?"; `-q TEXT` asks something else. A tab is asked only
+when its hook file says `idle` or `done`: a `working` tab is not
+interrupted, a `waiting` tab has a permission prompt or a question up
+that typed text would answer, a tab with no recorded pane cannot be typed
+into, and the session running the command (a Claude asking from its own
+shell) is never asked itself; each skipped tab is listed with the reason.
+The question goes in through `it2 session send` like `say`, and then the
+verb waits (`--timeout`, default 120 s) for each asked tab's hook file to
+show the question as its last prompt and the state `done`, reads the
+reply from the tab's transcript (the turn whose prompt is the question),
+and keeps each work session's reply in its record as `summary` with
+`summary_at` (`ls --json` carries both, the board's panel shows it). A
+tab that has not answered in time is reported as `timeout` with no
+reply; `savannah work output` shows it when it comes. `--no-wait` types
+the question and returns at once. Exit 0 whatever was asked or skipped;
+`--json` is `{question, timeout, waited, asked: [{session_id, name,
+project, how: answered|timeout|sent, reply}], skipped: [{..., why}],
+failed: [{..., error}]}`. This costs one turn of each asked tab's own
+context, so the board asks twice (Ctrl-A, Ctrl-A) before running it.
+
+This is savannah's answer to "ask all my Claudes what they are doing".
+Claude Code has cross-session messaging of its own (`ListAgents` and
+`SendMessage` from inside a session, `/list-agents`), but its socket
+protocol is undocumented, only a Claude can send, and a sender cannot
+tell whether a receiver is mid-work or at a permission prompt; the hook
+files tell savannah exactly that.
 
 ### Polling for you
 
@@ -608,6 +644,12 @@ name and the log lines.
 
 ## What does NOT work (yet, or on purpose)
 
+- `ask` knows a tab's state only as the hook recorded it: a Claude at a
+  question of its own (AskUserQuestion, no Notification fires) reads as
+  `done` and is asked anyway, and the question lands in its input box
+  after whatever you had half-typed there. A compacted session answers
+  from what it still remembers. The reply is matched by prompt text, so a
+  tab asked the same question twice reports its latest answer.
 - iTerm2 on macOS only, 3.5 or newer, with its Python API switched on
   (iTerm2 > Settings > General > Magic > Enable Python API): `it2` is
   iTerm2's own tool and talks to that API. With the API off, `it2` hangs;
@@ -626,7 +668,7 @@ name and the log lines.
   else the first window it2 lists, else makes one.
 - STATE, LAST PROMPT and the dash join need `hooks/session-status.py`
   installed (`python3 hooks/install.py`). Without it every session is
-  `offline` forever; `new`, `note`, `say`, `sh`, `jump`, `open` and `rm`
+  `offline` forever; `new`, `note`, `say`, `ask`, `sh`, `jump`, `open` and `rm`
   still work. iTerm2's own Claude Code integration (its `cc-status` hook,
   Session Status toolbelt) can be installed alongside; the two hooks do not
   interfere, and ours is the one that records the transcript path and

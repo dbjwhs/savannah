@@ -440,7 +440,7 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 		return nil
 	}
 	today := now.Format("2006-01-02")
-	var name, head, prompt, status, leftTitle, rightTitle string
+	var name, head, prompt, status, summary, leftTitle, rightTitle string
 	var left, right func(w int) []string
 	switch {
 	case r.kind == rowTask:
@@ -489,6 +489,10 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 		if rec.status.have {
 			status = statusLine(rec.status, polling, now.Unix())
 		}
+		if hasRec && rec.Summary != "" {
+			summary = fmt.Sprintf("summary (%s ago)  %s", humanAge(now.Unix()-rec.SummaryAt),
+				strings.Join(strings.Fields(rec.Summary), " "))
+		}
 		switch {
 		case s.LastPrompt != "":
 			prompt = "last prompt  " + s.LastPrompt
@@ -535,6 +539,9 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 	}
 	if status != "" {
 		out = append(out, trunc(status, w))
+	}
+	if summary != "" {
+		out = append(out, trunc(summary, w))
 	}
 	body := h - len(out) - 1 // the lines so far, then the titles
 	if right == nil || w < twoColWidth {

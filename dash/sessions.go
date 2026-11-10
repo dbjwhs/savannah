@@ -86,6 +86,8 @@ type workRecord struct {
 	Priority   string     `json:"priority"` // "active" (the default) or "later": the board section
 	Rank       int64      `json:"rank"`     // order within the section; 0 = by creation time
 	Title      string     `json:"title"`    // free text shown instead of the name; the name stays the id
+	Summary    string     `json:"summary"`  // the tab's own answer to `work ask` (what it is doing)
+	SummaryAt  int64      `json:"summary_at"`
 	lastNote   string     // first line of the last note in notes.md, "" if none
 	notes      string     // the whole notes.md, for the detail panel
 	status     workStatus // the tab's own progress report (status.json), zero when none

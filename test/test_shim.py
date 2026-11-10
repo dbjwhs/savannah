@@ -282,6 +282,21 @@ def test_work_tools(peer, fake, tmp):
     for bad in (0, -1, "2", 1.5, True):
         r = shim.call_tool("work_output", {"name": "shim-demo", "last": bad})
         check(r["result"]["isError"] is True, f"work_output last={bad!r} is an error")
+    # ---- work_ask: the question goes to the tabs that are safe to interrupt ----
+    # shim-demo's hook says idle: it is asked (the fake it2 logs the send);
+    # with --timeout 1 and no answer the result is a timeout, exit 0.
+    r = shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
+    check(r["result"]["isError"] is False and "skipped shim-demo: waiting for you" in text_of(r),
+          f"work_ask skips a waiting tab and says so ({text_of(r)!r})")
+    hook["state"] = "done"
+    with open(os.path.join(sessions_dir, "sess-abc.json"), "w") as f:
+        json.dump(hook, f)
+    r = shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
+    check(r["result"]["isError"] is False and "## shim-demo" in text_of(r) and "no reply within 1" in text_of(r),
+          f"work_ask asks a done tab, waits, reports the timeout ({text_of(r)!r})")
+    for bad in ({"names": "shim-demo"}, {"question": ""}, {"timeout": 0}, {"timeout": "5"}):
+        r = shim.call_tool("work_ask", bad)
+        check(r["result"]["isError"] is True, f"work_ask {bad} is an error")
     r = shim.call_tool("work_output", {"name": "shim-flat"})
     check(r["result"]["isError"] is True, "work_output of a session with no transcript is an error")
 
@@ -616,7 +631,7 @@ def main():
     names = sorted(t["name"] for t in r["result"]["tools"])
     check(names == ["ask_peer", "list_peers", "peer_status", "task_cancel",
                     "task_list", "task_new", "task_output", "task_rm",
-                    "task_send", "task_status", "work_adopt", "work_jump",
+                    "task_send", "task_status", "work_adopt", "work_ask", "work_jump",
                     "work_list", "work_move", "work_new", "work_note", "work_notes",
                     "work_open", "work_output", "work_rename", "work_rm", "work_say",
                     "work_shell", "work_status", "work_title"], "tool names")

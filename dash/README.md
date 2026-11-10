@@ -20,6 +20,12 @@ gives you one key for each thing you used to do by hand:
   into the tab's Claude instead.
 - **Ctrl-O** shows what that Claude said last (the last five turns of its
   transcript), refreshed while you read.
+- **Ctrl-A, Ctrl-A** asks every idle or done tab what it is doing (`work
+  ask --all`): the rows turn yellow and back to green as each answers,
+  then the replies open as one screen, and each work session keeps its
+  reply as a summary the panel shows. Working and waiting tabs are never
+  interrupted. One turn of each asked tab's context, hence the two
+  presses.
 - **Ctrl-T** appends a note to the session's `notes.md`. On a plain tab (one
   you opened by hand, no work record) it first asks for a name, which makes
   that tab a work session without opening anything, then takes the note.
@@ -269,7 +275,12 @@ Board:
 - On a **work session** row: **Enter** with an empty prompt line focuses
   its tab, or reopens it when the row is offline (`work open`); **type +
   Enter** types that text into its Claude (`work say`); **Ctrl-O** opens the
-  output view (`work output`); **Ctrl-T** turns the prompt line into a note,
+  output view (`work output`); **Ctrl-A** says how many tabs it would ask
+  and a second **Ctrl-A** asks them all what they are doing (`work ask
+  --all`, every idle or done tab, plain ones too; the replies open as a
+  screen when the CLI returns, up to two minutes; once there are replies
+  Ctrl-A shows them again and `a` on that screen asks again); **Ctrl-T**
+  turns the prompt line into a note,
   then **Enter** saves it (`work note`) and **Esc** cancels it; **Ctrl-X**
   asks, and a second **Ctrl-X** removes the session (`work rm`); any other
   key in between withdraws the question; **Ctrl-R** turns the prompt line
@@ -411,6 +422,7 @@ The exact command behind each key, so the board and the shell agree:
 | (STATE, WHAT, panel, header) | `<work dir>/<name>/status.json`, written by `savannah work status <name> -- <text>` from inside the tab |
 | (WORK column of an unnamed tab) | `it2 session list --json` every 5 s, for the tab titles |
 | Ctrl-O | `savannah work output <name> --last 5` (every 2 s) |
+| Ctrl-A, Ctrl-A (or `a` on the replies screen) | `savannah work ask --all --json` (waits up to 120 s for the replies) |
 | (detail panel) | `savannah work output <name> --last 1` (on selection, and on each hook update of that row) |
 | Ctrl-X, Ctrl-X | `savannah work rm <name>` |
 | Ctrl-N | `savannah work repos --json`, then `savannah work new <name> --repo=<path> [--title=<words>] [--prompt=<text>] [--no-worktree] --json` |
@@ -453,6 +465,12 @@ file under its path has been swapped. Nothing here is stdlib-external:
 
 - The prompt line is one line: a multi-line prompt goes through the tab
   itself.
+- Ctrl-A asks only the tabs whose hook state is idle or done. A Claude at
+  a question of its own (no Notification fires for AskUserQuestion) reads
+  as done and is asked anyway; the board cannot see inside the tab. The
+  screen shows what the CLI collected within its timeout; a slower reply
+  is one Ctrl-O away, and the panel's summary line keeps the last reply
+  only for work sessions (a plain tab has no record to keep it in).
 - The output view is the CLI's rendering of the transcript's last five
   turns, polled every two seconds; it is not a live stream, and a turn in
   progress shows only once Claude Code has written it to the transcript.
@@ -491,7 +509,7 @@ file under its path has been swapped. Nothing here is stdlib-external:
   directory is looked up once per board run and cached, so a `git init`
   under a running board shows after a restart. Dragging is refused while
   grouped; the help line's "^C quit" is the first hint dropped when the
-  terminal is narrower than the help (106 columns for the work board).
+  terminal is narrower than the help (114 columns for the work board).
 - Moving a row is one step per Shift-Up/Down; there is no mouse drag and no
   multi-select. An unnamed tab cannot move (nothing holds its rank): name
   it first. Two boards open at once each write the order they last saw;

@@ -45,6 +45,7 @@ const (
 	modeNew
 	modeLog
 	modeSnapshot
+	modeAsk
 )
 
 const (

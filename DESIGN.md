@@ -861,3 +861,37 @@ zfs-DLPX-12345 / zfs-DLPX-6789, and name the tabs that way.
    `test/test_work.py` (`checkout_name` on every shape; a dry run naming
    two worktree tabs `zfs-dlpx-98816` and `-2`, a clone `zfs-cp-11610`, the
    main checkout by its title).
+
+### 11/10/2026, evening (ask every tab what it is doing)
+
+Tenth ask: "a way to invoke from savannah a message to all Claudes asking
+for a summary of what they are; I believe there is a built-in skill in
+Claude Code for this".
+
+1. **The built-in, and why savannah does not drive it.** Claude Code has
+   cross-session messaging (2.1.224+): `ListAgents` and `SendMessage` from
+   inside a session, delivered between the receiver's tool calls or as a
+   new turn, replies by the receiver's choice. The socket protocol is
+   undocumented, only a Claude can send, and a sender cannot see whether
+   a receiver is mid-work or at a permission prompt. savannah's hook files
+   know exactly that, which is the whole value of doing it here.
+2. **`work ask`: say, guarded, with the reply collected.** The question is
+   typed into every tab whose hook state is idle or done; working tabs are
+   not interrupted, waiting tabs have a prompt up that typed text would
+   answer, the asking session (found by walking this process's ancestors
+   to the hook's recorded pid) is never asked itself. The reply is
+   detected the way the board detects everything: the hook file shows the
+   question as `last_prompt` and the state `done`; the text comes from the
+   transcript's turn with that prompt. Each work session keeps its reply
+   as `summary`, so the answer survives on the record and in the panel.
+3. **The board asks twice.** Each asked tab spends one turn of its own
+   context, thirty tabs is thirty turns, so Ctrl-A first says how many it
+   would ask and the second press asks. The board stays up while the CLI
+   waits: the rows go yellow and back to green in front of you, which is
+   the progress bar; the replies open as a screen when the CLI returns.
+4. **Tests.** `test/test_work.py` (skip reasons; a real run against the
+   fake it2 with the hook files flipped and transcripts written while the
+   CLI waits; summary kept; timeout, `--no-wait`, offline, usage);
+   `dash/ask_test.go` (arm, ask, busy, the screen, the status, Esc, `a`,
+   errors, nothing askable; the panel's summary line); `test/test_shim.py`
+   (`work_ask`).
