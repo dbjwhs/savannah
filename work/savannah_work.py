@@ -1739,6 +1739,34 @@ def slug_name(src):
     return name if valid_name(name) else ""
 
 
+def checkout_name(project):
+    """The checkout a directory sits in, when it is one the owner made
+    beside its repository the `<repo>-<ID>` way (zfs-DLPX-98816 next to
+    zfs): the checkout directory's base name. That is a git worktree (its
+    `.git` is a file) or a clone named `<X>-<ID>` with a repository `<X>`
+    beside it (the longest such X). '' for the main checkout, a savannah
+    worktree, or a directory under no `.git`: the title names those."""
+    d = os.path.realpath(project) if project else ""
+    while d and not os.path.exists(os.path.join(d, ".git")):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return ""
+        d = parent
+    if not d:
+        return ""
+    parent, base = os.path.dirname(d), os.path.basename(d)
+    if os.path.basename(parent) == WORKTREES_SUBDIR:
+        return ""
+    if os.path.isfile(os.path.join(d, ".git")):
+        return base
+    i = base.rfind("-")
+    while i > 0:
+        if os.path.exists(os.path.join(parent, base[:i], ".git")):
+            return base
+        i = base.rfind("-", 0, i)
+    return ""
+
+
 def unique_name(name, taken):
     """name, or name-2, name-3, ... when it is taken."""
     if name not in taken:
@@ -1753,7 +1781,9 @@ def cmd_autoname(a):
     """Name every Claude Code tab no record claims (or the given session
     ids) from what it is doing: a title from a headless Claude over the
     tab's transcript excerpt (the first prompt's first line when that
-    fails, or with --no-claude), a name derived from the title, then adopt.
+    fails, or with --no-claude), a name derived from the checkout when the
+    tab sits in a `<repo>-<ID>` checkout beside its repository (zfs-DLPX-98816,
+    checkout_name) and else from the title, then adopt.
     A tab nothing has been typed into yet is skipped (nothing to name it
     by) and named on a later run. Exit 0 whenever the verb ran: each tab's
     outcome is in the output (named / skipped / failed)."""
@@ -1804,7 +1834,8 @@ def cmd_autoname(a):
         results = []
     taken = {r["name"] for r in records}
     for job, (title, how, err) in zip(jobs, results):
-        name = unique_name(slug_name(title) or slug_name(job["project"]) or "tab", taken)
+        name = unique_name(slug_name(checkout_name(job["project"])) or slug_name(title)
+                           or slug_name(job["project"]) or "tab", taken)
         taken.add(name)
         entry = {"session_id": job["session_id"], "project": job["project"], "name": name,
                  "title": title, "how": how}

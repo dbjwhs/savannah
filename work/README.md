@@ -141,9 +141,13 @@ another; `default` means the CLI's own), about three seconds and a
 fraction of a cent per tab, four tabs at a time. Nothing is typed into the
 live tab: a question typed there would be a prompt, or the answer to a
 permission prompt. The title is cleaned (first line, quotes and a trailing
-period dropped, 120 chars), the name is derived from it the way the board
-derives one from words (`Fix The Parser` is `fix-the-parser`; `-2`, `-3`
-when taken), and the tab is adopted with that title. When the call fails
+period dropped, 120 chars), the name is derived from the tab's checkout
+when it is one made beside its repository the `<repo>-<ID>` way (a tab in
+`~/ng/delphix/zfs-DLPX-98816`, a git worktree or a clone next to `zfs`,
+is `zfs-dlpx-98816`; a second tab there `zfs-dlpx-98816-2`) and else
+from the title the way the board derives one from words (`Fix The Parser`
+is `fix-the-parser`; `-2`, `-3` when taken), and the tab is adopted with
+that title. When the call fails
 (no `claude`, no network, a timeout of 90 s, a non-zero exit) the first
 prompt's first line is the title instead, cut to 60 characters, and the
 result says so (`how: prompt`, `claude_error`); `--no-claude` does that

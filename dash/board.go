@@ -144,8 +144,7 @@ func projectCell(s session, home string, grouped bool) string {
 	if !grouped {
 		return projectLabel(s.Project)
 	}
-	root, _ := repoRoot(s.Project)
-	return inRepoLabel(s.Project, root, home)
+	return inRepoLabel(s.Project, home)
 }
 
 // sessionLines renders the LOCAL SESSIONS table for the column plan: the

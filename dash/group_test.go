@@ -40,28 +40,44 @@ func TestFindRepoRoot(t *testing.T) {
 	if err := os.MkdirAll(plain, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A separate clone named <repo>-<ID> beside the repository (the
+	// owner's habit) groups with it too; the longest sibling wins; a name
+	// with a dash but no such sibling is its own repository.
+	clone := filepath.Join(tmp, "zfs-CP-11610")
+	gate, gate2, gateWt := filepath.Join(tmp, "dlpx-qa-gate"), filepath.Join(tmp, "dlpx"), filepath.Join(tmp, "dlpx-qa-gate-DP-2702")
+	lone := filepath.Join(tmp, "dp2817-watch")
+	for _, d := range []string{clone, gate, gate2, gateWt, lone} {
+		if err := os.MkdirAll(filepath.Join(d, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cases := []struct {
-		in   string
-		root string
-		repo bool
+		in       string
+		root     string
+		repo     bool
+		checkout string
 	}{
-		{repo, repo, true},
-		{sub, repo, true},
-		{repo + "/", repo, true},
-		{wt, repo, true},                         // a `git worktree add` checkout groups with its repository
-		{odd, odd, true},                         // a `.git` file of another shape: the directory itself
-		{plain, plain, false},                    // no repository above it
-		{"/r/.savannah-worktrees/x", "/r", true}, // the path rule needs no filesystem
-		{"/r/.savannah-worktrees/x/sub", "/r", true},
-		{"", "", false},
+		{repo, repo, true, repo},
+		{sub, repo, true, repo},
+		{repo + "/", repo, true, repo},
+		{wt, repo, true, wt},             // a `git worktree add` checkout groups with its repository
+		{wt + "/module", repo, true, wt}, // and so does a directory inside it
+		{clone, repo, true, clone},       // a clone named zfs-<ID> beside zfs
+		{gateWt, gate, true, gateWt},     // the longest sibling, not dlpx
+		{lone, lone, true, lone},         // a dash in the name alone proves nothing
+		{odd, odd, true, odd},            // a `.git` file of another shape: the directory itself
+		{plain, plain, false, plain},     // no repository above it
+		{"/r/.savannah-worktrees/x", "/r", true, "/r/.savannah-worktrees/x"}, // the path rule needs no filesystem
+		{"/r/.savannah-worktrees/x/sub", "/r", true, "/r/.savannah-worktrees/x"},
+		{"", "", false, ""},
 	}
 	for _, c := range cases {
 		got := findRepoRoot(filepath.Clean(c.in))
 		if c.in == "" {
 			got = findRepoRoot("")
 		}
-		if got.root != c.root || got.repo != c.repo {
-			t.Errorf("findRepoRoot(%q) = (%q, %v), want (%q, %v)", c.in, got.root, got.repo, c.root, c.repo)
+		if got.root != c.root || got.repo != c.repo || got.checkout != c.checkout {
+			t.Errorf("findRepoRoot(%q) = (%q, %v, %q), want (%q, %v, %q)", c.in, got.root, got.repo, got.checkout, c.root, c.repo, c.checkout)
 		}
 	}
 	// The cache answers the same and survives the directory going away.
@@ -74,19 +90,42 @@ func TestFindRepoRoot(t *testing.T) {
 	}
 }
 
+// checkoutLayout: ng/zfs (main checkout, with a subdirectory), ng/zfs-DLPX-98816
+// (a git worktree of it) and ng/zfs-CP-11610 (a clone beside it), ng/notes
+// under no repository.
+func checkoutLayout(t *testing.T) (ng string) {
+	t.Helper()
+	ng = filepath.Join(t.TempDir(), "ng")
+	repo := filepath.Join(ng, "zfs")
+	for _, d := range []string{filepath.Join(repo, ".git"), filepath.Join(repo, "module", "zfs"),
+		filepath.Join(ng, "zfs-DLPX-98816", "module"), filepath.Join(ng, "zfs-CP-11610", ".git"), filepath.Join(ng, "notes")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ng, "zfs-DLPX-98816", ".git"),
+		[]byte("gitdir: "+repo+"/.git/worktrees/zfs-DLPX-98816\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return ng
+}
+
 func TestInRepoLabelAndGroupLabel(t *testing.T) {
 	home := "/Users/x"
-	cases := []struct{ path, root, want string }{
-		{"/Users/x/ng/zfs", "/Users/x/ng/zfs", "."},
-		{"/Users/x/ng/zfs/module/zfs", "/Users/x/ng/zfs", "module/zfs"},
-		{"/Users/x/ng/zfs/.savannah-worktrees/zfs-ed", "/Users/x/ng/zfs", "zfs-ed"},
-		{"/Users/x/ng/zfs/.savannah-worktrees/zfs-ed/cmd", "/Users/x/ng/zfs", "zfs-ed/cmd"},
-		{"/Users/x/ng/zfs-ed", "/Users/x/ng/zfs", "~/ng/zfs-ed"}, // a checkout elsewhere keeps its path
-		{"/Users/x", "/Users/x", "."},
+	ng := checkoutLayout(t)
+	cases := []struct{ path, want string }{
+		{ng + "/zfs", "."},
+		{ng + "/zfs/module/zfs", "module/zfs"},
+		{ng + "/zfs/.savannah-worktrees/zfs-ed", "zfs-ed"},
+		{ng + "/zfs/.savannah-worktrees/zfs-ed/cmd", "zfs-ed/cmd"},
+		{ng + "/zfs-DLPX-98816", "zfs-DLPX-98816"}, // a worktree beside the repository: its name
+		{ng + "/zfs-DLPX-98816/module", "zfs-DLPX-98816/module"},
+		{ng + "/zfs-CP-11610", "zfs-CP-11610"}, // a clone beside it: the same
+		{ng + "/notes", "."},                   // no repository: the directory is its own group
 	}
 	for _, c := range cases {
-		if got := inRepoLabel(c.path, c.root, home); got != c.want {
-			t.Errorf("inRepoLabel(%q, %q) = %q, want %q", c.path, c.root, got, c.want)
+		if got := inRepoLabel(c.path, home); got != c.want {
+			t.Errorf("inRepoLabel(%q) = %q, want %q", c.path, got, c.want)
 		}
 	}
 	if got := groupLabel("/Users/x/ng/zfs", true, home); got != "zfs" {
@@ -303,5 +342,49 @@ func TestFitHelp(t *testing.T) {
 		if strings.HasPrefix(ln, "Shift-up/down move") && !strings.HasSuffix(ln, "^C quit") {
 			t.Errorf("work help at 110 columns should be whole: %q", ln)
 		}
+	}
+}
+
+// TestGroupOrdersByCheckout: inside a repository's group the main checkout
+// leads, the other checkouts follow by name, and the rank order holds
+// inside each; the view shows the tree.
+func TestGroupOrdersByCheckout(t *testing.T) {
+	ng := checkoutLayout(t)
+	m := newModel(opts{}, "savannah")
+	m.width, m.height = 100, 40
+	m.home = filepath.Dir(ng)
+	m.hooks = []session{
+		{ID: "s1", Project: ng + "/zfs-DLPX-98816", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:P1", LastPrompt: "a"},
+		{ID: "s2", Project: ng + "/zfs-CP-11610", State: "idle", Updated: nowUnix() - 1, ITerm: "w0t0p0:P2", LastPrompt: "b"},
+		{ID: "s3", Project: ng + "/zfs/module/zfs", State: "idle", Updated: nowUnix() - 2, ITerm: "w0t0p0:P3", LastPrompt: "c"},
+		{ID: "s4", Project: ng + "/zfs-DLPX-98816/module", State: "idle", Updated: nowUnix() - 3, ITerm: "w0t0p0:P4", LastPrompt: "d"},
+		{ID: "s5", Project: ng + "/notes", State: "idle", Updated: nowUnix() - 4, ITerm: "w0t0p0:P5", LastPrompt: "e"},
+	}
+	m.work = []workRecord{
+		{Name: "handoff", Worktree: ng + "/zfs-DLPX-98816", ClaudePane: "P1", Priority: "active", Rank: 10, Adopted: true},
+		{Name: "cp", Worktree: ng + "/zfs-CP-11610", ClaudePane: "P2", Priority: "active", Rank: 20, Adopted: true},
+		{Name: "main", Worktree: ng + "/zfs/module/zfs", ClaudePane: "P3", Priority: "active", Rank: 30, Adopted: true},
+		{Name: "handoff2", Worktree: ng + "/zfs-DLPX-98816/module", ClaudePane: "P4", Priority: "active", Rank: 40, Adopted: true},
+	}
+	m.sessions = joinWork(m.hooks, m.work)
+	m.group = true
+	m.rebuildRows()
+	// zfs leads (its first row is first); inside: the main checkout, then
+	// zfs-CP-11610, then zfs-DLPX-98816's two rows in rank order.
+	want := []string{"main", "cp", "handoff", "handoff2", "#s5"}
+	if got := rowNames(m); !reflect.DeepEqual(got, want) {
+		t.Fatalf("grouped order = %v, want %v", got, want)
+	}
+	out := m.View()
+	for _, want := range []string{"  zfs (4)", "  ~/ng/notes (1)", " module/zfs ", " zfs-CP-11610 ", " zfs-DLPX-98816 ", " zfs-DLPX-98816/module "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grouped view lacks %q:\n%s", want, out)
+		}
+	}
+	// Ungrouped nothing moves: the rank order.
+	m.group = false
+	m.rebuildRows()
+	if got := rowNames(m); !reflect.DeepEqual(got, []string{"handoff", "cp", "main", "handoff2", "#s5"}) {
+		t.Errorf("plain order = %v", got)
 	}
 }

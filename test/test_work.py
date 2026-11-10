@@ -980,6 +980,37 @@ def main():
         check(os.path.realpath(c0["cwd"]) != os.path.realpath(tmp) and "Directory:" in c0["argv"][-1]
               and "Prompt 1: review PR 2353" in c0["argv"][-1] and "/clear" not in c0["argv"][-1],
               f"autoname runs claude away from the project with the excerpt as the prompt ({c0['cwd']}, {c0['argv'][-1]!r})")
+    # A tab in one of the owner's checkouts beside its repository
+    # (zfs-DLPX-98816 next to zfs: a git worktree, or a clone named that
+    # way) is named after the checkout, not the title; the main checkout
+    # and a plain directory keep the title's name.
+    co_main = os.path.join(an_dir, "co", "zfs")
+    co_wt, co_clone = os.path.join(an_dir, "co", "zfs-DLPX-98816"), os.path.join(an_dir, "co", "zfs-CP-11610")
+    co_lone, co_sav = os.path.join(an_dir, "co", "dp2817-watch"), os.path.join(co_main, ".savannah-worktrees", "ed")
+    for d in (os.path.join(co_main, ".git"), os.path.join(co_wt, "module"), os.path.join(co_clone, ".git"),
+              os.path.join(co_lone, ".git"), co_sav):
+        os.makedirs(d)
+    with open(os.path.join(co_wt, ".git"), "w") as f:
+        f.write(f"gitdir: {co_main}/.git/worktrees/zfs-DLPX-98816\n")
+    with open(os.path.join(co_sav, ".git"), "w") as f:
+        f.write(f"gitdir: {co_main}/.git/worktrees/ed\n")
+    for d, want in ((co_wt, "zfs-DLPX-98816"), (os.path.join(co_wt, "module"), "zfs-DLPX-98816"),
+                    (co_clone, "zfs-CP-11610"), (co_main, ""), (co_lone, ""), (co_sav, ""), (fresh_dir, ""), ("", "")):
+        check(sw.checkout_name(d) == want, f"checkout_name({d!r}) = {sw.checkout_name(d)!r}, want {want!r}")
+    for sid, d in (("an-wt1", co_wt), ("an-wt2", os.path.join(co_wt, "module")), ("an-cl", co_clone)):
+        hooks_an[sid] = {"project": d, "transcript_path": "", "last_prompt": "look at the zfs send resume fix",
+                         "iterm_session_id": "w0t0p0:" + sid.upper(), "session_id": sid, "state": "idle",
+                         "updated": int(time.time())}
+        with open(os.path.join(sessions, sid + ".json"), "w") as f:
+            json.dump(hooks_an[sid], f)
+    j = run_json(["autoname", "an-wt1", "an-wt2", "an-cl", "an-zfs", "--dry-run", "--json"], claude_env)
+    by_sid = {e["session_id"]: e for e in j.get("named", [])}
+    check(by_sid.get("an-wt1", {}).get("name") == "zfs-dlpx-98816" and by_sid.get("an-wt2", {}).get("name") == "zfs-dlpx-98816-2"
+          and by_sid.get("an-cl", {}).get("name") == "zfs-cp-11610" and by_sid.get("an-zfs", {}).get("name") == "zfs-send-resume-review",
+          f"autoname names a tab after its checkout, -2 for a second tab there, the title elsewhere ({by_sid})")
+    check(by_sid.get("an-wt1", {}).get("title") == "ZFS Send Resume Review" and by_sid.get("an-wt1", {}).get("how") == "claude",
+          f"the title still comes from claude ({by_sid.get('an-wt1')})")
+
     # The real run: records with adopted true and the title; the hook ids
     # given on the command line limit it; a named or unknown id is skipped.
     clear_log(keep_state=True)

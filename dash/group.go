@@ -11,12 +11,18 @@
 //
 // A row's repository comes from its directory, never from a git
 // subprocess: `<repo>/.savannah-worktrees/<name>` is that repo; otherwise
-// the nearest ancestor holding `.git`, and when `.git` is a file (a `git
-// worktree add` checkout) the main repository it points at. A directory
-// outside any repository groups under its own path. Lookups are cached for
-// the life of the process: a directory does not change its repository
-// while the board runs (a `git init` under a running board shows after a
-// restart).
+// the nearest ancestor holding `.git` (the row's CHECKOUT), and when that
+// `.git` is a file (a `git worktree add` checkout) the main repository it
+// points at, or when the checkout is named `<X>-<ID>` beside a repository
+// `<X>` (the owner's habit: `zfs-DLPX-98816` next to `zfs`, worktree or
+// clone) that sibling. A directory outside any repository groups under its
+// own path. Inside a group the rows sort by checkout, the main checkout
+// first and the others by name, the rank order kept inside each; the
+// PROJECT cell is the checkout's name (`.` for the main one) plus the
+// path inside it, so a group reads as the tree zfs / zfs-DLPX-97306 /
+// zfs-DLPX-98816. Lookups are cached for the life of the process: a
+// directory does not change its repository while the board runs (a `git
+// init` under a running board shows after a restart).
 //
 // The choice is remembered in $SAVANNAH_BOARD_FILE (default
 // ~/.claude/savannah/board.json) so the next board starts the same way;
@@ -47,49 +53,79 @@ var repoCache = struct {
 }{m: map[string]repoInfo{}}
 
 type repoInfo struct {
-	root string
-	repo bool // root is a git repository (else the directory itself)
+	root     string
+	repo     bool   // root is a git repository (else the directory itself)
+	checkout string // the directory holding the row's `.git` (root for the main checkout)
 }
 
 // repoRoot is the repository a directory belongs to, or (cleaned, false)
 // when it is under none. Cached.
 func repoRoot(path string) (root string, isRepo bool) {
+	r := repoInfoOf(path)
+	return r.root, r.repo
+}
+
+// repoInfoOf is repoRoot with the checkout too. Cached.
+func repoInfoOf(path string) repoInfo {
 	path = filepath.Clean(path)
 	repoCache.Lock()
 	defer repoCache.Unlock()
 	if r, ok := repoCache.m[path]; ok {
-		return r.root, r.repo
+		return r
 	}
 	r := findRepoRoot(path)
 	repoCache.m[path] = r
-	return r.root, r.repo
+	return r
 }
 
 // findRepoRoot is repoRoot without the cache: the worktree path rule, then
-// the walk up to a `.git`.
+// the walk up to a `.git`, then where that `.git` points (a worktree's
+// file) or sits (beside its repository, `<X>-<ID>` next to `<X>`).
 func findRepoRoot(path string) repoInfo {
 	if path == "" || path == "." {
-		return repoInfo{root: path}
+		return repoInfo{root: path, checkout: path}
 	}
 	if i := strings.Index(path, "/"+worktreesDir+"/"); i > 0 {
-		return repoInfo{root: path[:i], repo: true}
+		rest := path[i+len(worktreesDir)+2:]
+		name := rest
+		if j := strings.Index(rest, "/"); j >= 0 {
+			name = rest[:j]
+		}
+		return repoInfo{root: path[:i], repo: true, checkout: path[:i+len(worktreesDir)+2] + name}
 	}
 	for dir := path; ; {
 		fi, err := os.Stat(filepath.Join(dir, ".git"))
 		if err == nil {
 			if !fi.IsDir() {
 				if main := worktreeMain(filepath.Join(dir, ".git")); main != "" {
-					return repoInfo{root: main, repo: true}
+					return repoInfo{root: main, repo: true, checkout: dir}
 				}
 			}
-			return repoInfo{root: dir, repo: true}
+			if main := siblingMain(dir); main != "" {
+				return repoInfo{root: main, repo: true, checkout: dir}
+			}
+			return repoInfo{root: dir, repo: true, checkout: dir}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return repoInfo{root: path}
+			return repoInfo{root: path, checkout: path}
 		}
 		dir = parent
 	}
+}
+
+// siblingMain is the repository a checkout named `<X>-<ID>` sits beside:
+// `<parent>/<X>` holding a `.git`, the longest such X ("dlpx-qa-gate" for
+// dlpx-qa-gate-DP-2702, not "dlpx"). "" when there is none.
+func siblingMain(dir string) string {
+	parent, base := filepath.Dir(dir), filepath.Base(dir)
+	for i := strings.LastIndex(base, "-"); i > 0; i = strings.LastIndex(base[:i], "-") {
+		cand := filepath.Join(parent, base[:i])
+		if _, err := os.Stat(filepath.Join(cand, ".git")); err == nil {
+			return cand
+		}
+	}
+	return ""
 }
 
 // worktreeMain reads a `.git` file ("gitdir: <repo>/.git/worktrees/<name>")
@@ -119,20 +155,39 @@ func groupLabel(root string, isRepo bool, home string) string {
 	return tilde(root, home)
 }
 
-// inRepoLabel is the PROJECT cell of a grouped row: the path inside its
-// repository ("." at the root), a savannah worktree by its name, and the
-// whole path (with ~) when the directory is not under the root (a `git
-// worktree add` checkout elsewhere).
-func inRepoLabel(path, root, home string) string {
+// checkoutLabel names a row's checkout inside its group: "" for the main
+// checkout (the repository root itself), else the checkout directory's
+// base name (`zfs-DLPX-98816`, or a savannah worktree's name).
+func checkoutLabel(r repoInfo) string {
+	if r.checkout == "" || r.checkout == r.root {
+		return ""
+	}
+	return filepath.Base(r.checkout)
+}
+
+// inRepoLabel is the PROJECT cell of a grouped row: the checkout's name
+// ("." for the main checkout) and the path inside it when the tab sits in
+// a subdirectory (`zfs-DLPX-98816`, `zfs-DLPX-98816/module`, `.`, `dash`),
+// and the whole path (with ~) when the directory is under neither.
+func inRepoLabel(path, home string) string {
 	path = filepath.Clean(path)
-	rel, err := filepath.Rel(root, path)
+	r := repoInfoOf(path)
+	base := r.checkout
+	if base == "" {
+		base = r.root
+	}
+	rel, err := filepath.Rel(base, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
 		return tilde(path, home)
 	}
-	if strings.HasPrefix(rel, worktreesDir+"/") {
-		return strings.TrimPrefix(rel, worktreesDir+"/")
+	label := checkoutLabel(r)
+	switch {
+	case label == "":
+		return rel
+	case rel == ".":
+		return label
 	}
-	return rel
+	return label + "/" + rel
 }
 
 // groupKey is what rows are gathered by: the repository root (or the
@@ -144,8 +199,10 @@ func groupKey(s session) string {
 
 // groupSessions takes sessions in board order (orderSessions) and gathers
 // each section's rows by repository, repositories in the order their first
-// row appears, rows inside a repository in their incoming order. Stable, so
-// the owner's rank order survives inside every group.
+// row appears; inside a repository the main checkout's rows come first and
+// the other checkouts follow by name, rows inside one checkout in their
+// incoming order. Stable, so the owner's rank order survives inside every
+// checkout.
 func groupSessions(ordered []session, work []workRecord) []session {
 	recs := recordMap(work)
 	type key struct {
@@ -166,7 +223,11 @@ func groupSessions(ordered []session, work []workRecord) []session {
 		if sa != sb {
 			return sa < sb
 		}
-		return first[key{sa, groupKey(a)}] < first[key{sb, groupKey(b)}]
+		ra, rb := repoInfoOf(a.Project), repoInfoOf(b.Project)
+		if fa, fb := first[key{sa, ra.root}], first[key{sb, rb.root}]; fa != fb {
+			return fa < fb
+		}
+		return checkoutLabel(ra) < checkoutLabel(rb)
 	})
 	return out
 }

@@ -825,3 +825,39 @@ build; can we create an install script to make this easier".
    not configure the mesh, and cannot restart open Claude Code tabs. Bash,
    not Python, because it is the thing that runs before anything else is
    known to work; bash 3.2 (the Mac's) is enough.
+
+### 11/10/2026, later still (the owner's checkouts as a tree)
+
+Ninth ask, with a screenshot of thirty tabs: the owner's repository work
+happens in checkouts named `<repo>-<TICKET>` beside the repository
+(`~/ng/delphix/zfs-DLPX-98816` next to `~/ng/delphix/zfs`, always git
+worktrees, always that pattern), and the board should show zfs /
+zfs-DLPX-12345 / zfs-DLPX-6789, and name the tabs that way.
+
+1. **The checkout is a first-class fact.** `repoInfo` gained `checkout`,
+   the directory holding the row's `.git`. A git worktree already grouped
+   under its main repository (the `.git` file); a clone named `<X>-<ID>`
+   beside a repository `<X>` now does too (`siblingMain`, the longest
+   sibling so `dlpx-qa-gate-DP-2702` is not `dlpx`'s), and a dash in a
+   name alone proves nothing (`dp2817-watch` stays its own group). Both
+   rules read the filesystem, never git.
+2. **The tree is sorting plus the cell, not more header lines.** Inside a
+   group the main checkout leads and the other checkouts follow by name,
+   rank order kept inside each; the PROJECT cell is the checkout's name
+   (`.` for the main one) plus the path inside it. Sub-headers per
+   checkout were considered and dropped: with thirty rows and a dozen
+   checkouts they would cost a screen, and the sorted cell reads as the
+   tree the owner drew. The rank order now holds only inside one checkout
+   while grouped, stated in the README.
+3. **Names from the checkout.** `work autoname` names a tab after its
+   checkout when `checkout_name` finds one (`zfs-dlpx-98816`, `-2` for a
+   second tab there), else from the title as before. The title stays the
+   model's, so WORK still says what the tab is doing while the name says
+   where. Names are lowercase by the existing rule; the ticket keeps its
+   case in the path and the title.
+4. **Tests.** `dash/group_test.go` (`findRepoRoot` with a worktree, a
+   sibling clone, the longest sibling, a lone dash; `inRepoLabel` on a
+   real layout; `TestGroupOrdersByCheckout` for the order and the view);
+   `test/test_work.py` (`checkout_name` on every shape; a dry run naming
+   two worktree tabs `zfs-dlpx-98816` and `-2`, a clone `zfs-cp-11610`, the
+   main checkout by its title).

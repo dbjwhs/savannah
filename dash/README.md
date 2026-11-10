@@ -46,8 +46,11 @@ gives you one key for each thing you used to do by hand:
   in the board file for good.
 - **Ctrl-G** groups the rows by repository: inside ACTIVE and LATER every
   repository's sessions come together under a dim header naming it (and
-  counting them), so every ZFS tab is one glance. The PROJECT column then
-  shows where in the repository the tab sits. The choice is remembered
+  counting them), so every ZFS tab is one glance. Inside the group the
+  main checkout leads and the other checkouts follow by name
+  (`zfs-DLPX-97306`, `zfs-DLPX-98816`: a `git worktree add` or a clone
+  named `<repo>-<ID>` beside the repository), the PROJECT column naming
+  the checkout and where in it the tab sits. The choice is remembered
   (`~/.claude/savannah/board.json`); `savannah --group` and `--no-group`
   set it for one run.
 - **Ctrl-X**, pressed twice, removes a finished session: closes the tab,
@@ -105,11 +108,30 @@ the row you ranked first still decides which repository leads), each
 under a dim header `  zfs (4)` (plus the full path on a wide board). A
 row's repository is read from its directory, never from a git
 subprocess: `<repo>/.savannah-worktrees/<name>` is that repo, otherwise
-the nearest ancestor holding `.git` (a `.git` file from `git worktree add`
-is followed to its main repository), and a directory under no repository
-is its own group, named by its path. The PROJECT column shows the path
-inside the repository (`.` at the root, `dash` for a subdirectory, the
-session name for a savannah worktree) since the header already names the
+the nearest ancestor holding `.git` is the row's checkout, and that
+checkout's repository is where a `.git` file from `git worktree add`
+points, or the sibling `<X>` when the checkout is named `<X>-<ID>` beside
+a repository `<X>` (`zfs-DLPX-98816` next to `zfs`, worktree or clone;
+the longest such sibling, so `dlpx-qa-gate-DP-2702` goes under
+`dlpx-qa-gate`), else the checkout itself; a directory under no
+repository is its own group, named by its path. Inside a group the main
+checkout's rows come first and the other checkouts follow by name, the
+rank order kept inside each, so a repository reads as a tree:
+
+```
+  zfs (6)   ~/ng/delphix/zfs
+ ·  idle   Resuming ZFS Handoff Session   .                 38   19h
+ ·  idle   Pool Close Dump Cache Fix      zfs-DLPX-97306    34   19h
+ ·  idle   Resume DLPX-97306 PR #2352     zfs-DLPX-97306    40   19h
+ ·  idle   ZFS DLPX-98816 handoff         zfs-DLPX-98816    41   19h
+ ·  idle   ZFS DLPX-98816 Handoff Resu~   zfs-DLPX-98816    35   19h
+ ·  idle   ZettaCache index dump versi~   zfs-CP-11610      39   19h
+```
+
+The PROJECT column shows the checkout (`.` for the main one, the session
+name for a savannah worktree, `zfs-DLPX-98816` for one beside the
+repository) and the path inside it when the tab sits in a subdirectory
+(`dash`, `zfs-DLPX-98816/module`), since the header already names the
 repository. Dragging is refused while grouped (the drag edits the rank
 order, which the grouped view does not show in full): Ctrl-G back first.
 The header says "by repository", the help line "^G ungroup". The choice
@@ -460,9 +482,12 @@ file under its path has been swapped. Nothing here is stdlib-external:
   Each tab is tried once per board run; a tab with no prompt yet is tried
   once it has one, a refused one not again until the board restarts. The
   board file key `"autoname": "off"` is hand-written; no key sets it.
-- Grouping (Ctrl-G) is by directory, not by project: two checkouts of one
-  repository in two directories are two groups, and a directory under no
-  `.git` is a group of its own named by its path. The repository of a
+- Grouping (Ctrl-G) is by directory, not by project: a second clone of a
+  repository groups with it only when it is a git worktree or is named
+  `<repo>-<ID>` beside it, so two clones named otherwise are two groups,
+  and a directory under no `.git` is a group of its own named by its
+  path. Inside a group the checkouts sort by name, so the rank order holds
+  only inside one checkout while grouped. The repository of a
   directory is looked up once per board run and cached, so a `git init`
   under a running board shows after a restart. Dragging is refused while
   grouped; the help line's "^C quit" is the first hint dropped when the
