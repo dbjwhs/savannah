@@ -1144,16 +1144,30 @@ def main():
     check(rec_a.get("summary") == "Reviewing the parser.\nNext: the tests." and isinstance(rec_a.get("summary_at"), int),
           f"the reply is kept as the work session's summary ({rec_a.get('summary')!r})")
     check("summary" not in record("ask-b"), "a skipped session gets no summary")
+    def notes_of(n):
+        try:
+            with open(os.path.join(workroot, n, "notes.md")) as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    notes_a = notes_of("ask-a")
+    check(notes_a.endswith("Reviewing the parser.\nNext: the tests.\n(asked: What are you doing?)\n\n")
+          and notes_a.count("## ") == 1,
+          f"the reply is appended to the session's notes with the question after it ({notes_a!r})")
+    check(notes_of("ask-b") == "", "a skipped session gets no note")
     entries = {e_["name"]: e_ for e_ in run_json(["ls", "--json"])}
     check(entries.get("ask-a", {}).get("summary") == rec_a["summary"], "ls --json carries the summary")
+    check(entries.get("ask-a", {}).get("last_note") == "Reviewing the parser.", "the NOTE column shows the reply's first line")
 
     # A tab that does not answer in time: how timeout, no reply, the old
     # summary kept; --no-wait returns at once with how sent; the default
     # question; a named session with no live tab is skipped as offline.
     j = run_json(["ask", "ask-a", "-q", "Still there?", "--timeout", "1", "--json"])
     e1 = (j.get("asked") or [{}])[0]
-    check(e1.get("how") == "timeout" and e1.get("reply") == "" and record("ask-a")["summary"] == rec_a["summary"],
-          f"no answer in time is a timeout with the old summary kept ({e1})")
+    check(e1.get("how") == "timeout" and e1.get("reply") == "" and record("ask-a")["summary"] == rec_a["summary"]
+          and notes_of("ask-a") == notes_a,
+          f"no answer in time is a timeout with the old summary and notes kept ({e1})")
     j = run_json(["ask", "ask-a", "--no-wait", "--json"])
     e1 = (j.get("asked") or [{}])[0]
     check(e1.get("how") == "sent" and j.get("question") == sw.ASK_DEFAULT, f"--no-wait sends and returns; the default question ({j})")

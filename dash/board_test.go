@@ -354,6 +354,11 @@ func TestParseNotesAndLines(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseNotes = %+v, want %+v", got, want)
 	}
+	// A "## " line of another shape (a heading inside a noted reply) is body.
+	noted := "## 2026-11-10 10:12 local\n## Status\nreviewing\n(asked: what?)\n\n"
+	if got := parseNotes(noted); len(got) != 1 || got[0].body != "## Status\nreviewing\n(asked: what?)" {
+		t.Errorf("a heading inside a note body should stay in the body: %+v", got)
+	}
 	if got := parseNotes("no heading at all\n"); len(got) != 1 || got[0].stamp != "" || got[0].body != "no heading at all" {
 		t.Errorf("headless notes: %+v", got)
 	}

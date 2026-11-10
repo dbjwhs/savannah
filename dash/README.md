@@ -23,7 +23,8 @@ gives you one key for each thing you used to do by hand:
 - **Ctrl-A, Ctrl-A** asks every idle or done tab what it is doing (`work
   ask --all`): the rows turn yellow and back to green as each answers,
   then the replies open as one screen, and each work session keeps its
-  reply as a summary the panel shows. Working and waiting tabs are never
+  reply as a note (NOTES in the panel, the NOTE column) and as a summary
+  line the panel shows. Working and waiting tabs are never
   interrupted. One turn of each asked tab's context, hence the two
   presses.
 - **Ctrl-T** appends a note to the session's `notes.md`. On a plain tab (one

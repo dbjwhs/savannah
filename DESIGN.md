@@ -895,3 +895,11 @@ Claude Code for this".
    `dash/ask_test.go` (arm, ask, busy, the screen, the status, Esc, `a`,
    errors, nothing askable; the panel's summary line); `test/test_shim.py`
    (`work_ask`).
+
+Addendum, same evening: "when they reply it should be added to each
+one's notes field". The reply is now appended to the session's `notes.md`
+too, the question on the note's last line so the NOTE column shows the
+answer's first line; the board's note parser only takes a `## ` line of
+the stamp's exact shape as a heading, since a reply may carry headings of
+its own. The summary field stays: it is the latest reply whatever notes
+come after it.

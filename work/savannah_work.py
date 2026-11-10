@@ -2303,8 +2303,8 @@ def cmd_ask(a):
     """Type one question into every tab that is safe to interrupt (idle or
     done; never a working or waiting one, never the asking session), wait
     for the replies (each tab's Claude answers in its own context, the
-    hook says when it has stopped), store each work session's reply as its
-    summary, print them all. --no-wait types and returns; --timeout caps
+    hook says when it has stopped), keep each work session's reply as a
+    note and as its summary, print them all. --no-wait types and returns; --timeout caps
     the wait. Exit 0 whatever was asked or skipped; the output says."""
     question = (a.question or "").strip() or ASK_DEFAULT
     if not a.name and not a.all:
@@ -2355,11 +2355,15 @@ def cmd_ask(a):
                  "how": how, "reply": reply}
         out_asked.append(entry)
         if t["rec"] is not None and reply:
+            # The reply is the session's own account: it goes into its notes
+            # (the question after it, so the NOTE column shows the answer's
+            # first line) and onto the record as the latest summary.
             rec = t["rec"]
             rec["summary"] = reply
             rec["summary_at"] = int(time.time())
             save_record(rec)
-            log_info("summary kept", name=rec["name"], chars=len(reply))
+            append_note(rec["name"], reply + "\n(asked: " + first_prompt_line(question) + ")")
+            log_info("reply noted", name=rec["name"], chars=len(reply))
     log_info("ask done", asked=len(asked), answered=sum(1 for e in out_asked if e["how"] == "answered"),
              waited=waited)
     if a.json:

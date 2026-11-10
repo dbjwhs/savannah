@@ -19,6 +19,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -254,11 +255,16 @@ type noteEntry struct {
 
 // parseNotes splits a notes.md written by `work note` into entries. Text
 // before the first heading (or a file with none) is an entry with no stamp.
+// noteStampRe is a note's heading as the CLI writes it (append_note). A
+// "## " line of another shape, such as a heading inside a reply a `work
+// ask` noted, is body.
+var noteStampRe = regexp.MustCompile(`^## \d{4}-\d{2}-\d{2} \d{2}:\d{2} local$`)
+
 func parseNotes(text string) []noteEntry {
 	var out []noteEntry
 	cur := -1
 	for _, ln := range strings.Split(text, "\n") {
-		if strings.HasPrefix(ln, "## ") {
+		if noteStampRe.MatchString(ln) {
 			out = append(out, noteEntry{stamp: strings.TrimSuffix(strings.TrimSpace(ln[3:]), " local")})
 			cur = len(out) - 1
 			continue

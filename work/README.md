@@ -255,8 +255,11 @@ The question goes in through `it2 session send` like `say`, and then the
 verb waits (`--timeout`, default 120 s) for each asked tab's hook file to
 show the question as its last prompt and the state `done`, reads the
 reply from the tab's transcript (the turn whose prompt is the question),
-and keeps each work session's reply in its record as `summary` with
-`summary_at` (`ls --json` carries both, the board's panel shows it). A
+and keeps each work session's reply twice: appended to its `notes.md`
+as a note (the reply, then `(asked: <the question>)` on the last line,
+so the NOTE column shows the answer's first line) and on its record as
+`summary` with `summary_at` (`ls --json` carries both, the board's panel
+shows it; a plain tab has no record, so its reply is only printed). A
 tab that has not answered in time is reported as `timeout` with no
 reply; `savannah work output` shows it when it comes. `--no-wait` types
 the question and returns at once. Exit 0 whatever was asked or skipped;
