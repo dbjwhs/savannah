@@ -36,9 +36,9 @@ const (
 
 // sessCols is the sessions table's column plan for one width.
 type sessCols struct {
-	wide                                bool // NOTE and TAB columns shown
-	paths                               bool // PROJECT shows ~/the/full/path instead of repo/name
-	work, project, tab, age, note, what int
+	wide                                        bool // NOTE and TAB columns shown
+	paths                                       bool // PROJECT shows ~/the/full/path instead of repo/name
+	work, ticket, project, tab, age, note, what int  // ticket is 0 when no row has one (the column is left out)
 }
 
 // sessionColumns plans the table for a width. Under wideWidth it is the
@@ -55,8 +55,19 @@ func sessionColumns(width int, rows []session, home string, titles map[string]st
 		width = 100
 	}
 	c := sessCols{work: 12, project: 22, age: 5}
+	for _, s := range rows {
+		if n := len([]rune(s.Ticket)); n > c.ticket {
+			c.ticket = n
+		}
+	}
+	if c.ticket > 0 {
+		c.ticket = clampInt(c.ticket, 6, 24)
+	}
 	if width < wideWidth {
 		c.what = width - 60
+		if c.ticket > 0 {
+			c.what -= c.ticket + 2
+		}
 		if c.what < 12 {
 			c.what = 12
 		}
@@ -78,6 +89,9 @@ func sessionColumns(width int, rows []session, home string, titles map[string]st
 	}
 	c.work = clampInt(longestName, 4, maxWorkCol)
 	rest := width - (2 + 2) - (9 + 2) - (c.work + 2) - (c.tab + 2) - (c.age + 2)
+	if c.ticket > 0 {
+		rest -= c.ticket + 2
+	}
 	if !grouped && longestPath <= rest*4/10 {
 		c.paths = true
 		c.project = longestPath
@@ -155,7 +169,11 @@ func projectCell(s session, home string, grouped bool) string {
 // repository inside a section (group.go); a row's state is the hook's, or
 // "polling" while its Claude's progress report is live (polling.go).
 func (m model) sessionLines(c sessCols, now int64) []string {
-	hdr := pad("", 2) + pad("STATE", 9) + pad("WORK", c.work) + pad("PROJECT", c.project)
+	hdr := pad("", 2) + pad("STATE", 9) + pad("WORK", c.work)
+	if c.ticket > 0 {
+		hdr += pad("TICKET", c.ticket)
+	}
+	hdr += pad("PROJECT", c.project)
 	if c.wide {
 		hdr += pad("TAB", c.tab)
 	}
@@ -210,7 +228,11 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 				cell = string([]rune(cell)[:c.work-1]) + "~"
 			}
 		}
-		line := pad(glyph, 2) + pad(state, 9) + pad(cell, c.work) + pad(proj, c.project)
+		line := pad(glyph, 2) + pad(state, 9) + pad(cell, c.work)
+		if c.ticket > 0 {
+			line += pad(trunc(s.Ticket, c.ticket), c.ticket)
+		}
+		line += pad(proj, c.project)
 		if c.wide {
 			tab := "-"
 			if hasRec && rec.TabID != "" {
@@ -471,6 +493,9 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 			// The title leads; the name follows, since it is what the CLI takes.
 			name = s.WorkTitle
 			head = "   " + s.Work + head
+		}
+		if s.Ticket != "" {
+			head += "   " + s.Ticket
 		}
 		if hasRec {
 			if rec.Branch != "" {

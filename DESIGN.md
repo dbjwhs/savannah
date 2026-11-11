@@ -957,3 +957,31 @@ order the owner set by hand and the Ctrl-G grouping. So nothing moves:
    the flag). Docs: dash README (intro, layout, keys, limitations),
    CLAUDE.md.
 
+### 11/10/2026, later that night (a TICKET column)
+
+"It is still hard to figure out which session is the one I am looking
+for." The names all read alike (thirty tabs started from handoff
+documents name themselves "resuming ... handoff"), but the owner's work
+is named by ticket: the checkout `zfs-DLPX-98816` beside the
+repository, the session `dp-2673-mssql-snapsync-throughput`, a title
+with TOOL-31974, a prompt with PR #940. So the ticket gets its own
+column, after WORK, filled from the first source that names one, the
+checkout's directory name first ("it should be able to find that info
+from the work tree name"), then the session's name and branch, the
+title, the last prompt and the `work ask` summary.
+
+1. **A pattern, not a lookup.** `KEY-NUMBER`, key two to five characters
+   starting with a letter, two to seven digits; any case in a slug (names
+   are lower-cased), upper case only in free text so "step-10" in a
+   prompt is not a ticket; `PR` with a number in any spelling as `PR-n`.
+   At most two, from the one source. Stated limits: `x86-64` would read
+   as a ticket, a lower-case mention in a prompt would not, and a
+   checkout named for one ticket hides a second in the title.
+2. **The column exists only when a row has one**, in both plans, sized
+   to the longest cell (6 to 24); WHAT gives up the room. The panel head
+   carries the ticket too. The search, when it comes, matches it.
+3. **Tests.** `dash/ticket_test.go` (the pattern over the owner's real
+   names, the source order against a checkout layout on disk, the
+   column in both plans, the board and the panel). Docs: dash README,
+   CLAUDE.md.
+

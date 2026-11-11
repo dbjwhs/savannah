@@ -202,6 +202,17 @@ An offline row goes by its record's stamp. A row that needs you or is
 working is never faded. The AGE column still gives the exact age; the
 fade only decides where your eye lands first.
 
+A TICKET column sits after WORK whenever any row has one: the id the
+row's work hangs off (`DLPX-98816`, `DP-2702`, `TOOL-31974`, `PR-940`),
+taken from the first of these that names one: the checkout's directory
+name (`zfs-DLPX-98816` beside the repository, or a savannah worktree's
+name), the work session's name and branch, its title, then the last
+prompt and the tab's `work ask` summary. A ticket is `KEY-NUMBER` (two to
+five letters or digits, a dash, two to seven digits) or `PR` with a
+number in any spelling; in names the key may be any case, in free text
+only an upper-case key counts. Up to two show. The detail panel's head
+carries it too. No row with a ticket, no column.
+
 The board uses the whole terminal. Under 120 columns the table is the
 compact one (STATE, WORK, PROJECT, AGE, WHAT). From 120 columns on it adds
 a TAB column (the iTerm2 tab number from the record), a NOTE column (the
@@ -530,6 +541,11 @@ file under its path has been swapped. Nothing here is stdlib-external:
   under a running board shows after a restart. Dragging is refused while
   grouped; the help line's "^C quit" is the first hint dropped when the
   terminal is narrower than the help (123 columns for the work board).
+- A ticket is pattern-matched, never looked up: a slug such as `x86-64`
+  or `iso-8601` in a checkout or session name reads as one, and a ticket
+  only ever mentioned in lower case in a prompt is not found. Two show at
+  most, from one source: a checkout named for one ticket hides a second
+  ticket in the title.
 - The fade goes by the hook file's `updated` stamp, so a tab whose Claude
   has been running one long turn for four hours is not faded (it is
   working), while a tab you read but did not type into fades on schedule:

@@ -65,6 +65,7 @@ type session struct {
 	Transcript string `json:"transcript_path"`
 	Work       string `json:"-"` // joined work-session name, "" when none
 	WorkTitle  string `json:"-"` // that record's title, "" when none (the WORK cell shows it)
+	Ticket     string `json:"-"` // the TICKET cell (ticket.go), "" when none
 	file       string // source path, for dismiss
 }
 
@@ -414,6 +415,7 @@ func joinWork(sessions []session, work []workRecord) []session {
 		offline = append(offline, offlineWorkRow(rec))
 	}
 	out = append(out, offline...)
+	fillTickets(out, work)
 	sortSessions(out)
 	return out
 }
