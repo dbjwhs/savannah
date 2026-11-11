@@ -1046,8 +1046,8 @@ func parseArgs(args []string) (opts, error) {
 			case "--addr":
 				o.addr = args[i+1]
 			case "--ticket-url":
-				if u := args[i+1]; u != "off" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-					return o, fmt.Errorf("--ticket-url %q: want an http(s) URL with {ticket} for the key, or off", u)
+				if u := args[i+1]; u != "off" && u != "default" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+					return o, fmt.Errorf("--ticket-url %q: want an http(s) URL with {ticket} for the key, off, or default", u)
 				}
 				o.ticketURL = args[i+1]
 			default:
@@ -1088,7 +1088,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  --fade DUR: dim the rows untouched for longer than DUR (3h unless set; off = never;")
 	fmt.Fprintln(os.Stderr, "             Ctrl-F cycles 1h, 3h, 8h, 24h, off and remembers it in the board file)")
 	fmt.Fprintln(os.Stderr, "  --ticket-url URL: where a ticket links, {ticket} for the key (remembered in the")
-	fmt.Fprintln(os.Stderr, "             board file; e.g. https://perforce.atlassian.net/browse/{ticket}; off forgets it)")
+	fmt.Fprintln(os.Stderr, "             board file; the default is "+defaultTicketURL+";")
+	fmt.Fprintln(os.Stderr, "             off = no ticket links, default = back to the built-in pattern)")
 	fmt.Fprintln(os.Stderr, "  --no-autoname:  do not name the tabs you opened by hand (`work autoname`;")
 	fmt.Fprintln(os.Stderr, "             \"autoname\": \"off\" in the board file turns it off for good)")
 	fmt.Fprintln(os.Stderr, "Sessions come from the session-status hook, work sessions from $SAVANNAH_WORK_DIR")
@@ -1145,17 +1146,18 @@ func main() {
 		o.fade = prefs.Fade // "" stays the default; a bad value in the file is the default too
 	}
 	// The tracker is configuration, not a view toggle: --ticket-url is
-	// remembered (there is no key on the board to set it); off forgets it.
+	// remembered (there is no key on the board to set it); "off" is
+	// remembered as off, "default" goes back to the built-in pattern.
 	if o.ticketURL != "" {
 		prefs.TicketURL = o.ticketURL
-		if o.ticketURL == "off" {
+		if o.ticketURL == "default" {
 			prefs.TicketURL = ""
 		}
 		if err := saveBoardPrefs(boardFile(), prefs); err != nil {
 			fmt.Fprintln(os.Stderr, "savannah-dash: --ticket-url not remembered:", err)
 		}
 	}
-	ticketURLPattern = prefs.TicketURL
+	ticketURLPattern = resolveTicketURL(prefs.TicketURL)
 	openLog()
 	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath(),
 		"group", o.group > 0, "autoname", o.autoname >= 0, "fade", o.fade)

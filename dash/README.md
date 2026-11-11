@@ -215,16 +215,18 @@ which comes first because it says which repository. In names the key
 may be any case, in free text only an upper-case key counts. The detail
 panel's head carries them too. No row with an id, no column.
 
-Both are links. A ticket links to your tracker once you have told the
-board where that is, one time per machine:
+Both are links. A ticket links to the tracker's page, by default
+`https://perforce.atlassian.net/browse/{ticket}` (the author's Jira).
+Another tracker is one line, once per machine:
 
 ```bash
-savannah --ticket-url 'https://perforce.atlassian.net/browse/{ticket}'
+savannah --ticket-url 'https://yourcompany.atlassian.net/browse/{ticket}'
 ```
 
 `{ticket}` stands for the key (a pattern ending in `/` gets the key
 appended); the choice is written to the board file (`"ticket_url"`),
-`--ticket-url off` forgets it, and with none set tickets are plain text.
+`--ticket-url off` turns ticket links off (remembered too), and
+`--ticket-url default` goes back to the built-in pattern.
 A pull request links to the URL the tab gave, else to the checkout's
 `origin` remote on GitHub plus `/pull/N` (`git remote get-url origin`,
 once per checkout per run; another host, or a prompt naming a PR in a
@@ -566,7 +568,9 @@ file under its path has been swapped. Nothing here is stdlib-external:
   terminal is narrower than the help (132 columns for the work board).
 - Links are OSC 8 hyperlinks: iTerm2 shows them, tmux strips them
   unless `set -ga terminal-features ",*:hyperlinks"` (Ctrl-B works
-  regardless). A ticket links nowhere until `--ticket-url` is set; a
+  regardless). A ticket links to the author's Jira unless `--ticket-url`
+  says otherwise, so a key from another tracker opens a wrong page
+  there until it is set; a
   pull request links nowhere when its checkout's origin is not on
   GitHub and no URL for it was seen in the tab's summary or notes.
 - A ticket is pattern-matched, never looked up: a slug such as `x86-64`

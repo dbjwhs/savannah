@@ -212,6 +212,22 @@ func TestCtrlBOpensLinks(t *testing.T) {
 	if cmd != nil || !strings.Contains(m.status, "--ticket-url") {
 		t.Errorf("Ctrl-B with no tracker set should say how to set one: %q", m.status)
 	}
+	// The board file's value: nothing is the author's Jira, off is none,
+	// a pattern is itself.
+	if got := resolveTicketURL(""); got != defaultTicketURL || !strings.Contains(got, "perforce.atlassian.net") {
+		t.Errorf("no pref: %q", got)
+	}
+	if got := resolveTicketURL("off"); got != "" {
+		t.Errorf("off: %q", got)
+	}
+	if got := resolveTicketURL("https://x/{ticket}"); got != "https://x/{ticket}" {
+		t.Errorf("a pattern: %q", got)
+	}
+	for _, v := range []string{"off", "default"} {
+		if o, err := parseArgs([]string{"--ticket-url", v}); err != nil || o.ticketURL != v {
+			t.Errorf("--ticket-url %s: %+v %v", v, o, err)
+		}
+	}
 	// --ticket-url is checked on the command line.
 	if _, err := parseArgs([]string{"--ticket-url", "perforce.atlassian.net"}); err == nil {
 		t.Error("--ticket-url without a scheme should be refused")
@@ -225,6 +241,12 @@ func TestCtrlBOpensLinks(t *testing.T) {
 // both plans, sized to the longest; the panel head carries it.
 func TestTicketColumn(t *testing.T) {
 	ng := checkoutLayout(t)
+	// Plain cells here: plainLines drops a line with an escape in it, and
+	// the links are TestTicketLinks's business.
+	oldPat, oldRemote := ticketURLPattern, gitRemote
+	ticketURLPattern, gitRemote = "", func(string) string { return "" }
+	repoWebCache.m = map[string]string{}
+	t.Cleanup(func() { ticketURLPattern, gitRemote = oldPat, oldRemote; repoWebCache.m = map[string]string{} })
 	plain := []session{{Project: ng + "/zfs"}, {Project: ng + "/notes"}}
 	if c := sessionColumns(100, plain, "", nil, false); c.ticket != 0 || c.what != 40 {
 		t.Errorf("no ticket anywhere: %+v", c)

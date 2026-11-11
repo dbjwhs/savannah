@@ -29,9 +29,10 @@
 // a ticket. Stated limit: a key is pattern-matched, not looked up, so a
 // slug like `x86-64` or `iso-8601` would read as one.
 //
-// Links: a ticket links to the tracker's page when the board file names
-// the pattern ("ticket_url": "https://perforce.atlassian.net/browse/{ticket}",
-// set once with `savannah --ticket-url URL`); a pull request links to its
+// Links: a ticket links to the tracker's page, the author's Jira unless
+// the board file names another ("ticket_url": "https://x.atlassian.net/browse/{ticket}",
+// set with `savannah --ticket-url URL`; "off" for no ticket links); a
+// pull request links to its
 // URL when one was seen, else to the checkout's origin remote on GitHub
 // (`git remote get-url origin`, cached for the run) plus /pull/N. The link
 // is an OSC 8 terminal hyperlink around the text (iTerm2: Cmd-click), and
@@ -61,9 +62,26 @@ var (
 
 const maxTickets = 2
 
+// defaultTicketURL is the tracker's page for a ticket when the board file
+// says nothing: the author's Jira. Anyone else sets theirs once with
+// `savannah --ticket-url URL`.
+const defaultTicketURL = "https://perforce.atlassian.net/browse/{ticket}"
+
 // ticketURLPattern is the tracker's page for a ticket, with {ticket} for
-// the key (board file "ticket_url", --ticket-url); "" = no ticket links.
-var ticketURLPattern string
+// the key; "" = no ticket links.
+var ticketURLPattern = defaultTicketURL
+
+// resolveTicketURL is the pattern the board file's value means: "" is
+// the default, "off" is none, anything else is itself.
+func resolveTicketURL(pref string) string {
+	switch pref {
+	case "":
+		return defaultTicketURL
+	case "off":
+		return ""
+	}
+	return pref
+}
 
 // ticketsIn lists the distinct ids in text, in order, `KEY-NUMBER`
 // upper-cased (a pull request as PR-N); slug=true matches a key in any
@@ -305,7 +323,7 @@ func (m model) pressOpen(s session) (tea.Model, tea.Cmd) {
 	if len(ids) == 0 {
 		switch {
 		case s.TicketID != "" && ticketURLPattern == "":
-			m.status = warnStyle.Render("no link for " + s.TicketID + ": set the tracker once with savannah --ticket-url URL ({ticket} for the key)")
+			m.status = warnStyle.Render("no link for " + s.TicketID + ": ticket links are off; savannah --ticket-url URL ({ticket} for the key) sets the tracker")
 		case s.PR != "":
 			m.status = warnStyle.Render("no link for " + s.PR + ": no GitHub origin on this checkout and no URL seen in its summary or notes")
 		default:

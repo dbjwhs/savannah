@@ -1022,3 +1022,10 @@ message to all Claudes asking for active PRs". Both, like this:
    a row with and without links, the flag). Docs: dash and work
    READMEs, CLAUDE.md.
 
+Addendum, same night: "make the perforce pattern the default". The
+built-in pattern is the author's Jira (`defaultTicketURL`), so a fresh
+board links tickets with nothing configured; the board file's
+`ticket_url` overrides it, `--ticket-url off` is remembered as off and
+`--ticket-url default` goes back. Stated in the README: a key from
+another tracker opens a wrong page until that line is run.
+
