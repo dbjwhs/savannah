@@ -420,6 +420,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case askMsg:
 		return m.updateAsk(msg)
+	case openMsg:
+		return m.updateOpen(msg)
 	case discoverTick:
 		return m, tea.Batch(m.discoverCmd(), discoverTickCmd())
 	case fetchTick:
@@ -609,6 +611,12 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.dragRow(1)
 	case tea.KeyCtrlR:
 		return m.startNaming(r, hasRow)
+	case tea.KeyCtrlB:
+		if !hasRow || r.kind != rowSession {
+			m.status = warnStyle.Render("Ctrl-B opens a row's ticket and pull request; select a session")
+			return m, nil
+		}
+		return m.pressOpen(r.s)
 	case tea.KeyTab:
 		if !hasRow {
 			return m, nil
@@ -968,7 +976,7 @@ func (m model) promptLines(width int) []string {
 	// One line, never wrapped (a wrapped help line would push the layout
 	// down): hints are dropped from the end until the line fits, so a
 	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
-	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^F fade", "^O out",
+	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
 		"^A ask", "^T note", "^S snap", "^L log", "^X rm", "^C quit"}
 	if m.mesh {
 		parts[1] = "Enter say/send"
@@ -1013,6 +1021,7 @@ type opts struct {
 	group          int    // --group 1, --no-group -1, 0 = as the board file remembers
 	autoname       int    // --autoname 1, --no-autoname -1, 0 = on unless the board file says "off"
 	fade           string // --fade DUR|off; "" = as the board file remembers, else 3h
+	ticketURL      string // --ticket-url URL: the tracker's page, remembered in the board file
 }
 
 // parseArgs reads the argv after the program name. A leading non-flag word
@@ -1027,7 +1036,7 @@ func parseArgs(args []string) (opts, error) {
 	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--key", "--addr", "--fade":
+		case "--key", "--addr", "--fade", "--ticket-url":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("%s needs a value", args[i])
 			}
@@ -1036,6 +1045,11 @@ func parseArgs(args []string) (opts, error) {
 				o.key = args[i+1]
 			case "--addr":
 				o.addr = args[i+1]
+			case "--ticket-url":
+				if u := args[i+1]; u != "off" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+					return o, fmt.Errorf("--ticket-url %q: want an http(s) URL with {ticket} for the key, or off", u)
+				}
+				o.ticketURL = args[i+1]
 			default:
 				if _, err := parseFade(args[i+1]); err != nil {
 					return o, err
@@ -1065,7 +1079,7 @@ func parseArgs(args []string) (opts, error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--fade DUR|off] [--no-autoname]")
+	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--fade DUR|off] [--ticket-url URL] [--no-autoname]")
 	fmt.Fprintln(os.Stderr, "  no flags:  the work board: your work sessions and open Claude Code tabs")
 	fmt.Fprintln(os.Stderr, "  --mesh:    also discover every node via `savannah ls` and show its workers")
 	fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS); implies --mesh")
@@ -1073,6 +1087,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "             remembered in $SAVANNAH_BOARD_FILE, ~/.claude/savannah/board.json)")
 	fmt.Fprintln(os.Stderr, "  --fade DUR: dim the rows untouched for longer than DUR (3h unless set; off = never;")
 	fmt.Fprintln(os.Stderr, "             Ctrl-F cycles 1h, 3h, 8h, 24h, off and remembers it in the board file)")
+	fmt.Fprintln(os.Stderr, "  --ticket-url URL: where a ticket links, {ticket} for the key (remembered in the")
+	fmt.Fprintln(os.Stderr, "             board file; e.g. https://perforce.atlassian.net/browse/{ticket}; off forgets it)")
 	fmt.Fprintln(os.Stderr, "  --no-autoname:  do not name the tabs you opened by hand (`work autoname`;")
 	fmt.Fprintln(os.Stderr, "             \"autoname\": \"off\" in the board file turns it off for good)")
 	fmt.Fprintln(os.Stderr, "Sessions come from the session-status hook, work sessions from $SAVANNAH_WORK_DIR")
@@ -1128,6 +1144,18 @@ func main() {
 	if o.fade == "" {
 		o.fade = prefs.Fade // "" stays the default; a bad value in the file is the default too
 	}
+	// The tracker is configuration, not a view toggle: --ticket-url is
+	// remembered (there is no key on the board to set it); off forgets it.
+	if o.ticketURL != "" {
+		prefs.TicketURL = o.ticketURL
+		if o.ticketURL == "off" {
+			prefs.TicketURL = ""
+		}
+		if err := saveBoardPrefs(boardFile(), prefs); err != nil {
+			fmt.Fprintln(os.Stderr, "savannah-dash: --ticket-url not remembered:", err)
+		}
+	}
+	ticketURLPattern = prefs.TicketURL
 	openLog()
 	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath(),
 		"group", o.group > 0, "autoname", o.autoname >= 0, "fade", o.fade)

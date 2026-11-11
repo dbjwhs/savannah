@@ -65,7 +65,11 @@ type session struct {
 	Transcript string `json:"transcript_path"`
 	Work       string `json:"-"` // joined work-session name, "" when none
 	WorkTitle  string `json:"-"` // that record's title, "" when none (the WORK cell shows it)
-	Ticket     string `json:"-"` // the TICKET cell (ticket.go), "" when none
+	Ticket     string `json:"-"` // the TICKET cell (ticket.go): the ticket and the pull request, "" when none
+	TicketID   string `json:"-"` // the ticket alone (DLPX-98816) and its tracker page when the pattern is set
+	TicketURL  string `json:"-"`
+	PR         string `json:"-"` // the pull request (PR-940) and its page when known
+	PRURL      string `json:"-"`
 	file       string // source path, for dismiss
 }
 

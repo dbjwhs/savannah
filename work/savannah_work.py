@@ -2197,7 +2197,8 @@ def cmd_output(a):
 # replies collected
 
 ASK_DEFAULT = ("In three lines, for a board of all my sessions: what are you working on, "
-               "where are you with it, and what comes next?")
+               "where are you with it, and what comes next? If a pull request exists for "
+               "this work, include its URL.")
 ASK_TIMEOUT = 120
 ASK_POLL = 0.5
 

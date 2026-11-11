@@ -230,7 +230,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		}
 		line := pad(glyph, 2) + pad(state, 9) + pad(cell, c.work)
 		if c.ticket > 0 {
-			line += pad(trunc(s.Ticket, c.ticket), c.ticket)
+			line += linkify(pad(trunc(s.Ticket, c.ticket), c.ticket), s)
 		}
 		line += pad(proj, c.project)
 		if c.wide {
@@ -495,7 +495,7 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 			head = "   " + s.Work + head
 		}
 		if s.Ticket != "" {
-			head += "   " + s.Ticket
+			head += "   " + linkify(s.Ticket, s)
 		}
 		if hasRec {
 			if rec.Branch != "" {

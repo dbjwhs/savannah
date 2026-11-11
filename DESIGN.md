@@ -985,3 +985,40 @@ title, the last prompt and the `work ask` summary.
    column in both plans, the board and the panel). Docs: dash README,
    CLAUDE.md.
 
+### 11/10/2026, later again (tickets and pull requests as links)
+
+"Can the ticket number be a hyperlink?" and "after a PR is created
+there should be a PR number that is a link too; we could broadcast a
+message to all Claudes asking for active PRs". Both, like this:
+
+1. **OSC 8 hyperlinks.** The TICKET cell's ids are wrapped in terminal
+   hyperlinks after the cell is padded (the escape has no width, but
+   `pad` counts runes), so iTerm2 shows them and Cmd-click opens them.
+   Ctrl-B opens the row's links with the system opener for a terminal
+   that shows none (tmux strips OSC 8 unless configured); the status
+   line says what opened or why nothing could.
+2. **The tracker is configuration.** `savannah --ticket-url
+   'https://perforce.atlassian.net/browse/{ticket}'` once per machine
+   writes `ticket_url` to the board file, the only flag that remembers
+   itself (there is no key on the board to set it); `off` forgets it;
+   nothing set means plain text. Anyone not at Perforce sets their own.
+3. **Pull requests: two slots, and the broadcast is the existing one.**
+   The TICKET cell now holds the ticket and the pull request separately
+   (a checkout named for DLPX-98816 and a title naming PR 940 both
+   show). The default `work ask` question gained "If a pull request
+   exists for this work, include its URL": every Ctrl-A round is the
+   broadcast the owner proposed, and a GitHub PR URL in the reply (the
+   summary, or the notes it is appended to) is taken first, since it
+   says which repository. A PR named only by number links through the
+   checkout's `origin` remote on GitHub (one `git remote get-url` per
+   checkout per run); another host, or a plain tab under no
+   repository, gives no link. Not done: polling `gh pr view` per
+   checkout, which would find a PR nobody mentioned, at the cost of a
+   subprocess per checkout on a timer; the broadcast covers the owner's
+   case for now.
+4. **Tests.** `dash/ticket_test.go` (the remote URL forms, the pattern
+   forms, the last PR URL in a text, the two slots, the remote asked
+   once per checkout, the OSC 8 cell and a cut id left plain, Ctrl-B on
+   a row with and without links, the flag). Docs: dash and work
+   READMEs, CLAUDE.md.
+

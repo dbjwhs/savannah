@@ -245,7 +245,9 @@ collects the replies. `savannah work ask --all` asks every live Claude
 Code tab, work sessions and plain tabs alike; `savannah work ask NAME...`
 asks only those. The default question is "In three lines, for a board of
 all my sessions: what are you working on, where are you with it, and
-what comes next?"; `-q TEXT` asks something else. A tab is asked only
+what comes next? If a pull request exists for this work, include its
+URL." (the board links the PR from that URL); `-q TEXT` asks something
+else. A tab is asked only
 when its hook file says `idle` or `done`: a `working` tab is not
 interrupted, a `waiting` tab has a permission prompt or a question up
 that typed text would answer (a file an older hook stamped `waiting` for

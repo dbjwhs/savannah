@@ -255,9 +255,10 @@ func groupHeader(root string, isRepo bool, n int, home string, wide bool) string
 // hand are named for you ("off" is written by hand, nothing on the board
 // sets it). A writer loads the file first so one key never wipes another.
 type boardPrefs struct {
-	Group    string `json:"group"`              // "repo" | ""
-	Autoname string `json:"autoname,omitempty"` // "off" | "" (autoname.go)
-	Fade     string `json:"fade,omitempty"`     // "3h" | "off" | "" = the default (fade.go)
+	Group     string `json:"group"`                // "repo" | ""
+	Autoname  string `json:"autoname,omitempty"`   // "off" | "" (autoname.go)
+	Fade      string `json:"fade,omitempty"`       // "3h" | "off" | "" = the default (fade.go)
+	TicketURL string `json:"ticket_url,omitempty"` // the tracker's page with {ticket} for the key (ticket.go)
 }
 
 func boardFile() string {

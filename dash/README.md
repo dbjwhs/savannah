@@ -202,16 +202,36 @@ An offline row goes by its record's stamp. A row that needs you or is
 working is never faded. The AGE column still gives the exact age; the
 fade only decides where your eye lands first.
 
-A TICKET column sits after WORK whenever any row has one: the id the
-row's work hangs off (`DLPX-98816`, `DP-2702`, `TOOL-31974`, `PR-940`),
-taken from the first of these that names one: the checkout's directory
-name (`zfs-DLPX-98816` beside the repository, or a savannah worktree's
-name), the work session's name and branch, its title, then the last
-prompt and the tab's `work ask` summary. A ticket is `KEY-NUMBER` (two to
-five letters or digits, a dash, two to seven digits) or `PR` with a
-number in any spelling; in names the key may be any case, in free text
-only an upper-case key counts. Up to two show. The detail panel's head
-carries it too. No row with a ticket, no column.
+A TICKET column sits after WORK whenever any row has one: the ids the
+row's work hangs off, the ticket (`DLPX-98816`, `DP-2702`, `TOOL-31974`)
+and the pull request (`PR-940`), each from the first of these that names
+one: the checkout's directory name (`zfs-DLPX-98816` beside the
+repository, or a savannah worktree's name), the work session's name and
+branch, its title, then the last prompt and the tab's `work ask`
+summary. A ticket is `KEY-NUMBER` (two to five letters or digits, a
+dash, two to seven digits); a pull request is `PR` with a number in any
+spelling, or a GitHub pull request URL in the summary or the notes,
+which comes first because it says which repository. In names the key
+may be any case, in free text only an upper-case key counts. The detail
+panel's head carries them too. No row with an id, no column.
+
+Both are links. A ticket links to your tracker once you have told the
+board where that is, one time per machine:
+
+```bash
+savannah --ticket-url 'https://perforce.atlassian.net/browse/{ticket}'
+```
+
+`{ticket}` stands for the key (a pattern ending in `/` gets the key
+appended); the choice is written to the board file (`"ticket_url"`),
+`--ticket-url off` forgets it, and with none set tickets are plain text.
+A pull request links to the URL the tab gave, else to the checkout's
+`origin` remote on GitHub plus `/pull/N` (`git remote get-url origin`,
+once per checkout per run; another host, or a prompt naming a PR in a
+plain tab under no repository, gives no link). The link is a terminal
+hyperlink (OSC 8): in iTerm2, Cmd-click it. **Ctrl-B** opens the row's
+links with the system opener (`open`, or `xdg-open`) for when a click
+is not to hand; the status line says what opened, or why nothing could.
 
 The board uses the whole terminal. Under 120 columns the table is the
 compact one (STATE, WORK, PROJECT, AGE, WHAT). From 120 columns on it adds
@@ -332,6 +352,8 @@ Board:
   (remembered in the board file; a drag is refused while grouped)
 - **Ctrl-F** cycles the fade (1h, 3h, 8h, 24h, off): rows untouched for
   longer are drawn faint (remembered in the board file)
+- **Ctrl-B** opens the row's ticket and pull request in the browser
+  (the TICKET column; Cmd-click does the same in iTerm2)
 - **Ctrl-S** opens the snapshot screen, **Ctrl-L** the log view
 - **Ctrl-C** quits; **Esc** quits too, unless a note, a name or a title
   is being typed
@@ -460,6 +482,7 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-L | none: the dash reads `$SAVANNAH_LOG_DIR/savannah.log` itself (`savannah work log` is the shell's reader) |
 | Ctrl-G | none: the rows regroup in the dash; the choice is written to `$SAVANNAH_BOARD_FILE` (`~/.claude/savannah/board.json`) |
 | Ctrl-F | none: the fade changes in the dash; `"fade": "8h"` (or `"off"`) is written to the board file |
+| Ctrl-B | `open <url>` (macOS) or `xdg-open <url>` per link on the row; the PR link may first cost one `git -C <checkout> remote get-url origin`, cached for the run |
 | (start, and each new plain tab with a prompt) | `savannah work autoname --json <hook session ids>`, one run at a time |
 
 Values travel in the `=` form or after `--`, so text that begins with `-`
@@ -540,7 +563,12 @@ file under its path has been swapped. Nothing here is stdlib-external:
   directory is looked up once per board run and cached, so a `git init`
   under a running board shows after a restart. Dragging is refused while
   grouped; the help line's "^C quit" is the first hint dropped when the
-  terminal is narrower than the help (123 columns for the work board).
+  terminal is narrower than the help (132 columns for the work board).
+- Links are OSC 8 hyperlinks: iTerm2 shows them, tmux strips them
+  unless `set -ga terminal-features ",*:hyperlinks"` (Ctrl-B works
+  regardless). A ticket links nowhere until `--ticket-url` is set; a
+  pull request links nowhere when its checkout's origin is not on
+  GitHub and no URL for it was seen in the tab's summary or notes.
 - A ticket is pattern-matched, never looked up: a slug such as `x86-64`
   or `iso-8601` in a checkout or session name reads as one, and a ticket
   only ever mentioned in lower case in a prompt is not found. Two show at
