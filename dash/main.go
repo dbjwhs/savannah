@@ -156,6 +156,7 @@ type model struct {
 
 var (
 	headerStyle   = lipgloss.NewStyle().Bold(true)
+	nowStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan: the NOW header, the eye's first stop
 	colStyle      = lipgloss.NewStyle().Bold(true).Faint(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	helpStyle     = lipgloss.NewStyle().Faint(true)
@@ -602,6 +603,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleFade(), nil
 	case tea.KeyCtrlE:
 		return m.toggleHistory(), nil
+	case tea.KeyCtrlP:
+		return m.pressNow()
 	case tea.KeyCtrlK:
 		if m.finding {
 			return m.acceptFind(), nil
@@ -873,6 +876,9 @@ func (m model) viewBoard() string {
 	if m.filter != "" {
 		counts += fmt.Sprintf("   matching %q", m.filter)
 	}
+	if n := m.countNow(); n > 0 {
+		counts += fmt.Sprintf("   %d now", n)
+	}
 	if m.group {
 		counts += "   by repository"
 	}
@@ -1016,7 +1022,7 @@ func (m model) promptLines(width int) []string {
 	// One line, never wrapped (a wrapped help line would push the layout
 	// down): hints are dropped from the end until the line fits, so a
 	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
-	parts := []string{"Shift-up/down move", "Enter say", "^K find", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
+	parts := []string{"Shift-up/down move", "Enter say", "^P now", "^K find", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
 		"^A ask", "^T note", "^S snap", "^L log", "^X rm", "^C quit"}
 	if m.mesh {
 		parts[1] = "Enter say/send"

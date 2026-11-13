@@ -430,6 +430,10 @@ def test_work_tools(peer, fake, tmp):
     r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
     check(r["result"]["isError"] is False and json.loads(text_of(r)) == {"name": "shim-demo", "priority": "active", "rank": -2},
           f"work_move priority alone keeps the rank ({text_of(r)})")
+    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "now"})
+    check(r["result"]["isError"] is False and json.loads(text_of(r)) == {"name": "shim-demo", "priority": "now", "rank": -2},
+          f"work_move priority now ({text_of(r)})")
+    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
     r = shim.call_tool("work_move", {"name": "shim-demo"})
     check(r["result"]["isError"] is True, "work_move without priority or rank is a tool error")
     r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "urgent"})

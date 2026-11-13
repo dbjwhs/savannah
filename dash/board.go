@@ -183,7 +183,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 	}
 	lines := []string{colStyle.Render(hdr + "WHAT")}
 	recs := recordMap(m.work)
-	var counts [3]int
+	var counts [secHistory + 1]int
 	groupCounts := map[[2]string]int{} // (section, repo root) -> rows
 	for _, r := range m.rows {
 		if r.kind == rowSession {

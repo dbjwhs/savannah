@@ -97,8 +97,8 @@ func TestHistoryOrderAndDrag(t *testing.T) {
 	if cmd != nil || !strings.Contains(m.status, "HISTORY") {
 		t.Errorf("drag on a closed session should be refused: cmd=%v status=%q", cmd != nil, m.status)
 	}
-	active, later := m.sectionNames()
-	if !reflect.DeepEqual(active, []string{"live"}) || len(later) != 0 {
-		t.Errorf("closed sessions must stay out of the drag lists: %v %v", active, later)
+	secs := m.sectionNames()
+	if !reflect.DeepEqual(secs, [][]string{nil, {"live"}, nil}) {
+		t.Errorf("closed sessions must stay out of the drag lists: %v", secs)
 	}
 }

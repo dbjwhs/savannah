@@ -1211,6 +1211,10 @@ def main():
           f"a record without the fields reads active, rank == created ({by['oldrec']})")
     check(by["oddrec"]["priority"] == "active" and by["oddrec"]["rank"] == 77,
           f"an unknown priority reads active, an unparsable rank falls back to created ({by['oddrec']})")
+    write_record("nowrec", {"name": "nowrec", "worktree": other, "repo": other, "created": 6,
+                            "priority": "now", "rank": 3})
+    by = {r["name"]: r for r in run_json(["ls", "--json"])}
+    check(by["nowrec"]["priority"] == "now" and by["nowrec"]["rank"] == 3, f"priority now is kept ({by['nowrec']})")
     check(by["laterrec"]["priority"] == "later" and by["laterrec"]["rank"] == 12,
           f"later and a numeric-string rank are read as stored ({by['laterrec']})")
     clear_log(keep_state=True)
@@ -1225,6 +1229,12 @@ def main():
     check(j == {"name": "pri", "priority": "active", "rank": 10}, f"move --active --rank together ({j})")
     p = run(["move", "pri", "--later"])
     check(p.returncode == 0 and p.stdout == "moved pri: later, rank 10\n", f"move human line ({p.stdout!r})")
+    j = run_json(["move", "pri", "--now", "--json"])
+    check(j == {"name": "pri", "priority": "now", "rank": 10} and record("pri")["priority"] == "now",
+          f"move --now: the top section, rank kept ({j})")
+    check(run(["move", "pri", "--now", "--active"]).returncode == 2, "move --now --active exits 2")
+    p = run(["move", "pri", "--later"])
+    check(p.returncode == 0, "back to later")
     check(run(["move", "pri"]).returncode == 2, "move without an option exits 2")
     check(run(["move", "pri", "--active", "--later"]).returncode == 2, "move --active --later exits 2")
     check(run(["move", "pri", "--rank", "soon"]).returncode == 2, "move --rank wants an integer")

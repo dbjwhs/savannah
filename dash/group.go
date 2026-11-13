@@ -1,7 +1,7 @@
 // group.go: the board grouped by repository (Ctrl-G, --group).
 //
 // With many tabs across many repos the question is often "show me every
-// ZFS session". Grouping keeps the two sections and the owner's rank order
+// ZFS session". Grouping keeps the sections and the owner's rank order
 // inside them, but gathers the rows of one repository together under a dim
 // header line naming it (and counting them), repositories in the order
 // their first row appears; the PROJECT cell then shows where inside the

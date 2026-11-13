@@ -80,36 +80,37 @@ func TestOrderSessionsSections(t *testing.T) {
 }
 
 func TestPlanDrag(t *testing.T) {
-	active, later := []string{"a", "b", "c"}, []string{"d", "e"}
+	secs := [][]string{{"n"}, {"a", "b", "c"}, {"d", "e"}} // NOW, ACTIVE, LATER
 	cases := []struct {
 		name  string
 		delta int
-		wantA []string
-		wantL []string
+		want  [][]string
 		ok    bool
 	}{
-		{"b", -1, []string{"b", "a", "c"}, []string{"d", "e"}, true},
-		{"b", 1, []string{"a", "c", "b"}, []string{"d", "e"}, true},
-		{"c", 1, []string{"a", "b"}, []string{"c", "d", "e"}, true},  // over the boundary, down
-		{"d", -1, []string{"a", "b", "c", "d"}, []string{"e"}, true}, // over the boundary, up
-		{"e", -1, []string{"a", "b", "c"}, []string{"e", "d"}, true},
-		{"a", -1, nil, nil, false}, // top of ACTIVE
-		{"e", 1, nil, nil, false},  // bottom of LATER
-		{"z", 1, nil, nil, false},  // unknown
+		{"b", -1, [][]string{{"n"}, {"b", "a", "c"}, {"d", "e"}}, true},
+		{"b", 1, [][]string{{"n"}, {"a", "c", "b"}, {"d", "e"}}, true},
+		{"c", 1, [][]string{{"n"}, {"a", "b"}, {"c", "d", "e"}}, true},  // over the boundary, down
+		{"d", -1, [][]string{{"n"}, {"a", "b", "c", "d"}, {"e"}}, true}, // over the boundary, up
+		{"e", -1, [][]string{{"n"}, {"a", "b", "c"}, {"e", "d"}}, true},
+		{"a", -1, [][]string{{"n", "a"}, {"b", "c"}, {"d", "e"}}, true},  // top of ACTIVE: onto the bottom of NOW
+		{"n", 1, [][]string{{}, {"n", "a", "b", "c"}, {"d", "e"}}, true}, // bottom of NOW: into the top of ACTIVE
+		{"n", -1, nil, false}, // top of NOW
+		{"e", 1, nil, false},  // bottom of LATER
+		{"z", 1, nil, false},  // unknown
 	}
 	for _, c := range cases {
-		gotA, gotL, ok := planDrag(active, later, c.name, c.delta)
+		got, ok := planDrag(secs, c.name, c.delta)
 		if ok != c.ok {
 			t.Errorf("planDrag(%s, %d) ok = %v, want %v", c.name, c.delta, ok, c.ok)
 			continue
 		}
-		if ok && (!reflect.DeepEqual(gotA, c.wantA) || !reflect.DeepEqual(gotL, c.wantL)) {
-			t.Errorf("planDrag(%s, %d) = %v / %v, want %v / %v", c.name, c.delta, gotA, gotL, c.wantA, c.wantL)
+		if ok && !reflect.DeepEqual(got, c.want) {
+			t.Errorf("planDrag(%s, %d) = %v, want %v", c.name, c.delta, got, c.want)
 		}
 	}
-	// The inputs are never modified.
-	if !reflect.DeepEqual(active, []string{"a", "b", "c"}) || !reflect.DeepEqual(later, []string{"d", "e"}) {
-		t.Errorf("planDrag modified its inputs: %v %v", active, later)
+	// The input is never modified.
+	if !reflect.DeepEqual(secs, [][]string{{"n"}, {"a", "b", "c"}, {"d", "e"}}) {
+		t.Errorf("planDrag modified its input: %v", secs)
 	}
 }
 
@@ -180,12 +181,15 @@ func TestDragRowMovesAndWrites(t *testing.T) {
 	if rec.Priority != "active" || rec.Rank != 20 {
 		t.Fatalf("live should be active/20 again: %+v", rec)
 	}
-	// Top of ACTIVE: nothing moves, the status says so.
+	// Top of ACTIVE: up enters NOW (now_test.go); from the top of NOW
+	// nothing moves, the status says so.
 	m.cursor = 0
+	m, _ = press(m, tea.KeyShiftUp)
 	m, cmd = press(m, tea.KeyShiftUp)
 	if cmd != nil || !strings.Contains(m.status, "already at the top") {
 		t.Errorf("drag past the top: cmd=%v status=%q", cmd != nil, m.status)
 	}
+	m, _ = press(m, tea.KeyShiftDown) // back into ACTIVE
 	// An unnamed tab has no record to rank: it must be named first.
 	m.cursor = 3
 	m, cmd = press(m, tea.KeyShiftUp)

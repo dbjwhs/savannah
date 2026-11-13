@@ -33,7 +33,7 @@ work output fix-parser [--last N] [--json]  # what that Claude said: last N turn
 work open fix-parser [--shell] [--json]     # focus the tab; make it again (claude --continue) when it is gone
 work adopt old-tab --session ID [--note T] [--title T] [--json]  # a tab you opened yourself becomes a named session (no new tab)
 work autoname [SESSION_ID...] [--dry-run] [--no-claude] [--json]  # name every such tab from what it is doing (the board runs this)
-work move fix-parser --later [--rank N] [--json]   # which board section (--active/--later) and the order inside it
+work move fix-parser --now [--rank N] [--json]     # which board section (--now/--active/--later) and the order inside it
 work rename fix-parser parser-fix [--json]         # a new record name; worktree, branch and tab keep the old one
 work status fix-parser -- "waiting for ctest (run 2 of 3)"   # report one poll (that tab's Claude runs this)
 work status --here waiting for CI                  # the same from inside the session's own shell
@@ -173,16 +173,18 @@ stderr (`new: copied 3 from .worktreeinclude: ...`). Keep the listed files
 gitignored, or the copies make the worktree dirty and `rm` refuses it until
 `--force`. With `--no-worktree` nothing is copied.
 
-`move NAME --active|--later [--rank N]` says where the row sits on the board:
-`priority` is `active` (the top section, what you are on now) or `later` (the
-bottom one), `rank` orders rows inside a section, lower first. A new session
-is `active` with its creation time as rank, so untouched rows keep arriving in
-order; a record written before the fields existed reads the same way. At
-least one option is required (exit 2 otherwise), `--active` and `--later`
-exclude each other, a negative rank is fine (`--rank=-1` puts a row first).
-Only the record changes: the tab, the worktree and the branch are not
-touched. `--json` gives `{name, priority, rank}`. The board's Shift-Up and
-Shift-Down call this.
+`move NAME --now|--active|--later [--rank N]` says where the row sits on the
+board: `priority` is `now` (the top section, what you are pushing on),
+`active` (what you are on, in the background) or `later` (the bottom one),
+`rank` orders rows inside a section, lower first. A new session is `active`
+with its creation time as rank, so untouched rows keep arriving in order;
+a record written before the fields existed reads the same way, and nothing
+lands in `now` by itself: only this verb and the board's Ctrl-P put a row
+there. At least one option is required (exit 2 otherwise), the three section
+flags exclude each other, a negative rank is fine (`--rank=-1` puts a row
+first). Only the record changes: the tab, the worktree and the branch are
+not touched. `--json` gives `{name, priority, rank}`. The board's Shift-Up,
+Shift-Down and Ctrl-P call this.
 
 `rename OLD NEW` gives the record a new name: `record.json`, `notes.md` and
 `status.json` move to `<NEW>/` and the record is rewritten under the new
@@ -548,7 +550,7 @@ fields, all always present (strings empty when unknown): `name`, `repo`,
 `worktree`, `branch`, `created`, `updated`, `terminal` (`"iterm"`), `tab_id`,
 `claude_pane`, `shell_pane`, `prompt`, the boolean `adopted` (`true` for
 a session made by `adopt`; a record written before the field existed reads
-`false`), `priority` (`"active"` unless the file says `"later"`) and the
+`false`), `priority` (`"active"` unless the file says `"now"` or `"later"`) and the
 integer `rank` (the file's when it parses, else `created`). `ls` skips
 directories whose name is invalid and records whose `worktree` is empty.
 `status.json` sits beside the record and is optional: absent means no

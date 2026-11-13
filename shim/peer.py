@@ -26,7 +26,7 @@
 #   work_jump(name, shell?)         -> focus the tab
 #   work_open(name, shell?)         -> focus the tab, or reopen it when it is gone
 #   work_adopt(name, session_id, note?, title?) -> take a tab the human opened into a named session
-#   work_move(name, priority?, rank?) -> the board section (active/later) and order of a session
+#   work_move(name, priority?, rank?) -> the board section (now/active/later) and order of a session
 #   work_rename(old, new)           -> a new record name (worktree, branch and tab keep theirs)
 #   work_status(name, text?, clear?) -> read, report or clear what that tab's Claude is polling
 #   work_title(name, text?, clear?)  -> read, set or clear the free-text title the board shows
@@ -650,9 +650,12 @@ TOOLS = [
         "name": "work_move",
         "description": (
             "Where a local work session sits on the savannah board: priority "
-            "'active' (the top section, what the human is on now) or 'later' "
-            "(the bottom section), and/or its rank, the order inside the "
-            "section (lower first; a new session ranks by its creation time). "
+            "'now' (the top section, what the human is pushing on), 'active' "
+            "(what they are on in the background) or 'later' (the bottom "
+            "section), and/or its rank, the order inside the section (lower "
+            "first; a new session ranks by its creation time). Nothing lands "
+            "in 'now' by itself: only this tool and the board's Ctrl-P put a "
+            "session there. "
             "At least one of priority or rank is required. Storage only: the "
             "tab, the worktree and the branch are not touched. Returns "
             "{name, priority, rank}."
@@ -666,7 +669,7 @@ TOOLS = [
                 },
                 "priority": {
                     "type": "string",
-                    "enum": ["active", "later"],
+                    "enum": ["now", "active", "later"],
                     "description": "The board section",
                 },
                 "rank": {
@@ -1132,10 +1135,10 @@ def tool_work_move(args):
     priority = args.get("priority")
     rank = args.get("rank")
     if priority is None and rank is None:
-        raise RuntimeError("give priority ('active' or 'later'), rank, or both")
+        raise RuntimeError("give priority ('now', 'active' or 'later'), rank, or both")
     if priority is not None:
-        if priority not in ("active", "later"):
-            raise RuntimeError("priority must be 'active' or 'later'")
+        if priority not in ("now", "active", "later"):
+            raise RuntimeError("priority must be 'now', 'active' or 'later'")
         cli.append(f"--{priority}")
     if rank is not None:
         if isinstance(rank, bool) or not isinstance(rank, int):

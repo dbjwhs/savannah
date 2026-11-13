@@ -43,9 +43,9 @@
 #                             board's new-task dialog reads this
 #   output <name> [--last N]  the last N turns (prompt + reply) of that tab's Claude
 #   rm <name> [--keep-worktree] [--force]
-#   move <name> [--active|--later] [--rank N]
-#                             where the row sits on the board: the ACTIVE
-#                             section or the LATER one, and its order there
+#   move <name> [--now|--active|--later] [--rank N]
+#                             where the row sits on the board: NOW (what you
+#                             are pushing on), ACTIVE or LATER, and its order
 #   rename <old> <new>        a new record name; the worktree, the branch and
 #                             the tab keep the old one (a Claude runs there)
 #   status [<name>|--here] [text...] [--clear]
@@ -118,7 +118,7 @@ LAST_PROMPT_MAX = 200
 STATUS_FILE = "status.json"        # the tab's own Claude's poll report, beside record.json
 STATUS_TEXT_MAX = 200
 TITLE_MAX = 120                    # chars of a session's free-text title (first line, stripped)
-PRIORITIES = ("active", "later")   # the board's two sections; rank orders rows within one
+PRIORITIES = ("now", "active", "later")   # the board's sections, top first; rank orders rows within one
 OUTPUT_PROMPT_CLIP = 120           # chars of the prompt shown on an output header
 HUB_TEMPLATE = "hub_CLAUDE.md"     # sibling of this module; copied into a new hub
 SCRATCH_TEMPLATE = "scratch_CLAUDE.md"
@@ -246,14 +246,14 @@ def normalize_record(rec, name):
     """Fill missing fields and force the name from the directory, never from
     the file (finding 1). `adopted` (a tab the owner opened, taken in by
     `adopt`) is always a real boolean; records written before it existed
-    read False. `priority` is "active" unless the file says "later", and
+    read False. `priority` is "active" unless the file says "now" or "later", and
     `rank` is an int: the file's when it parses, else the creation time, so
     a record from before the board had sections keeps sorting by age.
     `title` is always a str (title_text), "" for a record from before it."""
     for key in RECORD_FIELDS:
         rec.setdefault(key, "")
     rec["adopted"] = bool(rec.get("adopted"))
-    rec["priority"] = "later" if rec.get("priority") == "later" else "active"
+    rec["priority"] = rec.get("priority") if rec.get("priority") in ("now", "later") else "active"
     rec["rank"] = coerce_int(rec.get("rank"), coerce_int(rec.get("created"), 0))
     rec["title"] = title_text(rec.get("title"))
     rec["name"] = name
@@ -1880,15 +1880,19 @@ def cmd_autoname(a):
 
 
 def cmd_move(a):
-    """Where the row sits on the board: the ACTIVE section (what the owner is
-    on now) or LATER, and the rank that orders rows inside a section (lower
-    first; a new session's rank is its creation time, so untouched rows keep
-    arriving in order). Storage only: the tab, the worktree and the branch
-    are not touched."""
-    if not (a.active or a.later or a.rank is not None):
-        return usage_error("move", "give --active, --later or --rank N (or several)")
+    """Where the row sits on the board: the NOW section (what the owner is
+    pushing on, the top of the board), ACTIVE (what they are on, in the
+    background) or LATER, and the rank that orders rows inside a section
+    (lower first; a new session's rank is its creation time, so untouched
+    rows keep arriving in order). Nothing lands in NOW by itself: only this
+    verb and the board's Ctrl-P put a row there. Storage only: the tab, the
+    worktree and the branch are not touched."""
+    if not (a.now or a.active or a.later or a.rank is not None):
+        return usage_error("move", "give --now, --active, --later or --rank N (or several)")
     rec = load_record(a.name)
-    if a.active:
+    if a.now:
+        rec["priority"] = "now"
+    elif a.active:
         rec["priority"] = "active"
     elif a.later:
         rec["priority"] = "later"
@@ -3050,11 +3054,12 @@ def build_parser():
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_autoname)
 
-    p = sub.add_parser("move", help="where the row sits on the board: --active (the top section) or "
-                                    "--later (the bottom one), and/or --rank N (order inside a section)")
+    p = sub.add_parser("move", help="where the row sits on the board: --now (the top section, what you are "
+                                    "pushing on), --active or --later, and/or --rank N (order inside a section)")
     p.add_argument("name")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--active", action="store_true", help="the ACTIVE section: what you are on now")
+    g.add_argument("--now", action="store_true", help="the NOW section at the top: what you are pushing on")
+    g.add_argument("--active", action="store_true", help="the ACTIVE section: what you are on, in the background")
     g.add_argument("--later", action="store_true", help="the LATER section")
     p.add_argument("--rank", type=int, metavar="N",
                    help="order inside the section, lower first (a new session ranks by its creation time)")

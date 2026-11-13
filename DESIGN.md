@@ -1097,3 +1097,43 @@ rows in memory on every keystroke.
    filter matching nothing). Help line 141 columns. Docs: dash README,
    CLAUDE.md.
 
+### 11/13/2026 (NOW: the section above ACTIVE, Ctrl-P)
+
+The owner, after a week on the board at work with thirty tabs: ACTIVE
+is everything live, which is not the three things being jammed on this
+afternoon; "what I need is something above Active ... for items I am
+jamming on". So a fourth section, and the board reads as a timeline:
+NOW, ACTIVE, LATER, HISTORY.
+
+1. **One key, a toggle.** Ctrl-P (push, promote, priority; the key was
+   free) on an ACTIVE or LATER row moves it to the bottom of NOW; on a
+   NOW row it sends it back to the top of ACTIVE. Shift-Up/Down cross
+   the new boundary too, one step at a time, but with thirty rows the
+   toggle is the key. Rejected: a second key for the way back (two
+   keys to learn for one idea), and a cap on NOW (a habit, not a nag:
+   ten rows in NOW is visible and the owner prunes it).
+2. **State on the record, not the board file.** `priority` gains
+   `now`; `work move --now` and the shim's `work_move` take it; a
+   record saying anything else reads `active` as before. Each
+   machine's board keeps its own NOW, and the hub's Claude can set it.
+   Nothing lands in NOW by itself: not `new`, `adopt` or `autoname`.
+3. **Works grouped or filtered.** `sectionNames` now reads the rank
+   order from every session the board knows (`orderSessions`), not
+   from the rows on the screen, so Ctrl-P appends or prepends without
+   needing the neighbours visible; the drag keeps its refusals, since
+   a one-step swap does need them. `planDrag` took the three lists;
+   `renumberAll` and `applyMoves` are the shared halves of a drag and
+   a toggle.
+4. **Shown as.** NOW heads the table, cyan and bold; empty, one hint
+   line ("Ctrl-P puts the session you are pushing on here"), like
+   HISTORY's; the header counts "N now". The fade applies in NOW: a
+   row said to be pushed on and untouched for three hours going faint
+   is the signal. The board's minimum height is 19 lines, the help
+   line 149 columns whole (at 100 it now ends at "^O out").
+5. **Tests.** `dash/now_test.go` (the toggle both ways with the ranks
+   and the writes, the header count and the hint, grouped, filtered,
+   an unnamed tab and a closed session refused, a drag into and out of
+   NOW); `planDrag` cases over three sections; `test_work.py` (`--now`
+   stored and read, exclusive with `--active`); `test_shim.py`
+   (`priority: now`). Docs: work README, dash README, CLAUDE.md.
+

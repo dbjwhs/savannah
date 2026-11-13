@@ -7,7 +7,7 @@ Each task is a **work session** (see `../work/`): one iTerm2 tab, named
 after the task, with interactive Claude in a git worktree above and a shell
 in the same worktree below. The board lists every work session and every
 other open Claude Code tab on this machine (via the session hook, see
-`../hooks/`) in two sections you order yourself, **ACTIVE** and **LATER**,
+`../hooks/`) in three sections you order yourself, **NOW**, **ACTIVE** and **LATER**,
 flags the ones blocked on a permission prompt or your input (and counts
 them in the header), shows which ones are polling something for you, and
 gives you one key for each thing you used to do by hand:
@@ -38,10 +38,18 @@ gives you one key for each thing you used to do by hand:
   changes that one. Wherever a name is asked for (Ctrl-R, Ctrl-T, Ctrl-N)
   you may type words instead: "Fix the parser" becomes the title and
   `fix-the-parser` the name.
+- **Ctrl-P** puts the highlighted session in **NOW**, the section above
+  ACTIVE for the few things you are pushing on today, at its bottom; on a
+  NOW row it sends the session back to the top of ACTIVE. One key, a
+  toggle, and it works while grouped or filtered. Nothing lands in NOW by
+  itself (not a new session, not a named tab): only Ctrl-P and `work move
+  --now`. An empty NOW is one dim hint line; the header counts "N now";
+  there is no cap, a long NOW is yours to prune. The state is the record's
+  priority, so each machine's board keeps its own NOW.
 - **Shift-Up / Shift-Down** (Option-Up / Option-Down and Ctrl-Up / Ctrl-Down
   do the same; macOS takes Ctrl-arrows for Mission Control by default) move
   the highlighted session one row: within its section, or over the line
-  between ACTIVE and LATER at the ends. The order lives in the records (`work move`), so it
+  between NOW, ACTIVE and LATER at the ends. The order lives in the records (`work move`), so it
   survives a restart and `work ls` sees the same.
 - The tabs you opened by hand get **named for you** when the board comes
   up: each plain tab that has a prompt is handed to `savannah work
@@ -51,7 +59,7 @@ gives you one key for each thing you used to do by hand:
   tab. The status line says what was named; Ctrl-R changes a title you do
   not like. `--no-autoname` turns it off for one run, `"autoname": "off"`
   in the board file for good.
-- **Ctrl-G** groups the rows by repository: inside ACTIVE and LATER every
+- **Ctrl-G** groups the rows by repository: inside NOW, ACTIVE and LATER every
   repository's sessions come together under a dim header naming it (and
   counting them), so every ZFS tab is one glance. Inside the group the
   main checkout leads and the other checkouts follow by name
@@ -101,7 +109,8 @@ left off; Enter on it reopens the tab. The worktree path
 
 ## Sections, order and polling
 
-Rows sit in **ACTIVE** and **LATER**, with **HISTORY** below them for the
+Rows sit in **NOW** (what you are pushing on, Ctrl-P), **ACTIVE** and
+**LATER**, with **HISTORY** below them for the
 closed sessions (a work record whose tab is gone): one header line with
 the count, closed by default so the live rows have the screen; **Ctrl-E**
 opens it (the rows newest first, Enter reopens one, Ctrl-X removes it,
@@ -110,7 +119,7 @@ choice is remembered in the board file (`"history": "open"`). The header
 counts closed sessions apart ("12 sessions   3 closed"). A closed session
 has no place in the rank order, so a drag on it is refused; reopening it
 puts it back in its section. A named session is in the section its
-record's `priority` says (active unless moved) and in `rank` order inside
+record's `priority` says (`now`, `later`, else active) and in `rank` order inside
 it (records from before ranks existed sort by creation time); unnamed tabs
 close the LATER section in attention order (waiting first, then working,
 done, idle). Attention never reorders a named row: a session that needs
@@ -329,9 +338,12 @@ Board:
 
 - **up / down** move the highlighted row (across every section)
 - **Shift-Up / Shift-Down** (also **Option-Up / Option-Down** and
-  **Ctrl-Up / Ctrl-Down**) move a named session one row within ACTIVE or LATER, or over the line between them
-  from the bottom of ACTIVE or the top of LATER (`work move`); an unnamed
+  **Ctrl-Up / Ctrl-Down**) move a named session one row within NOW, ACTIVE or LATER, or over the line between
+  two of them from the bottom of one or the top of the next (`work move`); an unnamed
   tab must be named first
+- **Ctrl-P** moves a named session into NOW (at the bottom) or, from NOW,
+  back to the top of ACTIVE (`work move --now` / `--active`, the sections
+  renumbered like a drag); refused on an unnamed tab or a closed session
 - On a **work session** row: **Enter** with an empty prompt line focuses
   its tab, or reopens it when the row is offline (`work open`); **type +
   Enter** types that text into its Claude (`work say`); **Ctrl-O** opens the
@@ -494,7 +506,7 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-T on a plain tab, Enter | `savannah work adopt <name> --session=<hook session id> [--title=<words>] --json`, then the note |
 | Ctrl-R on a plain tab, Enter | `savannah work adopt <name> --session=<hook session id> [--title=<words>] --json` (no note) |
 | Ctrl-R on a work session, Enter | `savannah work title <name> -- <words>`, or `savannah work title <name> --clear` on an empty Enter |
-| Shift-Up / Shift-Down | `savannah work move <name> --active\|--later --rank=<N>`, once per record whose place changed |
+| Shift-Up / Shift-Down, Ctrl-P | `savannah work move <name> --now\|--active\|--later --rank=<N>`, once per record whose place changed |
 | (STATE, WHAT, panel, header) | `<work dir>/<name>/status.json`, written by `savannah work status <name> -- <text>` from inside the tab |
 | (WORK column of an unnamed tab) | `it2 session list --json` every 5 s, for the tab titles |
 | Ctrl-O | `savannah work output <name> --last 5` (every 2 s) |

@@ -1,8 +1,9 @@
-// order.go: the two sections of the board, dragging rows between them, and
+// order.go: the sections of the board, dragging rows between them, and
 // naming (Ctrl-R).
 //
-// Named sessions (rows with a work record) sit in ACTIVE or LATER by the
-// record's priority, in rank order within a section. That order is the
+// Named sessions (rows with a work record) sit in NOW, ACTIVE or LATER by
+// the record's priority, in rank order within a section (NOW is what the
+// owner is pushing on, now.go). That order is the
 // owner's, kept in the records (`work move`), and the board never reorders
 // it by state: a session that needs you keeps its glyph, its colour and its
 // place in the "N need you" count, not a new row. Unnamed tabs (hook
@@ -13,9 +14,9 @@
 // (titles come from `it2 session list --json` on a slow tick).
 //
 // A drag (Shift-Up/Down; Ctrl-Up/Down and Option-Up/Down too) swaps a row with its neighbour
-// in the same section, or carries it over the boundary: down from the
-// bottom of ACTIVE lands at the top of LATER, up from the top of LATER at
-// the bottom of ACTIVE. Ranks are then renumbered 10, 20, 30 per section
+// in the same section, or carries it over a boundary: down from the bottom
+// of one section lands at the top of the next, up from the top at the
+// bottom of the one above. Ranks are then renumbered 10, 20, 30 per section
 // and only the records whose (priority, rank) changed are written, through
 // `savannah work move`, after the board has already drawn the new order.
 //
@@ -38,10 +39,33 @@ import (
 )
 
 const (
-	secActive = iota
+	secNow    = iota // what the owner is pushing on (now.go)
+	secActive        // what they are on, in the background
 	secLater
 	secHistory // closed (offline) work sessions, at the bottom (history.go)
 )
+
+// priorityName is the record value a section is written as (`work move
+// --now|--active|--later`); HISTORY has none.
+func priorityName(sec int) string {
+	switch sec {
+	case secNow:
+		return "now"
+	case secLater:
+		return "later"
+	}
+	return "active"
+}
+
+// priorityOf is a record's priority as the board reads it: an unknown or
+// missing one is active.
+func priorityOf(r workRecord) string {
+	switch r.Priority {
+	case "now", "later":
+		return r.Priority
+	}
+	return "active"
+}
 
 const (
 	rankStep     = 10
@@ -50,6 +74,8 @@ const (
 
 func sectionName(sec int) string {
 	switch sec {
+	case secNow:
+		return "NOW"
 	case secActive:
 		return "ACTIVE"
 	case secHistory:
@@ -68,8 +94,13 @@ func sectionOf(s session, recs map[string]workRecord) int {
 	if s.Work == "" {
 		return secLater
 	}
-	if r, ok := recs[s.Work]; ok && r.Priority == "later" {
-		return secLater
+	if r, ok := recs[s.Work]; ok {
+		switch priorityOf(r) {
+		case "now":
+			return secNow
+		case "later":
+			return secLater
+		}
 	}
 	return secActive
 }
@@ -96,7 +127,7 @@ func recordMap(work []workRecord) map[string]workRecord {
 	return out
 }
 
-// orderSessions arranges sessions for the board: ACTIVE then LATER, named
+// orderSessions arranges sessions for the board: NOW, ACTIVE, LATER, named
 // rows by (rank, name) inside each, unnamed tabs after LATER's named rows in
 // the order given (the attention sort from joinWork). Stable, so equal keys
 // keep their incoming order.
@@ -134,11 +165,20 @@ func (m model) sectionLines(sec, n int) []string {
 	if sec == secHistory {
 		return historyLines(n, m.history || m.filter != "")
 	}
-	out := []string{headerStyle.Render(fmt.Sprintf("%s (%d)", sectionName(sec), n))}
+	style := headerStyle
+	if sec == secNow {
+		style = nowStyle
+	}
+	out := []string{style.Render(fmt.Sprintf("%s (%d)", sectionName(sec), n))}
 	if n == 0 {
-		hint := "  (empty: Shift-Down on a session above moves it here)"
-		if sec == secActive {
+		var hint string
+		switch sec {
+		case secNow:
+			hint = "  (empty: Ctrl-P puts the session you are pushing on here)"
+		case secActive:
 			hint = "  (empty: Shift-Up on a named session below moves it here)"
+		default:
+			hint = "  (empty: Shift-Down on a session above moves it here)"
 		}
 		out = append(out, helpStyle.Render(hint))
 	}
@@ -150,37 +190,42 @@ func (m model) sectionLines(sec, n int) []string {
 // moveChange is one record's new place: the argv of one `work move`.
 type moveChange struct {
 	name     string
-	priority string // "active" | "later"
+	priority string // "now" | "active" | "later"
 	rank     int64
 }
 
 // planDrag moves the named session one step (delta -1 up, +1 down) through
-// the ordered names of the two sections. ok is false when the row cannot
-// move: unknown, at the top of ACTIVE going up, at the bottom of LATER
-// going down.
-func planDrag(active, later []string, name string, delta int) (newActive, newLater []string, ok bool) {
-	active = append([]string{}, active...)
-	later = append([]string{}, later...)
-	ia, il := indexOf(active, name), indexOf(later, name)
-	switch {
-	case ia >= 0 && delta < 0 && ia > 0:
-		active[ia], active[ia-1] = active[ia-1], active[ia]
-	case ia >= 0 && delta > 0 && ia < len(active)-1:
-		active[ia], active[ia+1] = active[ia+1], active[ia]
-	case ia >= 0 && delta > 0: // bottom of ACTIVE: into the top of LATER
-		active = append(active[:ia], active[ia+1:]...)
-		later = append([]string{name}, later...)
-	case il >= 0 && delta < 0 && il > 0:
-		later[il], later[il-1] = later[il-1], later[il]
-	case il >= 0 && delta > 0 && il < len(later)-1:
-		later[il], later[il+1] = later[il+1], later[il]
-	case il >= 0 && delta < 0: // top of LATER: onto the bottom of ACTIVE
-		later = append(later[:il], later[il+1:]...)
-		active = append(active, name)
-	default:
-		return active, later, false
+// the ordered names of the sections (NOW, ACTIVE, LATER, in that order).
+// ok is false when the row cannot move: unknown, at the top of the first
+// section going up, at the bottom of the last going down. The input is
+// never modified.
+func planDrag(secs [][]string, name string, delta int) (out [][]string, ok bool) {
+	out = make([][]string, len(secs))
+	for i, names := range secs {
+		out[i] = append([]string{}, names...)
 	}
-	return active, later, true
+	for si, names := range out {
+		i := indexOf(names, name)
+		if i < 0 {
+			continue
+		}
+		switch {
+		case delta < 0 && i > 0:
+			names[i], names[i-1] = names[i-1], names[i]
+		case delta > 0 && i < len(names)-1:
+			names[i], names[i+1] = names[i+1], names[i]
+		case delta > 0 && si < len(out)-1: // bottom of a section: into the top of the next
+			out[si] = append(names[:i], names[i+1:]...)
+			out[si+1] = append([]string{name}, out[si+1]...)
+		case delta < 0 && si > 0: // top of a section: onto the bottom of the one above
+			out[si] = append(names[:i], names[i+1:]...)
+			out[si-1] = append(out[si-1], name)
+		default:
+			return out, false
+		}
+		return out, true
+	}
+	return out, false
 }
 
 func indexOf(names []string, name string) int {
@@ -206,33 +251,56 @@ func renumber(names []string, priority string, recs map[string]workRecord) []mov
 				cur = r.Created
 			}
 		}
-		have := "active"
-		if r.Priority == "later" {
-			have = "later"
-		}
-		if !ok || have != priority || cur != want {
+		if !ok || priorityOf(r) != priority || cur != want {
 			out = append(out, moveChange{name: n, priority: priority, rank: want})
 		}
 	}
 	return out
 }
 
-// sectionNames lists the named sessions of each section from the board's
-// rows, in display order.
-func (m model) sectionNames() (active, later []string) {
+// sectionNames lists the named sessions of NOW, ACTIVE and LATER (indexed
+// by section) in rank order, from every session the board knows, shown or
+// not: the order the records hold, whatever the grouping or filter hides.
+func (m model) sectionNames() [][]string {
+	out := make([][]string, secHistory)
 	recs := recordMap(m.work)
-	for _, r := range m.rows {
-		if r.kind != rowSession || r.s.Work == "" {
+	for _, s := range orderSessions(m.sessions, m.work) {
+		if s.Work == "" {
 			continue
 		}
-		switch sectionOf(r.s, recs) {
-		case secActive:
-			active = append(active, r.s.Work)
-		case secLater:
-			later = append(later, r.s.Work)
+		if sec := sectionOf(s, recs); sec < secHistory {
+			out[sec] = append(out[sec], s.Work)
 		}
 	}
-	return
+	return out
+}
+
+// applyMoves is the local half of a move: the board's copy of the records
+// takes the new places (so the next frame shows them), the rows are
+// rebuilt and the cursor follows the named row.
+func (m *model) applyMoves(changes []moveChange, name string) {
+	for i := range m.work {
+		for _, c := range changes {
+			if m.work[i].Name == c.name {
+				m.work[i].Priority, m.work[i].Rank = c.priority, c.rank
+			}
+		}
+	}
+	m.rebuildRows()
+	for i, row := range m.rows {
+		if row.kind == rowSession && row.s.Work == name {
+			m.cursor = i
+		}
+	}
+}
+
+// renumberAll is every record whose place changed across the sections.
+func renumberAll(secs [][]string, recs map[string]workRecord) []moveChange {
+	var changes []moveChange
+	for sec, names := range secs {
+		changes = append(changes, renumber(names, priorityName(sec), recs)...)
+	}
+	return changes
 }
 
 // dragRow is the Shift-Up/Down key: plans the move, applies it to the
@@ -263,8 +331,7 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	name := r.s.Work
-	active, later := m.sectionNames()
-	newActive, newLater, can := planDrag(active, later, name, delta)
+	secs, can := planDrag(m.sectionNames(), name, delta)
 	if !can {
 		where := "top"
 		if delta > 0 {
@@ -273,23 +340,10 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 		m.status = helpStyle.Render(name + " is already at the " + where)
 		return m, nil
 	}
-	recs := recordMap(m.work)
-	changes := append(renumber(newActive, "active", recs), renumber(newLater, "later", recs)...)
+	changes := renumberAll(secs, recordMap(m.work))
 	// Apply locally first: the board redraws in the new order now, and the
 	// next tick's read of the records (written below) agrees.
-	for i := range m.work {
-		for _, c := range changes {
-			if m.work[i].Name == c.name {
-				m.work[i].Priority, m.work[i].Rank = c.priority, c.rank
-			}
-		}
-	}
-	m.rebuildRows()
-	for i, row := range m.rows {
-		if row.kind == rowSession && row.s.Work == name {
-			m.cursor = i
-		}
-	}
+	m.applyMoves(changes, name)
 	m.status = ""
 	if len(changes) == 0 {
 		return m, nil
