@@ -1487,7 +1487,12 @@ def adopt_session(name, h, session_id, title="", note=""):
     (which becomes the session's worktree as it is) and its iTerm2 pane (the
     join key). Refuses (UserError, no record left behind) an invalid or taken
     name, a session whose directory is not here, or a pane some record
-    already claims."""
+    claims AND joins (the same rule as the board: the record's worktree is
+    the hook's directory). A record that claims the pane but cannot join
+    the hook session (the pane now runs a Claude in another directory, so
+    that record's own tab is gone) has a stale claim: it is released, the
+    record's claude_pane and tab_id cleared, so `say` and `rm` on the old
+    record never reach the new tab, and `open` remakes its own."""
     if not valid_name(name):
         raise UserError(f"invalid name {name!r}: {NAME_HELP}")
     rdir = claim_record_dir(name)
@@ -1499,8 +1504,15 @@ def adopt_session(name, h, session_id, title="", note=""):
         pane = iterm_uuid(h.get("iterm_session_id") if isinstance(h.get("iterm_session_id"), str) else "")
         if pane:
             for other in list_records():
-                if other.get("claude_pane") == pane:
+                if other.get("claude_pane") != pane:
+                    continue
+                if join_session(other, [h]) is not None:
                     raise UserError(f"that tab is already work session {other['name']}")
+                stale = load_record(other["name"])
+                stale["claude_pane"], stale["tab_id"] = "", ""
+                save_record(stale)
+                log_warn("pane released", name=other["name"], claude_pane=pane, to=name,
+                         why="the pane runs a Claude in another directory")
         try:
             repo = resolve_repo_root(project)
         except UserError:

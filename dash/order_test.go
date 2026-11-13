@@ -190,11 +190,30 @@ func TestDragRowMovesAndWrites(t *testing.T) {
 		t.Errorf("drag past the top: cmd=%v status=%q", cmd != nil, m.status)
 	}
 	m, _ = press(m, tea.KeyShiftDown) // back into ACTIVE
-	// An unnamed tab has no record to rank: it must be named first.
-	m.cursor = 3
+	// An unnamed tab has no record to rank: the drag names it from its tab
+	// title (else its directory) and puts it at the bottom of LATER's
+	// named rows; the adopt and the move are one command sequence.
+	m.titles = map[string]string{"UUID-W": "Local testing"}
+	cursorTo(t, &m, hookRow("s3"))
 	m, cmd = press(m, tea.KeyShiftUp)
-	if cmd != nil || !strings.Contains(m.status, "name this tab first") {
-		t.Errorf("drag on a plain tab: cmd=%v status=%q", cmd != nil, m.status)
+	if cmd == nil || !strings.Contains(m.status, "naming it local-testing") {
+		t.Fatalf("drag on a plain tab should name it: cmd=%v status=%q", cmd != nil, m.status)
+	}
+	rec, ok := m.recordOf("local-testing")
+	if !ok || rec.Title != "Local testing" || rec.Priority != "later" || !rec.Adopted || rec.Worktree != "/elsewhere" {
+		t.Fatalf("the drag's record: %+v (ok=%v)", rec, ok)
+	}
+	if got := rowNames(m); !reflect.DeepEqual(got, []string{"parked", "live", "slow", "local-testing", "#s2"}) {
+		t.Fatalf("after naming s3 by a drag: %v", got)
+	}
+	if m.cursor != 3 || !m.nameTried["s3"] {
+		t.Errorf("cursor=%d tried=%v", m.cursor, m.nameTried["s3"])
+	}
+	// Without a title the name comes from the directory.
+	cursorTo(t, &m, hookRow("s2"))
+	m, _ = press(m, tea.KeyShiftDown)
+	if _, ok := m.recordOf("other"); !ok || !strings.Contains(m.status, "naming it other") {
+		t.Errorf("a plain tab with no title is named from its directory: status=%q", m.status)
 	}
 	// A failed move is reported and the records re-read.
 	next, cmd = m.Update(workMovedMsg{err: "live: no such work session"})

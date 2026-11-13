@@ -131,8 +131,12 @@ the records whose place changed; the board redraws in the new order first
 and re-reads the records on its next tick, so a refusal from the CLI puts
 the old order back. An unnamed tab shows its iTerm2 tab title in
 parentheses in the WORK column (from `it2 session list --json`, every five
-seconds) and cannot be moved until Ctrl-R names it: there is no record to
-hold its rank. Both empty sections say where a move would land.
+seconds); it has no record to hold a rank, so the first Shift-Up (or
+Ctrl-P) names it, with the tab title as its title and the name derived
+from it (its directory when it has no title), the way Ctrl-R would, then
+moves it: a drag lands it at the bottom of LATER's named rows, from where
+the next drag goes on; Ctrl-P lands it in NOW. The empty sections say
+where a move would land.
 
 **Ctrl-G** gathers each section's rows by repository. The sections and
 the rank order inside them stay; what changes is that one repository's
@@ -359,10 +363,12 @@ Board:
 - **Shift-Up / Shift-Down** (also **Option-Up / Option-Down** and
   **Ctrl-Up / Ctrl-Down**) move a named session one row within NOW, ACTIVE or LATER, or over the line between
   two of them from the bottom of one or the top of the next (`work move`); an unnamed
-  tab must be named first
+  tab is named first, from its tab title (`work adopt`), and lands at the
+  bottom of LATER's named rows
 - **Ctrl-P** moves a named session into NOW (at the bottom) or, from NOW,
   back to the top of ACTIVE (`work move --now` / `--active`, the sections
-  renumbered like a drag); refused on an unnamed tab or a closed session
+  renumbered like a drag); an unnamed tab is named first, from its tab
+  title (`work adopt`); refused on a closed session
 - On a **work session** row: **Enter** with an empty prompt line focuses
   its tab, or reopens it when the row is offline (`work open`); **type +
   Enter** types that text into its Claude (`work say`); **Ctrl-O** opens the
@@ -650,8 +656,9 @@ file under its path has been swapped. Nothing here is stdlib-external:
   working), while a tab you read but did not type into fades on schedule:
   reading is not activity the hook can see.
 - Moving a row is one step per Shift-Up/Down; there is no mouse drag and no
-  multi-select. An unnamed tab cannot move (nothing holds its rank): name
-  it first. Two boards open at once each write the order they last saw;
+  multi-select. Moving an unnamed tab names it (there is nothing else to
+  hold its rank), and the name is the tab title's slug, `-2` when taken:
+  Ctrl-R edits the title after, `work rename` the name. Two boards open at once each write the order they last saw;
   the records are the truth, both re-read them every second, the last move
   wins.
 - "polling" is self-reported: the board shows what the tab's Claude wrote

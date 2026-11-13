@@ -111,7 +111,14 @@ even when another tab runs in the same directory. `tab_id` is looked up in
 `it2 session list` and stays empty when it2 cannot see the pane;
 `shell_pane` is empty, there is none; `prompt` is empty; `adopted` is
 `true`. `--note` records a first note, `--json` prints the record. A tab
-that already belongs to a work session is refused by its pane id. From then
+that already belongs to a work session is refused: a record claims its
+pane AND joins the session (its worktree is the tab's directory), the rule
+the board joins by. A record that claims the pane but cannot join it (the
+pane now runs a Claude in another directory; the old session there is
+gone, its record offline) holds a stale claim: the adopt goes through and
+the stale record lets go of the pane (`claude_pane` and `tab_id` cleared,
+WARN `pane released` in the log), so its `say` and `rm` never reach the
+new tab and its `open` remakes its own. From then
 on `note`, `say`, `output`, `open`, `jump` and `rm` address it like any other
 session. `rm` of an adopted session archives the notes, closes its pane
 (best effort) and deletes the record, and NEVER runs `git worktree remove`

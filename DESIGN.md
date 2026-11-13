@@ -1174,3 +1174,47 @@ mouse reporting is on by default; the map is small on purpose.
    the flags. Docs: dash README (a section, the keys, the table, the
    limits), the CLI usage line, CLAUDE.md.
 
+### 11/13/2026, later again (a tab that could not be named, and moving the unnamed)
+
+The owner's screenshot from the delphix board: a plain tab titled "(✱
+ZFS shared slog takeover)" refused every name with "adopt: that tab is
+already work session resuming-zfs-slog-takeover". Two findings, two
+fixes.
+
+1. **The pane claim and the join disagreed.** `adopt` refused on the
+   pane id alone: any record whose `claude_pane` was the tab's pane.
+   The board (and `ls`, and autoname's "unclaimed") join by directory
+   first (`realpath(hook.project) == realpath(record.worktree)`), pane
+   second. The old session in that pane had a record (autonamed, in
+   `~/ng/delphix`); the owner started a new Claude in the same pane
+   in `~/ng/delphix/.claude`; the old record went offline (HISTORY),
+   the new session showed plain, and no name could take it: the
+   pane was "already" the old record's. Autoname hit the same wall,
+   which is why the tab stayed unnamed. Fix: `adopt_session` refuses
+   only when the claiming record also joins the hook session
+   (`join_session(other, [h])`), the board's own rule. A record that
+   claims the pane without joining it holds a stale claim: its
+   `claude_pane` and `tab_id` are cleared (WARN `pane released`), so
+   its `say` and `rm` never reach the new tab and its `open` remakes
+   its own; the adopt goes through. Rejected: joining by pane over
+   the directory (a tab reused for other work would keep the old
+   name and notes, which is a different, worse surprise).
+2. **Moving an unnamed tab names it.** "It is lame to have to rename
+   something before I can move it": Shift-Up/Down and Ctrl-P on a
+   plain tab now adopt it first, with the tab title as the title and
+   the name derived from it (`nameFor`, as Ctrl-R's Enter would), the
+   directory's name when there is no title; the board's records and
+   sessions take the new record locally so the move plans with it,
+   and the `work adopt` and the `work move` run as one sequence. A
+   drag lands it at the bottom of LATER's named rows (above the
+   unnamed ones, from where the next drag goes on); Ctrl-P lands it
+   in NOW. The tab is marked tried for autoname so the two never race
+   for one name.
+3. **Tests.** `test_work.py`: a second hook in the same pane in
+   another directory adopts, the stale record lets go of the pane,
+   the release is logged, both still join their own tabs; the
+   same-tab refusal stays. `dash/order_test.go` and `now_test.go`:
+   a drag and a Ctrl-P on a plain tab name it (title, else the
+   directory), place it, and run the sequence. Docs: work README
+   (adopt), dash README (sections, keys, limits), CLAUDE.md.
+

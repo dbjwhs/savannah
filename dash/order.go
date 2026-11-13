@@ -294,6 +294,39 @@ func (m *model) applyMoves(changes []moveChange, name string) {
 	}
 }
 
+// adoptForMove names an unnamed tab so it can take a place in the order:
+// the name and title come from its tab title (the words the board shows
+// for it, nameFor), else from its directory (suggestName), as Ctrl-R would
+// offer; the board's copy of the records and sessions take the new record
+// at once, in the section given at the bottom (the adopt itself writes
+// active, the move that follows corrects it), so that move can plan with it, and the `work adopt`
+// is the first command of the sequence the caller runs. The tab is marked
+// tried for autoname so the two never race for one name.
+func (m *model) adoptForMove(s session, priority string) (name string, cmd tea.Cmd) {
+	taken := m.takenNames()
+	name, title, nerr := nameFor(titleOf(s, m.titles), taken)
+	if nerr != "" {
+		name, title = suggestName(s.Project, "", taken), ""
+	}
+	now := nowUnix()
+	m.work = append(m.work, workRecord{
+		Name: name, Title: title, Worktree: s.Project, Repo: s.Project,
+		ClaudePane: itermUUID(s.ITerm), Adopted: true,
+		Priority: priority, Rank: now, Created: now, Updated: now,
+	})
+	for i := range m.sessions {
+		if m.sessions[i].ID == s.ID && m.sessions[i].Work == "" {
+			m.sessions[i].Work, m.sessions[i].WorkTitle = name, title
+		}
+	}
+	if m.nameTried == nil {
+		m.nameTried = map[string]bool{}
+	}
+	m.nameTried[s.ID] = true
+	slog.Info("action", "do", "adopt for move", "name", name, "title", title, "session", s.ID)
+	return name, m.workAdoptCmd(name, s.ID, title)
+}
+
 // renumberAll is every record whose place changed across the sections.
 func renumberAll(secs [][]string, recs map[string]workRecord) []moveChange {
 	var changes []moveChange
@@ -312,13 +345,20 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 	if !ok || r.kind != rowSession {
 		return m, nil
 	}
-	if r.s.Work == "" {
-		m.status = warnStyle.Render("name this tab first (Ctrl-R); then it can be moved")
-		return m, nil
-	}
 	if r.s.State == "offline" {
 		m.status = warnStyle.Render("a closed session sits in HISTORY and has no place in the order; Enter reopens it")
 		return m, nil
+	}
+	if r.s.Work == "" {
+		// An unnamed tab has no record to hold a rank: it gets one, named
+		// from its tab title, and lands at the bottom of LATER's named rows
+		// (above the unnamed ones), from where the next drag goes on.
+		name, adopt := m.adoptForMove(r.s, "later")
+		secs := m.sectionNames()
+		changes := renumberAll(secs, recordMap(m.work))
+		m.applyMoves(changes, name)
+		m.status = "naming it " + name + " so it can be moved..."
+		return m, tea.Sequence(adopt, m.workMoveCmd(changes))
 	}
 	if m.group {
 		// The drag edits the rank order, and the grouped view does not show

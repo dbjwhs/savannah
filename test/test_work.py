@@ -818,6 +818,32 @@ def main():
     check(p.returncode == 1 and "already work session mine" in p.stderr,
           f"adopting the same tab twice is refused ({p.stderr.strip()})")
     check(not os.path.exists(os.path.join(workroot, "again")), "a refused adopt leaves no record dir")
+    # The same pane, a new Claude in another directory: mine's claim on the
+    # pane is stale (it cannot join that session), so the adopt goes through
+    # and mine lets go of the pane.
+    elsewhere = tempfile.mkdtemp(prefix="elsewhere-")
+    with open(os.path.join(sessions, "adopt-2.json"), "w") as f:
+        json.dump({"session_id": "adopt-2", "project": elsewhere, "state": "idle",
+                   "iterm_session_id": "w0t0p0:ZZ-PANE", "updated": int(time.time()),
+                   "last_prompt": "something else", "transcript_path": ""}, f)
+    j = run_json(["adopt", "fresh", "--session=adopt-2", "--json"])
+    check(j.get("name") == "fresh" and j.get("claude_pane") == "ZZ-PANE" and j.get("worktree") == elsewhere,
+          f"a stale pane claim does not block a new adopt ({j})")
+    check(record("mine")["claude_pane"] == "" and record("mine")["tab_id"] == "",
+          f"the stale record let go of the pane ({record('mine')})")
+    with open(os.path.join(logdir, "savannah.log")) as f:
+        check("pane released" in f.read(), "the release is logged")
+    entries = {e["name"]: e for e in run_json(["ls", "--json"])}
+    check(entries["mine"].get("claude_session_id") == "adopt-1" and entries["fresh"].get("claude_session_id") == "adopt-2",
+          f"each record still joins its own tab, mine by directory now ({entries['mine'].get('claude_session_id')}, {entries['fresh'].get('claude_session_id')})")
+    check(run(["rm", "fresh"]).returncode == 0, "rm fresh")
+    os.remove(os.path.join(sessions, "adopt-2.json"))
+    shutil.rmtree(elsewhere, ignore_errors=True)
+    # A record never reclaims a pane (`open` remakes its tab when the pane is
+    # gone); the checks below want mine on its pane again, so put it back.
+    restored = record("mine")
+    restored["claude_pane"] = "ZZ-PANE"
+    write_record("mine", restored)
     p = run(["adopt", "Bad Name", "--session=adopt-1"])
     check(p.returncode == 1 and "invalid name" in p.stderr, "adopt validates the name")
     p = run(["adopt", "ghost", "--session=nope"])

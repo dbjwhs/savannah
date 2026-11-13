@@ -118,10 +118,16 @@ func TestCtrlPAnywhere(t *testing.T) {
 	}
 	m = m.clearFind()
 
+	// An unnamed tab is named from its tab title and pushed in one go.
+	m.titles = map[string]string{"UUID-W": "Slog work"}
 	cursorTo(t, &m, hookRow("s3"))
 	m, cmd = press(m, tea.KeyCtrlP)
-	if cmd != nil || !strings.Contains(m.status, "name this tab first") {
-		t.Errorf("an unnamed tab is refused: cmd=%v status=%q", cmd != nil, m.status)
+	rec, _ = m.recordOf("slog-work")
+	if cmd == nil || rec.Priority != "now" || rec.Title != "Slog work" || !strings.Contains(m.status, "naming it slog-work") {
+		t.Errorf("Ctrl-P on an unnamed tab should name and push it: %+v status=%q", rec, m.status)
+	}
+	if got := m.sectionNames()[secNow]; !reflect.DeepEqual(got, []string{"live", "parked", "slog-work"}) {
+		t.Errorf("NOW after the push: %v", got)
 	}
 
 	h := groupedBoard(t) // b2 is closed

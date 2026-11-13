@@ -7,7 +7,9 @@
 // promote, priority), a toggle: on an ACTIVE or LATER row it moves the row
 // to the bottom of NOW; on a NOW row it sends it back to the top of ACTIVE.
 // Shift-Up/Down cross the boundary too, one step at a time (order.go), but
-// the toggle is the one key that works from anywhere. Nothing lands in NOW
+// the toggle is the one key that works from anywhere. An unnamed tab is
+// named first, from its tab title, by the same key (adoptForMove), since
+// having to name a thing before it can be moved is a chore. Nothing lands in NOW
 // by itself: not autoname, not adopt, not new; only Ctrl-P and `work move
 // --now`. The state is the record's priority, so the two boards of two
 // machines each keep their own NOW, and the board file holds nothing new.
@@ -37,15 +39,17 @@ func (m model) pressNow() (tea.Model, tea.Cmd) {
 		m.status = warnStyle.Render("Ctrl-P moves a session to NOW; select one")
 		return m, nil
 	}
-	if r.s.Work == "" {
-		m.status = warnStyle.Render("name this tab first (Ctrl-R); then Ctrl-P can move it to NOW")
-		return m, nil
-	}
 	if r.s.State == "offline" {
 		m.status = warnStyle.Render("a closed session sits in HISTORY; Enter reopens it, then Ctrl-P")
 		return m, nil
 	}
 	name := r.s.Work
+	var adopt tea.Cmd
+	if name == "" {
+		// An unnamed tab is named from its tab title first (order.go), then
+		// pushed like any other.
+		name, adopt = m.adoptForMove(r.s, "active")
+	}
 	secs := m.sectionNames()
 	var into int
 	if indexOf(secs[secNow], name) >= 0 {
@@ -66,6 +70,10 @@ func (m model) pressNow() (tea.Model, tea.Cmd) {
 		m.status = name + " is back at the top of ACTIVE"
 	}
 	slog.Info("action", "do", "now", "name", name, "section", sectionName(into), "writes", len(changes))
+	if adopt != nil {
+		m.status = "naming it " + name + " and moving it to NOW..."
+		return m, tea.Sequence(adopt, m.workMoveCmd(changes))
+	}
 	if len(changes) == 0 {
 		return m, nil
 	}
