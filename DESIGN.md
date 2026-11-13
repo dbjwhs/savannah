@@ -1137,3 +1137,40 @@ NOW, ACTIVE, LATER, HISTORY.
    stored and read, exclusive with `--active`); `test_shim.py`
    (`priority: now`). Docs: work README, dash README, CLAUDE.md.
 
+### 11/13/2026, later (B: the rows clicked)
+
+Item B of the owner's list, "clicking a session row": with thirty rows
+a trackpad is faster than the arrow keys. Bubble Tea's cell-motion
+mouse reporting is on by default; the map is small on purpose.
+
+1. **What the mouse does.** A click selects the row; a double click
+   (two presses on one row within 400 ms) is what an empty Enter does
+   there (`activateRow`, shared with Enter: `work open` on a work
+   session, a jump to a plain tab, the worker view); the wheel moves
+   the highlight one row per notch; a click on the HISTORY header is
+   Ctrl-E. Nothing else takes a click: no drag by mouse (the keys do
+   it; a row dragged by mouse through a grouped or filtered view has
+   the same problem the key refusals solve), nothing on the panel, the
+   prompt line or the other screens. Every verb stays on a key.
+2. **Reading a click.** `viewBoard`'s top half is now `topLines`,
+   which returns the lines and, line for line, a `lineHit` (row index,
+   or section header, or nothing); `sessionLines` fills them as it
+   draws. `hitAt(y)` rebuilds the same lines to read a click, so the
+   map cannot drift from the frame; the stated gap is the tick between
+   the frame drawn and the click, a row moved in it takes its
+   neighbour's click.
+3. **The cost, stated.** With reporting on, iTerm2 hands clicks to the
+   board, so text selection is Option-drag. Cmd-click on a link is
+   iTerm2's own and is expected to keep working (to be confirmed on
+   the owner's board; Ctrl-B is the keyboard way regardless).
+   `--no-mouse` for one run, `"mouse": "off"` in the board file for
+   good, `--mouse` over the file.
+4. **Tests.** `dash/mouse_test.go`: the hits line up with the view
+   (every row, the section headers, the header lines hit nothing), a
+   click selects, a slow second click only selects, a double click
+   opens (a work session, a plain tab), a click off the rows keeps the
+   cursor, the wheel both ways and clamped, the HISTORY header both
+   ways, a pending Ctrl-X withdrawn, the log view ignoring the wheel;
+   the flags. Docs: dash README (a section, the keys, the table, the
+   limits), the CLI usage line, CLAUDE.md.
+

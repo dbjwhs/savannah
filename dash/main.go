@@ -143,7 +143,8 @@ type model struct {
 	sessTicks    int               // sessions reads so far (the snapshot hint waits for the first)
 
 	// Full-screen worker view (view.go).
-	mode     int // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk
+	mode     int        // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk
+	click    clickState // the last mouse press, for the double click (mouse.go)
 	viewNode string
 	viewID   string
 	vp       viewport.Model
@@ -533,6 +534,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = warnStyle.Render("not removed " + msg.node + "/" + msg.id +
 			" (running? cancel first)")
 		return m, nil
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
 	case tea.KeyMsg:
 		switch m.mode {
 		case modeView:
@@ -762,31 +765,21 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !hasRow {
 			return m, nil
 		}
-		if isWork {
+		if isWork && text != "" {
 			name := r.s.Work
-			if text == "" {
-				slog.Info("action", "do", "open", "name", name, "state", r.s.State)
-				m.status = "opening " + name + "..."
-				return m, m.workOpenCmd(name)
-			}
 			m.input.SetValue("")
 			slog.Info("action", "do", "say", "name", name, "chars", len(text))
 			slog.Debug("say text", "name", name, "head", head([]byte(text), 200))
 			m.status = "saying to " + labelOf(r.s) + "..."
 			return m, m.workSayCmd(name, text)
 		}
-		if r.kind == rowSession {
-			// A plain tab is a person's session: jump to it, never type.
-			if text != "" {
+		if isWork || r.kind == rowSession || text == "" {
+			if r.kind == rowSession && !isWork && text != "" {
+				// A plain tab is a person's session: jump to it, never type.
 				m.status = warnStyle.Render(
 					"cannot send to a plain tab (not a work session); jumping instead")
 			}
-			slog.Info("action", "do", "jump", "id", r.s.ID)
-			return m, jumpSessionCmd(r.s)
-		}
-		if text == "" {
-			// Empty prompt: open the full-screen view instead.
-			return m, m.enterView(r.node, r.t.ID)
+			return m.activateRow(r)
 		}
 		m.input.SetValue("")
 		slog.Info("action", "do", "task send", "node", r.node, "task", r.t.ID, "chars", len(text))
@@ -895,26 +888,51 @@ func (m model) viewBoard() string {
 	if attention > 0 {
 		deco = "   " + needStyle.Render(fmt.Sprintf("%d need you", attention))
 	}
-	top := []string{fmt.Sprintf("%s   %s   %s%s",
+	top, _ := m.topLines(width, fmt.Sprintf("%s   %s   %s%s",
 		headerStyle.Render("savannah  "+scope), counts,
-		time.Now().Format("15:04:05"), deco), ""}
-	now := nowUnix()
+		time.Now().Format("15:04:05"), deco))
 
+	bottom := m.promptLines(width)
+	panelH := 0
+	if m.height > 0 {
+		panelH = m.height - len(top) - len(bottom)
+	}
+	lines := top
+	lines = append(lines, m.panelLines(width, panelH, time.Now())...)
+	lines = append(lines, bottom...)
+	return strings.Join(lines, "\n")
+}
+
+// topLines is the top of the board: the header line given, a blank, the
+// LOCAL SESSIONS table and, with --mesh, the MESH WORKERS table, each
+// followed by a blank; and, line for line, what the mouse would hit there
+// (mouse.go). It is what viewBoard draws and what a click is read against.
+func (m model) topLines(width int, header string) ([]string, []lineHit) {
+	nSess, nTask := m.sectionCounts()
+	now := nowUnix()
+	top := []string{header, ""}
+	hits := []lineHit{noHit, noHit}
 	// ---- LOCAL SESSIONS (open Claude Code tabs, via the hook) ----
 	// The section shows when there are rows OR a read error to report: an
 	// error with zero rows must still be visible, not hidden by the guard.
 	if nSess > 0 || m.sessErr != "" || m.workErr != "" {
 		top = append(top, headerStyle.Render("LOCAL SESSIONS"))
+		hits = append(hits, noHit)
 		if nSess > 0 {
-			top = append(top, m.sessionLines(sessionColumns(width, m.sessions, m.home, m.titles, m.group), now)...)
+			lines, lineHits := m.sessionLines(sessionColumns(width, m.sessions, m.home, m.titles, m.group), now)
+			top = append(top, lines...)
+			hits = append(hits, lineHits...)
 		}
 		if m.sessErr != "" {
 			top = append(top, warnStyle.Render("  sessions: "+m.sessErr+" (showing last good list)"))
+			hits = append(hits, noHit)
 		}
 		if m.workErr != "" {
 			top = append(top, warnStyle.Render("  work: "+m.workErr+" (showing last good list)"))
+			hits = append(hits, noHit)
 		}
 		top = append(top, "")
+		hits = append(hits, noHit)
 	}
 
 	// ---- MESH WORKERS (savannah tasks) ----
@@ -956,20 +974,15 @@ func (m model) viewBoard() string {
 					line = needStyle.Render(line)
 				}
 				top = append(top, line)
+				hits = append(hits, lineHit{row: i, section: -1})
 			}
 		}
 		top = append(top, "")
 	}
-
-	bottom := m.promptLines(width)
-	panelH := 0
-	if m.height > 0 {
-		panelH = m.height - len(top) - len(bottom)
+	for len(hits) < len(top) {
+		hits = append(hits, noHit)
 	}
-	lines := top
-	lines = append(lines, m.panelLines(width, panelH, time.Now())...)
-	lines = append(lines, bottom...)
-	return strings.Join(lines, "\n")
+	return top, hits
 }
 
 // promptLines is the bottom of the board: a blank line, the prompt line
@@ -1069,6 +1082,7 @@ type opts struct {
 	fade           string // --fade DUR|off; "" = as the board file remembers, else 3h
 	ticketURL      string // --ticket-url URL: the tracker's page, remembered in the board file
 	history        bool   // HISTORY open at start (the board file's "history": "open")
+	mouse          int    // --mouse 1, --no-mouse -1, 0 = on unless the board file says "off"
 }
 
 // parseArgs reads the argv after the program name. A leading non-flag word
@@ -1114,6 +1128,10 @@ func parseArgs(args []string) (opts, error) {
 			o.autoname = 1
 		case "--no-autoname":
 			o.autoname = -1
+		case "--mouse":
+			o.mouse = 1
+		case "--no-mouse":
+			o.mouse = -1
 		case "--no-mesh", "--sessions", "--work":
 			// The work board is the default; kept so old scripts still run.
 		case "-h", "--help":
@@ -1126,7 +1144,7 @@ func parseArgs(args []string) (opts, error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--fade DUR|off] [--ticket-url URL] [--no-autoname]")
+	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--fade DUR|off] [--ticket-url URL] [--no-autoname] [--no-mouse]")
 	fmt.Fprintln(os.Stderr, "  no flags:  the work board: your work sessions and open Claude Code tabs")
 	fmt.Fprintln(os.Stderr, "  --mesh:    also discover every node via `savannah ls` and show its workers")
 	fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS); implies --mesh")
@@ -1139,6 +1157,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "             off = no ticket links, default = back to the built-in pattern)")
 	fmt.Fprintln(os.Stderr, "  --no-autoname:  do not name the tabs you opened by hand (`work autoname`;")
 	fmt.Fprintln(os.Stderr, "             \"autoname\": \"off\" in the board file turns it off for good)")
+	fmt.Fprintln(os.Stderr, "  --no-mouse:     no mouse reporting (click selects, double click opens, the wheel")
+	fmt.Fprintln(os.Stderr, "             scrolls; with it on, select text with Option-drag); \"mouse\": \"off\" in")
+	fmt.Fprintln(os.Stderr, "             the board file turns it off for good")
 	fmt.Fprintln(os.Stderr, "Sessions come from the session-status hook, work sessions from $SAVANNAH_WORK_DIR")
 	fmt.Fprintln(os.Stderr, "(~/.claude/savannah/work). Every action runs `savannah work ...` ($SAVANNAH_BIN).")
 }
@@ -1189,6 +1210,9 @@ func main() {
 	if o.autoname == 0 && prefs.Autoname == "off" {
 		o.autoname = -1
 	}
+	if o.mouse == 0 && prefs.Mouse == "off" {
+		o.mouse = -1
+	}
 	o.history = prefs.History == "open"
 	if o.fade == "" {
 		o.fade = prefs.Fade // "" stays the default; a bad value in the file is the default too
@@ -1208,8 +1232,12 @@ func main() {
 	ticketURLPattern = resolveTicketURL(prefs.TicketURL)
 	openLog()
 	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath(),
-		"group", o.group > 0, "autoname", o.autoname >= 0, "fade", o.fade)
-	p := tea.NewProgram(newModel(o, bin), tea.WithAltScreen())
+		"group", o.group > 0, "autoname", o.autoname >= 0, "fade", o.fade, "mouse", o.mouse >= 0)
+	popts := []tea.ProgramOption{tea.WithAltScreen()}
+	if o.mouse >= 0 {
+		popts = append(popts, tea.WithMouseCellMotion()) // clicks and the wheel (mouse.go)
+	}
+	p := tea.NewProgram(newModel(o, bin), popts...)
 	if _, err := p.Run(); err != nil {
 		slog.Error("board crashed", "err", err.Error())
 		fmt.Fprintln(os.Stderr, "savannah-dash:", err)

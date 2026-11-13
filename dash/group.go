@@ -260,6 +260,7 @@ type boardPrefs struct {
 	Fade      string `json:"fade,omitempty"`       // "3h" | "off" | "" = the default (fade.go)
 	TicketURL string `json:"ticket_url,omitempty"` // the tracker's page with {ticket} for the key; "off" = none; "" = the default (ticket.go)
 	History   string `json:"history,omitempty"`    // "open" = HISTORY shown at start (history.go)
+	Mouse     string `json:"mouse,omitempty"`      // "off" = no mouse reporting (mouse.go)
 }
 
 func boardFile() string {

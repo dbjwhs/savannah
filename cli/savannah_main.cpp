@@ -62,7 +62,7 @@ namespace {
 
 int usage() {
     std::cerr <<
-        "usage: savannah [--group] [--fade DUR] the work board (your Claude tabs; needs dash/savannah-dash built)\n"
+        "usage: savannah [--group] [--fade DUR] [--no-mouse] the work board (your Claude tabs; needs dash/savannah-dash built)\n"
         "       savannah mesh [--key FILE]  the board with the mesh workers too\n"
         "       savannah hub [DIR] [--no-launch] [--json]\n"
         "       savannah work <new|ls|open|repos|note|notes|say|sh|jump|output|rm> ...\n"

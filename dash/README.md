@@ -254,6 +254,19 @@ hyperlink (OSC 8): in iTerm2, Cmd-click it. **Ctrl-B** opens the row's
 links with the system opener (`open`, or `xdg-open`) for when a click
 is not to hand; the status line says what opened, or why nothing could.
 
+## The mouse
+
+Mouse reporting is on: a click selects a row, a double click opens it
+(what an empty Enter does), the wheel moves the highlight, a click on
+the HISTORY header toggles it. The cost: with reporting on the terminal
+hands clicks to the board, so selecting text to copy is **Option-drag**
+in iTerm2 (its rule for any app that takes the mouse). Cmd-click on a
+ticket or pull request link is iTerm2's own and should still open it;
+if your terminal swallows it, Ctrl-B opens the row's links from the
+keyboard. `--no-mouse` turns reporting off for one run (`savannah
+--no-mouse`), `"mouse": "off"` in the board file for good; `--mouse`
+wins over the file for one run.
+
 The board uses the whole terminal. Under 120 columns the table is the
 compact one (STATE, WORK, PROJECT, AGE, WHAT). From 120 columns on it adds
 a TAB column (the iTerm2 tab number from the record), a NOTE column (the
@@ -336,7 +349,13 @@ default now.
 
 Board:
 
-- **up / down** move the highlighted row (across every section)
+- **up / down** move the highlighted row (across every section); the
+  **mouse** does the same: a click selects a row, a double click (two
+  clicks on one row within 400 ms) does what an empty Enter does on it
+  (opens the work session's tab, jumps to a plain tab, opens a worker's
+  view), the wheel moves the highlight one row per notch, and a click on
+  the HISTORY header toggles it; nothing else on the screen takes a
+  click, and every verb stays on a key
 - **Shift-Up / Shift-Down** (also **Option-Up / Option-Down** and
   **Ctrl-Up / Ctrl-Down**) move a named session one row within NOW, ACTIVE or LATER, or over the line between
   two of them from the bottom of one or the top of the next (`work move`); an unnamed
@@ -521,6 +540,7 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-B | `open <url>` (macOS) or `xdg-open <url>` per link on the row; the PR link may first cost one `git -C <checkout> remote get-url origin`, cached for the run |
 | Ctrl-E | none: HISTORY opens or closes in the dash; `"history": "open"` is written to the board file |
 | Ctrl-K | none: the filter runs over what the board already holds |
+| click, wheel | none; a double click runs what an empty Enter runs on that row |
 | (start, and each new plain tab with a prompt) | `savannah work autoname --json <hook session ids>`, one run at a time |
 
 Values travel in the `=` form or after `--`, so text that begins with `-`
@@ -557,6 +577,13 @@ file under its path has been swapped. Nothing here is stdlib-external:
 
 - The prompt line is one line: a multi-line prompt goes through the tab
   itself.
+- The mouse selects, opens and scrolls; it does not drag a row (the
+  keys do), and the panel, the prompt line and the other screens ignore
+  it. With reporting on, text selection is Option-drag, and the board
+  file key `"mouse": "off"` is hand-written; no key sets it. A click is
+  read against the lines the board draws now, so a row that moved in
+  the tick between the frame and the click can take the click meant
+  for its neighbour.
 - Ctrl-A asks only the tabs whose hook state is idle or done. A Claude at
   a question of its own (no Notification fires for AskUserQuestion) reads
   as done and is asked anyway; the board cannot see inside the tab. The

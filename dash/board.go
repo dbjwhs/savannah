@@ -163,12 +163,14 @@ func projectCell(s session, home string, grouped bool) string {
 }
 
 // sessionLines renders the LOCAL SESSIONS table for the column plan: the
-// column header once, then each section (ACTIVE, LATER) under its own
+// column header once, then each section (NOW, ACTIVE, LATER) under its own
 // header with one styled line per session row. Section membership and order
 // come from the records (order.go); grouped, a dim header names each
 // repository inside a section (group.go); a row's state is the hook's, or
-// "polling" while its Claude's progress report is live (polling.go).
-func (m model) sessionLines(c sessCols, now int64) []string {
+// "polling" while its Claude's progress report is live (polling.go). The
+// hits say, line for line, which row or section header each line is, for
+// the mouse (mouse.go).
+func (m model) sessionLines(c sessCols, now int64) ([]string, []lineHit) {
 	hdr := pad("", 2) + pad("STATE", 9) + pad("WORK", c.work)
 	if c.ticket > 0 {
 		hdr += pad("TICKET", c.ticket)
@@ -182,6 +184,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		hdr += pad("NOTE", c.note)
 	}
 	lines := []string{colStyle.Render(hdr + "WHAT")}
+	hits := []lineHit{noHit}
 	recs := recordMap(m.work)
 	var counts [secHistory + 1]int
 	groupCounts := map[[2]string]int{} // (section, repo root) -> rows
@@ -205,13 +208,14 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		for sec := sectionOf(s, recs); section < sec; {
 			section++
 			group = ""
-			lines = append(lines, m.sectionLines(section, counts[section])...)
+			lines, hits = appendSection(lines, hits, section, m.sectionLines(section, counts[section]))
 		}
 		if m.group {
 			if root, isRepo := repoRoot(s.Project); root != group || group == "" {
 				group = root
 				n := groupCounts[[2]string{sectionName(section), root}]
 				lines = append(lines, groupHeader(root, isRepo, n, m.home, c.wide))
+				hits = append(hits, noHit)
 			}
 		}
 		rec, hasRec := recs[s.Work]
@@ -262,12 +266,27 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 			line = rowStyleAt(s, now, m.fade).Render(line)
 		}
 		lines = append(lines, line)
+		hits = append(hits, lineHit{row: i, section: -1})
 	}
 	for section < secHistory {
 		section++
-		lines = append(lines, m.sectionLines(section, counts[section])...)
+		lines, hits = appendSection(lines, hits, section, m.sectionLines(section, counts[section]))
 	}
-	return lines
+	return lines, hits
+}
+
+// appendSection adds a section's header lines: the first is the header
+// (a click on HISTORY's toggles it), the rest hints.
+func appendSection(lines []string, hits []lineHit, sec int, secLines []string) ([]string, []lineHit) {
+	for i, ln := range secLines {
+		lines = append(lines, ln)
+		if i == 0 {
+			hits = append(hits, lineHit{row: -1, section: sec})
+		} else {
+			hits = append(hits, noHit)
+		}
+	}
+	return lines, hits
 }
 
 // ---- notes ------------------------------------------------------------------
