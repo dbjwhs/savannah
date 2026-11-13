@@ -86,7 +86,11 @@ it yourself; that is the point of keeping it.
 
 `open` is the way back after an iTerm2 restart, or a tab closed by hand: when
 the recorded Claude pane is still there it focuses it (`--shell` the shell
-pane) and prints `focused`; otherwise it makes the tab again in the same
+pane) and prints `focused`; when that pane is gone but you started claude
+again yourself in the worktree (a live hook session there, in a pane no other
+record claims), the record is pointed at that pane and it is focused, the
+same for `say`, `jump` and `restore` (the shell pane is forgotten: a tab made
+by hand has none, so `sh` is refused); otherwise it makes the tab again in the same
 worktree, closes a leftover shell pane first so one session never owns two
 tabs, and starts `claude --continue` when a transcript for that worktree
 exists (the hook's recorded one, else the newest under Claude Code's projects

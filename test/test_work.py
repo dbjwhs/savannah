@@ -760,6 +760,45 @@ def main():
                  last=f" cd {rq} && claude -n flat --continue") >= 0,
           f"reopen with a transcript resumes it with --continue ({calls()})")
     os.remove(os.path.join(sessions, "flat-old.json"))
+    # The tab closed and claude started again by hand in the worktree, in a
+    # pane the record never knew: open focuses that pane and re-points the
+    # record at it, it does not make a second tab (and say reaches it too).
+    rec_now = record("flat")
+    gone = f"{rec_now['claude_pane']},{rec_now['shell_pane']}"
+    made = subprocess.run([sys.executable, fake, "tab", "new", "--window", "W1"],
+                          capture_output=True, text=True, env=env).stdout  # the tab made by hand
+    hand = "PANE-C-" + made.strip().rsplit("-", 1)[-1]
+    with open(os.path.join(sessions, "flat-hand.json"), "w") as f:
+        json.dump({"session_id": "flat-hand", "project": rq, "state": "idle", "updated": 5000,
+                   "iterm_session_id": "w0t0p0:" + hand}, f)
+    clear_log(keep_state=True)
+    j = run_json(["open", "flat", "--json"], {"FAKE_IT2_MISSING": gone})
+    rec_hand = record("flat")
+    check(j.get("action") == "focused" and rec_hand["claude_pane"] == hand and rec_hand["tab_id"] == ""
+          and rec_hand["shell_pane"] == "" and called(["session", "focus", hand]) >= 0
+          and called(["tab", "new"]) < 0 and called(["window", "new"]) < 0,
+          f"open with claude restarted by hand in the worktree focuses that pane, no new tab ({j}, {calls()})")
+    clear_log(keep_state=True)
+    j = run_json(["open", "flat", "--json"], {"FAKE_IT2_MISSING": gone})
+    check(j.get("action") == "focused" and called(["tab", "new"]) < 0, "a second open focuses it again")
+    # say finds the moved pane the same way
+    rec_hand["claude_pane"] = rec_now["claude_pane"]
+    with open(os.path.join(workroot, "flat", "record.json"), "w") as f:
+        json.dump(rec_hand, f)
+    p = run(["say", "flat", "hello"], {"FAKE_IT2_MISSING": gone})
+    check(p.returncode == 0 and record("flat")["claude_pane"] == hand,
+          f"say reaches a Claude restarted by hand in the worktree ({p.stderr.strip()})")
+    # a pane another record claims is never taken: open makes the tab again
+    write_record("thief", {"name": "thief", "worktree": tmp, "claude_pane": hand})
+    rec_hand = record("flat")
+    rec_hand["claude_pane"] = rec_now["claude_pane"]
+    write_record("flat", rec_hand)
+    clear_log(keep_state=True)
+    j = run_json(["open", "flat", "--json"], {"FAKE_IT2_MISSING": gone})
+    check(j.get("action") == "reopened" and j.get("claude_pane") != hand,
+          f"open never takes a pane another record claims ({j})")
+    shutil.rmtree(os.path.join(workroot, "thief"))
+    os.remove(os.path.join(sessions, "flat-hand.json"))
     check(run(["open", "nosuch"]).returncode == 1, "open of an unknown name exits 1")
     p = run(["open", "flat"], {"SAVANNAH_IT2": "/nonexistent/it2"})
     check(p.returncode == 1 and "it2" in p.stderr, "open without it2 exits 1")

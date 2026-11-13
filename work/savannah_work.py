@@ -1373,12 +1373,59 @@ def cmd_notes(a):
     return 0
 
 
+def reclaim_pane(rec, live, dry=False):
+    """A record whose Claude pane is gone, while a live Claude Code session
+    runs in its worktree in another pane (the owner closed the tab and
+    started claude there again by hand): the record is pointed at that pane,
+    so open focuses it, say types into it and restore leaves it alone,
+    instead of a second tab being made for a session that is already open.
+    The hook file is the evidence (it is removed on SessionEnd) and its pane
+    must be in live; a pane another record claims is never taken. The old
+    tab id is dropped and so is a shell pane that is gone (the tab made by
+    hand has none). -> True when the record was re-pointed (and saved);
+    dry = only say whether it would be."""
+    if rec.get("claude_pane") and rec["claude_pane"] in live:
+        return False
+    worktree = rec.get("worktree") or ""
+    if not worktree:
+        return False
+    target = os.path.realpath(worktree)
+    taken = {r.get("claude_pane") for r in list_records() if r.get("name") != rec.get("name")}
+    best, best_pane = None, ""
+    for h in load_hook_sessions():
+        iid = h.get("iterm_session_id")
+        pane = iterm_uuid(iid if isinstance(iid, str) else "")
+        if not pane or pane not in live or pane in taken:
+            continue
+        if not isinstance(h.get("project"), str) or os.path.realpath(h["project"]) != target:
+            continue
+        if best is None or (h.get("updated") or 0) > (best.get("updated") or 0):
+            best, best_pane = h, pane
+    if best is None:
+        return False
+    if dry:
+        return True
+    log_info("pane reclaimed", name=rec["name"], was=rec.get("claude_pane", ""), claude_pane=best_pane,
+             session=best.get("session_id") or "", why="a live Claude session runs in the worktree")
+    rec["claude_pane"], rec["tab_id"] = best_pane, ""
+    if rec.get("shell_pane") and rec["shell_pane"] not in live:
+        rec["shell_pane"] = ""
+    save_record(rec)
+    return True
+
+
 def type_into(rec, pane_key, text, label):
     term = make_terminal(rec.get("terminal", ""))
     pane = rec.get(pane_key, "")
     if not pane or not term.write(pane, text):
-        log_warn("pane gone", name=rec["name"], pane=label, session=pane)
-        raise UserError(f"{label} pane of {rec['name']} no longer exists")
+        # The Claude pane may have moved: the tab closed and claude started
+        # again by hand in the worktree. One look, then one more try.
+        if pane_key == "claude_pane" and reclaim_pane(rec, term.live_ids()) \
+                and term.write(rec["claude_pane"], text):
+            pane = rec["claude_pane"]
+        else:
+            log_warn("pane gone", name=rec["name"], pane=label, session=pane)
+            raise UserError(f"{label} pane of {rec['name']} no longer exists")
     log_info("typed", name=rec["name"], pane=label, session=pane, chars=len(text))
     log_verbose("typed text", name=rec["name"], pane=label, text=text[:300])
     return 0
@@ -1406,6 +1453,10 @@ def cmd_jump(a):
     key = "shell_pane" if a.shell else "claude_pane"
     pane = rec.get(key, "")
     if not pane or not term.focus(pane):
+        # claude started again by hand in the worktree: one look, one more try
+        if not a.shell and reclaim_pane(rec, term.live_ids()) and term.focus(rec["claude_pane"]):
+            log_info("focused", name=rec["name"], pane=key, session=rec["claude_pane"])
+            return 0
         log_warn("pane gone", name=rec["name"], pane=key, session=pane)
         raise UserError(f"{key.replace('_', ' ')} of {rec['name']} not found")
     log_info("focused", name=rec["name"], pane=key, session=pane)
@@ -1445,6 +1496,8 @@ def cmd_open(a):
     term = make_terminal(rec.get("terminal", ""))
     live = term.live_ids()
     claude_alive = bool(rec.get("claude_pane")) and rec["claude_pane"] in live
+    if not claude_alive:
+        claude_alive = reclaim_pane(rec, live)  # claude started again by hand in the worktree
     if claude_alive:
         pane = rec["claude_pane"]
         if a.shell and rec.get("shell_pane") in live:
@@ -2885,7 +2938,8 @@ def cmd_restore(a):
         except UserError:
             skip("name", name, "no record")
             continue
-        if rec.get("claude_pane") and rec["claude_pane"] in live:
+        if (rec.get("claude_pane") and rec["claude_pane"] in live) or \
+                reclaim_pane(rec, live, dry=a.dry_run):
             skip("name", name, "alive")
             continue
         worktree = rec.get("worktree") or ""
