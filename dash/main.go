@@ -100,6 +100,8 @@ type model struct {
 	group   bool          // rows gathered by repository inside each section (group.go; Ctrl-G)
 	fade    time.Duration // rows untouched longer than this are dimmed; 0 = never (fade.go; Ctrl-F)
 	history bool          // HISTORY (closed work sessions) open on the board (history.go; Ctrl-E)
+	finding bool          // the prompt line is the filter (find.go; Ctrl-K)
+	filter  string        // the filter in force: only matching rows are on the board
 
 	// Naming the tabs the owner opened by hand (autoname.go).
 	autoname  bool            // on: plain tabs with a prompt are named through `work autoname`
@@ -262,15 +264,21 @@ func (m *model) rebuildRows() {
 	if m.group {
 		ordered = groupSessions(ordered, m.work)
 	}
+	words := filterWords(m.filter)
+	recs := recordMap(m.work)
 	for _, s := range ordered {
-		if s.State == "offline" && !m.history {
-			continue // HISTORY closed: its rows are not on the board (history.go)
+		if s.State == "offline" && !m.history && len(words) == 0 {
+			continue // HISTORY closed: its rows are not on the board (history.go); a filter looks there too
 		}
-		rows = append(rows, row{kind: rowSession, s: s})
+		if r := (row{kind: rowSession, s: s}); m.rowMatches(r, words, recs) {
+			rows = append(rows, r)
+		}
 	}
 	for _, n := range m.nodes {
 		for _, t := range m.tasks[n] {
-			rows = append(rows, row{kind: rowTask, node: n, t: t})
+			if r := (row{kind: rowTask, node: n, t: t}); m.rowMatches(r, words, recs) {
+				rows = append(rows, r)
+			}
 		}
 	}
 	m.rows = rows
@@ -561,6 +569,9 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
 	case tea.KeyEsc:
+		if m.finding || m.filter != "" {
+			return m.clearFind(), nil
+		}
 		if m.adoptFor != "" {
 			m.adoptFor, m.adoptProject = "", ""
 			m.input.SetValue("")
@@ -591,6 +602,11 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleFade(), nil
 	case tea.KeyCtrlE:
 		return m.toggleHistory(), nil
+	case tea.KeyCtrlK:
+		if m.finding {
+			return m.acceptFind(), nil
+		}
+		return m.pressFind(), nil
 	case tea.KeyCtrlG:
 		return m.toggleGroup(), nil
 	case tea.KeyCtrlA:
@@ -691,6 +707,9 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "removing " + r.node + "/" + r.t.ID + "..."
 		return m, m.rmCmd(r.node, r.t.ID)
 	case tea.KeyEnter:
+		if m.finding {
+			return m.acceptFind(), nil
+		}
 		text := strings.TrimSpace(m.input.Value())
 		if m.adoptFor != "" {
 			// A name as typed, or any words: then the name is derived and
@@ -773,6 +792,9 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.finding {
+		m.applyFilter(m.input.Value())
+	}
 	return m, cmd
 }
 
@@ -847,6 +869,9 @@ func (m model) viewBoard() string {
 	counts := fmt.Sprintf("%d session%s", nSess, plural(nSess))
 	if closed := m.countClosed(); closed > 0 {
 		counts += fmt.Sprintf("   %d closed", closed)
+	}
+	if m.filter != "" {
+		counts += fmt.Sprintf("   matching %q", m.filter)
 	}
 	if m.group {
 		counts += "   by repository"
@@ -952,6 +977,9 @@ func (m model) promptLines(width int) []string {
 	}
 	var prompt string
 	switch {
+	case m.finding:
+		prompt = headerStyle.Render("find") + ":  " +
+			m.inputView("words to match: name, title, ticket, path, branch, prompt, summary, note (Enter keeps the filter, Esc clears it)")
 	case m.adoptFor != "":
 		ph := "a name, or any words (the name is derived); Enter makes it a work session, Esc cancels"
 		if m.adoptNote {
@@ -988,7 +1016,7 @@ func (m model) promptLines(width int) []string {
 	// One line, never wrapped (a wrapped help line would push the layout
 	// down): hints are dropped from the end until the line fits, so a
 	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
-	parts := []string{"Shift-up/down move", "Enter say", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
+	parts := []string{"Shift-up/down move", "Enter say", "^K find", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
 		"^A ask", "^T note", "^S snap", "^L log", "^X rm", "^C quit"}
 	if m.mesh {
 		parts[1] = "Enter say/send"

@@ -132,7 +132,7 @@ func orderSessions(sessions []session, work []workRecord) []session {
 // (history.go: nothing when no session is closed).
 func (m model) sectionLines(sec, n int) []string {
 	if sec == secHistory {
-		return historyLines(n, m.history)
+		return historyLines(n, m.history || m.filter != "")
 	}
 	out := []string{headerStyle.Render(fmt.Sprintf("%s (%d)", sectionName(sec), n))}
 	if n == 0 {
@@ -256,6 +256,10 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 		// The drag edits the rank order, and the grouped view does not show
 		// that order in full: a move here would reorder rows it hides.
 		m.status = warnStyle.Render("rows are grouped by repository; Ctrl-G back to your order to move one")
+		return m, nil
+	}
+	if m.filter != "" {
+		m.status = warnStyle.Render("rows are filtered; Esc clears the filter to move one")
 		return m, nil
 	}
 	name := r.s.Work

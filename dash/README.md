@@ -366,10 +366,20 @@ Board:
   longer are drawn faint (remembered in the board file)
 - **Ctrl-E** opens and closes HISTORY, the closed sessions at the bottom
   (remembered in the board file)
+- **Ctrl-K** finds: the prompt line becomes a filter and the board shows
+  only the rows that match as you type. Every word typed must appear,
+  case aside, in the row's name, title, ticket or pull request, project
+  path, branch, last prompt, `work ask` summary, last note's first line
+  or (a plain tab) its tab title; a mesh worker matches on node, id,
+  title and worktree; a closed session is searched whether HISTORY is
+  open or not. **Enter** keeps the filter and gives the prompt line back
+  (the header says `matching "zfs"`), **Esc** clears it, **Ctrl-K** edits
+  it again; a drag is refused while filtered
 - **Ctrl-B** opens the row's ticket and pull request in the browser
   (the TICKET column; Cmd-click does the same in iTerm2)
 - **Ctrl-S** opens the snapshot screen, **Ctrl-L** the log view
-- **Ctrl-C** quits; **Esc** quits too, unless a note, a name or a title
+- **Ctrl-C** quits; **Esc** quits too, unless a filter is in force (it
+  clears that first) or a note, a name or a title
   is being typed
 
 New-task dialog (Ctrl-N):
@@ -498,6 +508,7 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-F | none: the fade changes in the dash; `"fade": "8h"` (or `"off"`) is written to the board file |
 | Ctrl-B | `open <url>` (macOS) or `xdg-open <url>` per link on the row; the PR link may first cost one `git -C <checkout> remote get-url origin`, cached for the run |
 | Ctrl-E | none: HISTORY opens or closes in the dash; `"history": "open"` is written to the board file |
+| Ctrl-K | none: the filter runs over what the board already holds |
 | (start, and each new plain tab with a prompt) | `savannah work autoname --json <hook session ids>`, one run at a time |
 
 Values travel in the `=` form or after `--`, so text that begins with `-`
@@ -578,7 +589,11 @@ file under its path has been swapped. Nothing here is stdlib-external:
   directory is looked up once per board run and cached, so a `git init`
   under a running board shows after a restart. Dragging is refused while
   grouped; the help line's "^C quit" is the first hint dropped when the
-  terminal is narrower than the help (132 columns for the work board).
+  terminal is narrower than the help (141 columns for the work board).
+- The filter (Ctrl-K) searches what the board holds for a row, not the
+  whole of its notes (only the highlighted row's notes are read) and not
+  the transcripts; a session is found by its notes' last line, not by a
+  decision noted a week ago. The filter is not remembered between runs.
 - Links are OSC 8 hyperlinks: iTerm2 shows them, tmux strips them
   unless `set -ga terminal-features ",*:hyperlinks"` (Ctrl-B works
   regardless). A ticket links to the author's Jira unless `--ticket-url`

@@ -1063,3 +1063,37 @@ nearly as said:
    section tests are about rank, not closure. Docs: dash README,
    CLAUDE.md.
 
+### 11/12/2026, later (find: the board searched)
+
+Item A of the owner's list: "search in the session list". Ctrl-K
+(printable keys feed the prompt line, so a control key; Ctrl-K was
+free) turns the prompt line into a filter; the rows narrow as each
+character lands. One rule: every word typed must appear, case aside,
+in what the board already holds for the row (`sessionHaystack`: name,
+title, ticket and pull request, `~` path, last prompt, state, branch,
+summary, last note line, a plain tab's tab title; a worker's node, id,
+title, worktree). Nothing is read for it: the filter runs over the
+rows in memory on every keystroke.
+
+1. **Closed sessions are searched.** HISTORY's rows join the search
+   whether the section is open or not, because the session you are
+   looking for may be the one you closed; the HISTORY header then
+   counts the matching ones.
+2. **Enter keeps, Esc clears.** Enter hands the prompt line back with
+   the filter in force (the header says `matching "x"`), so the usual
+   keys act on the row found and a second Enter opens it. Esc clears
+   the filter before it does anything else (it still quits a plain
+   board). Ctrl-K again edits the filter, prefilled. The cursor follows
+   the row it was on while that row still shows, else it goes to the
+   top.
+3. **Drag refused while filtered**, the grouped rule: the order is not
+   all on the screen.
+4. **Out of this cut, stated:** the whole of a session's notes (only
+   the highlighted row's are read) and the transcripts (a grep per
+   tab); the filter is not remembered between runs.
+5. **Tests.** `dash/find_test.go` (the haystack fields, the AND of
+   words, a worker; Ctrl-K, typing, HISTORY searched, Enter, the drag
+   refusal, Ctrl-K prefilled, Esc, Esc quitting a plain board, a
+   filter matching nothing). Help line 141 columns. Docs: dash README,
+   CLAUDE.md.
+

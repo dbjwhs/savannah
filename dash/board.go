@@ -192,7 +192,9 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 			groupCounts[[2]string{sectionName(sec), groupKey(r.s)}]++
 		}
 	}
-	counts[secHistory] = m.countClosed() // shown or not (history.go)
+	if m.filter == "" {
+		counts[secHistory] = m.countClosed() // shown or not (history.go); filtered, the matching ones
+	}
 	section := -1
 	group := ""
 	for i, r := range m.rows {
