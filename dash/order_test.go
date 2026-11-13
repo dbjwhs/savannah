@@ -10,13 +10,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// sectionedBoard is boardWith plus a named session parked in LATER and a
-// waiting unnamed tab: the shape the sections are about.
+// sectionedBoard is boardWith with parked live (idle in its own tab, so
+// it sits in a section rather than HISTORY), plus a named session slow in
+// LATER and a waiting unnamed tab: the shape the sections are about.
 func sectionedBoard(t *testing.T) model {
 	t.Helper()
 	m := boardWith(t, true)
 	m.hooks = append(m.hooks, session{ID: "s3", Project: "/elsewhere", State: "waiting",
 		Updated: nowUnix() - 100, ITerm: "w0t0p0:UUID-W"})
+	m.hooks = append(m.hooks, session{ID: "sp", Project: "/r/.savannah-worktrees/parked", State: "idle",
+		Updated: nowUnix() - 30, ITerm: "w0t0p0:P"})
+	m.hooks = append(m.hooks, session{ID: "ss", Project: "/r/.savannah-worktrees/slow", State: "idle",
+		Updated: nowUnix() - 40, ITerm: "w0t0p0:S"})
 	m.work = append(m.work, workRecord{Name: "slow", Worktree: "/r/.savannah-worktrees/slow",
 		ClaudePane: "S", Priority: "later", Rank: 10})
 	m.sessions = joinWork(m.hooks, m.work)
@@ -61,7 +66,7 @@ func TestOrderSessionsSections(t *testing.T) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 	// Rank decides inside a section, and state never does: live is the one
-	// working, parked is offline, yet parked's lower rank puts it first.
+	// working, parked is idle, yet parked's lower rank puts it first.
 	setRank(&m, "live", "active", 20)
 	setRank(&m, "parked", "active", 10)
 	want = []string{"parked", "live", "slow", "#s3", "#s2"}
@@ -196,9 +201,9 @@ func TestDragRowMovesAndWrites(t *testing.T) {
 }
 
 func TestCtrlRNamesPlainTabWithoutNote(t *testing.T) {
-	m := boardWith(t, true) // live, parked, #s2
+	m := boardWith(t, true) // live, #s2, parked (in HISTORY)
 	m.titles = map[string]string{"UUID-P": "Local testing"}
-	m.cursor = 2
+	cursorTo(t, &m, hookRow("s2"))
 	m, cmd := press(m, tea.KeyCtrlR)
 	if cmd != nil || m.adoptFor != "s2" || m.adoptNote || m.titleFor != "" {
 		t.Fatalf("Ctrl-R on a plain tab: adoptFor=%q adoptNote=%v titleFor=%q", m.adoptFor, m.adoptNote, m.titleFor)
@@ -222,7 +227,7 @@ func TestCtrlRNamesPlainTabWithoutNote(t *testing.T) {
 		t.Errorf("after adopt: noteFor=%q adoptFor=%q status=%q", m.noteFor, m.adoptFor, m.status)
 	}
 	// Ctrl-T still takes the note after naming.
-	m.cursor = 2
+	cursorTo(t, &m, hookRow("s2"))
 	m, _ = press(m, tea.KeyCtrlT)
 	if m.adoptFor != "s2" || !m.adoptNote {
 		t.Errorf("Ctrl-T should name with a note to follow: adoptFor=%q adoptNote=%v", m.adoptFor, m.adoptNote)
@@ -372,7 +377,7 @@ func TestValidWorkNameReservesSnapshots(t *testing.T) {
 func TestSectionHeadersInView(t *testing.T) {
 	m := boardWith(t, true)
 	out := m.View()
-	for _, want := range []string{"ACTIVE (2)", "LATER (1)", "Shift-up/down move", "^R name"} {
+	for _, want := range []string{"ACTIVE (1)", "LATER (1)", "HISTORY (1)", "Shift-up/down move", "^R name"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view lacks %q:\n%s", want, out)
 		}

@@ -182,19 +182,16 @@ func (m *model) snapshotHint() {
 	}
 }
 
-// openNow counts the board's rows for the screen: named sessions, live and
-// offline, and plain tabs.
+// openNow counts the board's sessions for the screen: named sessions, live
+// and offline (whether HISTORY shows them or not), and plain tabs.
 func (m model) openNow() (named, live, plain int) {
-	for _, r := range m.rows {
-		if r.kind != rowSession {
-			continue
-		}
+	for _, s := range m.sessions {
 		switch {
-		case r.s.Work == "":
+		case s.Work == "":
 			plain++
 		default:
 			named++
-			if r.s.State != "offline" {
+			if s.State != "offline" {
 				live++
 			}
 		}

@@ -259,6 +259,7 @@ type boardPrefs struct {
 	Autoname  string `json:"autoname,omitempty"`   // "off" | "" (autoname.go)
 	Fade      string `json:"fade,omitempty"`       // "3h" | "off" | "" = the default (fade.go)
 	TicketURL string `json:"ticket_url,omitempty"` // the tracker's page with {ticket} for the key; "off" = none; "" = the default (ticket.go)
+	History   string `json:"history,omitempty"`    // "open" = HISTORY shown at start (history.go)
 }
 
 func boardFile() string {

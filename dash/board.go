@@ -183,7 +183,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 	}
 	lines := []string{colStyle.Render(hdr + "WHAT")}
 	recs := recordMap(m.work)
-	var counts [2]int
+	var counts [3]int
 	groupCounts := map[[2]string]int{} // (section, repo root) -> rows
 	for _, r := range m.rows {
 		if r.kind == rowSession {
@@ -192,6 +192,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 			groupCounts[[2]string{sectionName(sec), groupKey(r.s)}]++
 		}
 	}
+	counts[secHistory] = m.countClosed() // shown or not (history.go)
 	section := -1
 	group := ""
 	for i, r := range m.rows {
@@ -202,7 +203,7 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		for sec := sectionOf(s, recs); section < sec; {
 			section++
 			group = ""
-			lines = append(lines, sectionLines(section, counts[section])...)
+			lines = append(lines, m.sectionLines(section, counts[section])...)
 		}
 		if m.group {
 			if root, isRepo := repoRoot(s.Project); root != group || group == "" {
@@ -260,9 +261,9 @@ func (m model) sessionLines(c sessCols, now int64) []string {
 		}
 		lines = append(lines, line)
 	}
-	for section < secLater {
+	for section < secHistory {
 		section++
-		lines = append(lines, sectionLines(section, counts[section])...)
+		lines = append(lines, m.sectionLines(section, counts[section])...)
 	}
 	return lines
 }

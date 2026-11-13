@@ -92,13 +92,14 @@ type fetchTick time.Time
 type discoverTick time.Time
 
 type model struct {
-	key   string
-	bin   string
-	pin   string        // non-empty: single-node mode, skip discovery
-	addr  string        // single-node --addr (a node off mDNS)
-	mesh  bool          // --mesh (or a pinned node): discovery + workers; off = the work board alone
-	group bool          // rows gathered by repository inside each section (group.go; Ctrl-G)
-	fade  time.Duration // rows untouched longer than this are dimmed; 0 = never (fade.go; Ctrl-F)
+	key     string
+	bin     string
+	pin     string        // non-empty: single-node mode, skip discovery
+	addr    string        // single-node --addr (a node off mDNS)
+	mesh    bool          // --mesh (or a pinned node): discovery + workers; off = the work board alone
+	group   bool          // rows gathered by repository inside each section (group.go; Ctrl-G)
+	fade    time.Duration // rows untouched longer than this are dimmed; 0 = never (fade.go; Ctrl-F)
+	history bool          // HISTORY (closed work sessions) open on the board (history.go; Ctrl-E)
 
 	// Naming the tabs the owner opened by hand (autoname.go).
 	autoname  bool            // on: plain tabs with a prompt are named through `work autoname`
@@ -262,6 +263,9 @@ func (m *model) rebuildRows() {
 		ordered = groupSessions(ordered, m.work)
 	}
 	for _, s := range ordered {
+		if s.State == "offline" && !m.history {
+			continue // HISTORY closed: its rows are not on the board (history.go)
+		}
 		rows = append(rows, row{kind: rowSession, s: s})
 	}
 	for _, n := range m.nodes {
@@ -363,12 +367,15 @@ func (m model) currentRow() (row, bool) {
 func isWorkRowOf(r row) bool { return r.kind == rowSession && r.s.Work != "" }
 
 // sectionCounts counts each kind for the section headers.
+// sectionCounts is the header's numbers: open sessions (a closed one is
+// counted apart, shown or not) and mesh tasks.
 func (m model) sectionCounts() (sessions, tasks int) {
 	for _, r := range m.rows {
-		if r.kind == rowSession {
-			sessions++
-		} else {
+		switch {
+		case r.kind != rowSession:
 			tasks++
+		case r.s.State != "offline":
+			sessions++
 		}
 	}
 	return
@@ -582,6 +589,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enterSnapshot()
 	case tea.KeyCtrlF:
 		return m.toggleFade(), nil
+	case tea.KeyCtrlE:
+		return m.toggleHistory(), nil
 	case tea.KeyCtrlG:
 		return m.toggleGroup(), nil
 	case tea.KeyCtrlA:
@@ -836,6 +845,9 @@ func (m model) viewBoard() string {
 		}
 	}
 	counts := fmt.Sprintf("%d session%s", nSess, plural(nSess))
+	if closed := m.countClosed(); closed > 0 {
+		counts += fmt.Sprintf("   %d closed", closed)
+	}
 	if m.group {
 		counts += "   by repository"
 	}
@@ -1022,6 +1034,7 @@ type opts struct {
 	autoname       int    // --autoname 1, --no-autoname -1, 0 = on unless the board file says "off"
 	fade           string // --fade DUR|off; "" = as the board file remembers, else 3h
 	ticketURL      string // --ticket-url URL: the tracker's page, remembered in the board file
+	history        bool   // HISTORY open at start (the board file's "history": "open")
 }
 
 // parseArgs reads the argv after the program name. A leading non-flag word
@@ -1110,7 +1123,7 @@ func newModel(o opts, bin string) model {
 	}
 	m := model{
 		key: o.key, bin: bin, pin: o.pin, addr: o.addr, mesh: o.mesh, group: o.group > 0,
-		autoname: o.autoname >= 0, fade: fade,
+		autoname: o.autoname >= 0, fade: fade, history: o.history,
 		tasks: map[string][]task{}, errs: map[string]string{},
 		input: ti, home: home,
 	}
@@ -1142,6 +1155,7 @@ func main() {
 	if o.autoname == 0 && prefs.Autoname == "off" {
 		o.autoname = -1
 	}
+	o.history = prefs.History == "open"
 	if o.fade == "" {
 		o.fade = prefs.Fade // "" stays the default; a bad value in the file is the default too
 	}

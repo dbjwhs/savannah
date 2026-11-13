@@ -627,7 +627,7 @@ func TestCtrlXOnOfflineWorkRowKeepsRecord(t *testing.T) {
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("readWork: %v %v", recs, err)
 	}
-	m := newModel(opts{}, "savannah")
+	m := newModel(opts{history: true}, "savannah")
 	m.sessions = joinWork(nil, recs)
 	m.rebuildRows()
 	if len(m.rows) != 1 || !isWorkRow(m.rows[0].s) {
@@ -658,7 +658,7 @@ func TestCtrlXOnOfflineWorkRowKeepsRecord(t *testing.T) {
 
 func TestViewHasWorkColumn(t *testing.T) {
 	m := model{
-		width: 100, tasks: map[string][]task{}, errs: map[string]string{},
+		width: 100, tasks: map[string][]task{}, errs: map[string]string{}, history: true,
 		sessions: []session{
 			{ID: "s1", State: "working", Project: "/r/.savannah-worktrees/feat", Work: "feat", Updated: nowUnix()},
 			offlineWorkRow(workRecord{Name: "parked", Worktree: "/r/.savannah-worktrees/parked",

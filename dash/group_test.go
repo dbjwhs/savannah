@@ -155,6 +155,7 @@ func groupedBoard(t *testing.T) model {
 		{Name: "a2", Worktree: "/a/.savannah-worktrees/a2", ClaudePane: "A2", Priority: "active", Rank: 30},
 		{Name: "b2", Worktree: "/b/.savannah-worktrees/b2", ClaudePane: "B2", Priority: "later", Rank: 10},
 	}
+	m.history = true // b2 has no tab: it is a closed session, shown in HISTORY
 	m.sessions = joinWork(m.hooks, m.work)
 	m.rebuildRows()
 	return m
@@ -162,9 +163,9 @@ func groupedBoard(t *testing.T) model {
 
 func TestGroupSessions(t *testing.T) {
 	m := groupedBoard(t)
-	// Ungrouped: the rank order, then LATER's named row, then the plain tabs
-	// in attention order (s4 waits).
-	want := []string{"a1", "b1", "a2", "b2", "#s4", "#s5"}
+	// Ungrouped: the rank order, then the plain tabs in attention order (s4
+	// waits), then HISTORY's closed session.
+	want := []string{"a1", "b1", "a2", "#s4", "#s5", "b2"}
 	if got := rowNames(m); !reflect.DeepEqual(got, want) {
 		t.Fatalf("plain order = %v, want %v", got, want)
 	}
@@ -173,13 +174,13 @@ func TestGroupSessions(t *testing.T) {
 	// before unnamed, b's group) and the plain tabs each in their group.
 	m.group = true
 	m.rebuildRows()
-	want = []string{"a1", "a2", "b1", "b2", "#s4", "#s5"}
+	want = []string{"a1", "a2", "b1", "#s4", "#s5", "b2"}
 	if got := rowNames(m); !reflect.DeepEqual(got, want) {
 		t.Fatalf("grouped order = %v, want %v", got, want)
 	}
 	// A rank change still decides which group leads: b1 to the top.
 	setRank(&m, "b1", "active", 5)
-	want = []string{"b1", "a1", "a2", "b2", "#s4", "#s5"}
+	want = []string{"b1", "a1", "a2", "#s4", "#s5", "b2"}
 	if got := rowNames(m); !reflect.DeepEqual(got, want) {
 		t.Fatalf("grouped order after rank change = %v, want %v", got, want)
 	}
@@ -190,7 +191,7 @@ func TestGroupHeadersAndCellsInView(t *testing.T) {
 	m.group = true
 	m.rebuildRows()
 	out := m.View()
-	for _, want := range []string{"ACTIVE (3)", "  a (2)", "  b (1)", "LATER (3)", "  b (1)", "  /nowhere/else (1)",
+	for _, want := range []string{"ACTIVE (3)", "  a (2)", "  b (1)", "LATER (2)", "HISTORY (1)", "  /nowhere/else (1)",
 		"by repository", "^G ungroup"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("grouped view lacks %q:\n%s", want, out)
@@ -212,7 +213,7 @@ func TestGroupHeadersAndCellsInView(t *testing.T) {
 	var seq []string
 	for _, ln := range lines {
 		switch {
-		case strings.HasPrefix(ln, "ACTIVE ("), strings.HasPrefix(ln, "LATER ("):
+		case strings.HasPrefix(ln, "ACTIVE ("), strings.HasPrefix(ln, "LATER ("), strings.HasPrefix(ln, "HISTORY ("):
 			seq = append(seq, strings.Fields(ln)[0])
 		case strings.HasPrefix(ln, "  a ("), strings.HasPrefix(ln, "  b ("), strings.HasPrefix(ln, "  /nowhere"):
 			seq = append(seq, "hdr:"+strings.Fields(ln)[0])
@@ -220,7 +221,7 @@ func TestGroupHeadersAndCellsInView(t *testing.T) {
 			seq = append(seq, strings.TrimSpace(strings.Fields(ln)[2]))
 		}
 	}
-	want := []string{"ACTIVE", "hdr:a", "a1", "a2", "hdr:b", "b1", "LATER", "hdr:b", "b2", "hdr:a", "hdr:/nowhere/else"}
+	want := []string{"ACTIVE", "hdr:a", "a1", "a2", "hdr:b", "b1", "LATER", "hdr:a", "hdr:/nowhere/else", "HISTORY", "hdr:b", "b2"}
 	if !reflect.DeepEqual(seq, want) {
 		t.Errorf("sequence = %v, want %v\n%s", seq, want, out)
 	}
@@ -294,7 +295,7 @@ func TestDragRefusedWhileGrouped(t *testing.T) {
 	if cmd != nil || !strings.Contains(m.status, "Ctrl-G back") {
 		t.Errorf("drag while grouped should be refused with a hint; cmd=%v status=%q", cmd != nil, m.status)
 	}
-	if got := rowNames(m); !reflect.DeepEqual(got, []string{"a1", "a2", "b1", "b2", "#s4", "#s5"}) {
+	if got := rowNames(m); !reflect.DeepEqual(got, []string{"a1", "a2", "b1", "#s4", "#s5", "b2"}) {
 		t.Errorf("drag while grouped changed the order: %v", got)
 	}
 }

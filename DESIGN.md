@@ -1029,3 +1029,37 @@ board links tickets with nothing configured; the board file's
 `--ticket-url default` goes back. Stated in the README: a key from
 another tracker opens a wrong page until that line is run.
 
+### 11/12/2026 (closed sessions go to HISTORY)
+
+"When a session goes away it greys out, that is nice, but it stays in
+the list; that is messy and causing clutter. Perhaps closed sessions
+get moved to an expandable Session History area at the bottom?" Yes,
+nearly as said:
+
+1. **A third section, HISTORY, closed by default.** Every offline work
+   row (a record whose tab is gone) leaves ACTIVE and LATER for a
+   section at the bottom that is one header line with the count and
+   what it is. Ctrl-E opens it (the rows, newest first, with the usual
+   keys: Enter reopens, Ctrl-X removes, Ctrl-T, Ctrl-O) and closes it;
+   the choice is remembered beside `group` and `fade`. The header
+   counts closed sessions apart so the number of live tabs stays
+   honest. Nothing is lost: the record and the notes are where they
+   were, and Enter brings the tab back with its transcript, which is
+   why these are rows at all and not a list in a file.
+2. **Rank does not apply there.** A closed session has no place in the
+   order the owner drags; Shift-Up/Down on it is refused with a
+   pointer to Enter, and `sectionNames` keeps it out of the move
+   lists, so a drag never renumbers a session that is not on the
+   board. Reopening puts it back in its own section at its rank.
+3. **What it is not:** the notes `work rm` archived. Those are files
+   under `archive/`, not rows; HISTORY is the sessions you can still
+   reopen.
+4. **Tests.** `dash/history_test.go` (closed by default: rows, header
+   count, the line, `openNow` still counting; Ctrl-E opening, the file,
+   the cursor clamped on closing; nothing closed means no line; newest
+   first whatever the rank; drag refused; the move lists). The shared
+   fixtures open HISTORY so the older offline-row tests keep their
+   rows, and `sectionedBoard` gives parked and slow live tabs since the
+   section tests are about rank, not closure. Docs: dash README,
+   CLAUDE.md.
+

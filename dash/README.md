@@ -92,14 +92,24 @@ hook files the dash reads every `record.json` under `$SAVANNAH_WORK_DIR`
 whose `project` is that record's worktree (realpath compare, falling back
 to a cleaned lexical compare when a path no longer exists). The join
 happens at read time; the dash never writes into a work record or a hook
-file. A work session whose tab is gone still shows as an **offline** row,
-with the first line of its last note in the WHAT cell so you can remember
-where you left off; Enter on it reopens the tab. The worktree path
+file. A work session whose tab is gone is a closed session: its record
+and notes are kept, and it sits in the **HISTORY** section at the bottom
+(closed by default, Ctrl-E opens it) as an **offline** row with the first
+line of its last note in the WHAT cell so you can remember where you
+left off; Enter on it reopens the tab. The worktree path
 `<repo>/.savannah-worktrees/<name>` renders as `<repo>/<name>` in PROJECT.
 
 ## Sections, order and polling
 
-Rows sit in **ACTIVE** and **LATER**. A named session is in the section its
+Rows sit in **ACTIVE** and **LATER**, with **HISTORY** below them for the
+closed sessions (a work record whose tab is gone): one header line with
+the count, closed by default so the live rows have the screen; **Ctrl-E**
+opens it (the rows newest first, Enter reopens one, Ctrl-X removes it,
+Ctrl-T and Ctrl-O work as on any work row) and closes it again, and the
+choice is remembered in the board file (`"history": "open"`). The header
+counts closed sessions apart ("12 sessions   3 closed"). A closed session
+has no place in the rank order, so a drag on it is refused; reopening it
+puts it back in its section. A named session is in the section its
 record's `priority` says (active unless moved) and in `rank` order inside
 it (records from before ranks existed sort by creation time); unnamed tabs
 close the LATER section in attention order (waiting first, then working,
@@ -354,6 +364,8 @@ Board:
   (remembered in the board file; a drag is refused while grouped)
 - **Ctrl-F** cycles the fade (1h, 3h, 8h, 24h, off): rows untouched for
   longer are drawn faint (remembered in the board file)
+- **Ctrl-E** opens and closes HISTORY, the closed sessions at the bottom
+  (remembered in the board file)
 - **Ctrl-B** opens the row's ticket and pull request in the browser
   (the TICKET column; Cmd-click does the same in iTerm2)
 - **Ctrl-S** opens the snapshot screen, **Ctrl-L** the log view
@@ -485,6 +497,7 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-G | none: the rows regroup in the dash; the choice is written to `$SAVANNAH_BOARD_FILE` (`~/.claude/savannah/board.json`) |
 | Ctrl-F | none: the fade changes in the dash; `"fade": "8h"` (or `"off"`) is written to the board file |
 | Ctrl-B | `open <url>` (macOS) or `xdg-open <url>` per link on the row; the PR link may first cost one `git -C <checkout> remote get-url origin`, cached for the run |
+| Ctrl-E | none: HISTORY opens or closes in the dash; `"history": "open"` is written to the board file |
 | (start, and each new plain tab with a prompt) | `savannah work autoname --json <hook session ids>`, one run at a time |
 
 Values travel in the `=` form or after `--`, so text that begins with `-`

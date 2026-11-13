@@ -40,6 +40,7 @@ import (
 const (
 	secActive = iota
 	secLater
+	secHistory // closed (offline) work sessions, at the bottom (history.go)
 )
 
 const (
@@ -48,15 +49,22 @@ const (
 )
 
 func sectionName(sec int) string {
-	if sec == secActive {
+	switch sec {
+	case secActive:
 		return "ACTIVE"
+	case secHistory:
+		return "HISTORY"
 	}
 	return "LATER"
 }
 
-// sectionOf is a session's section: its record's priority (an unknown or
-// missing priority is active), LATER for an unnamed tab.
+// sectionOf is a session's section: HISTORY for a closed (offline) work
+// session, else its record's priority (an unknown or missing priority is
+// active), LATER for an unnamed tab.
 func sectionOf(s session, recs map[string]workRecord) int {
+	if s.State == "offline" {
+		return secHistory
+	}
 	if s.Work == "" {
 		return secLater
 	}
@@ -101,6 +109,9 @@ func orderSessions(sessions []session, work []workRecord) []session {
 		if sa != sb {
 			return sa < sb
 		}
+		if sa == secHistory {
+			return a.Updated > b.Updated // closed sessions: newest first
+		}
 		if (a.Work == "") != (b.Work == "") {
 			return a.Work != "" // named before unnamed
 		}
@@ -117,8 +128,12 @@ func orderSessions(sessions []session, work []workRecord) []session {
 }
 
 // sectionLines is the header line above a section's rows, plus a hint when
-// the section is empty (where a drag would land).
-func sectionLines(sec, n int) []string {
+// the section is empty (where a drag would land); HISTORY's is its own
+// (history.go: nothing when no session is closed).
+func (m model) sectionLines(sec, n int) []string {
+	if sec == secHistory {
+		return historyLines(n, m.history)
+	}
 	out := []string{headerStyle.Render(fmt.Sprintf("%s (%d)", sectionName(sec), n))}
 	if n == 0 {
 		hint := "  (empty: Shift-Down on a session above moves it here)"
@@ -210,9 +225,10 @@ func (m model) sectionNames() (active, later []string) {
 		if r.kind != rowSession || r.s.Work == "" {
 			continue
 		}
-		if sectionOf(r.s, recs) == secActive {
+		switch sectionOf(r.s, recs) {
+		case secActive:
 			active = append(active, r.s.Work)
-		} else {
+		case secLater:
 			later = append(later, r.s.Work)
 		}
 	}
@@ -230,6 +246,10 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 	}
 	if r.s.Work == "" {
 		m.status = warnStyle.Render("name this tab first (Ctrl-R); then it can be moved")
+		return m, nil
+	}
+	if r.s.State == "offline" {
+		m.status = warnStyle.Render("a closed session sits in HISTORY and has no place in the order; Enter reopens it")
 		return m, nil
 	}
 	if m.group {

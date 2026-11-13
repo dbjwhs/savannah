@@ -29,6 +29,7 @@ func boardWith(t *testing.T, plain bool) model {
 		{Name: "parked", Worktree: "/r/.savannah-worktrees/parked", ClaudePane: "P"},
 	}
 	m.hooks, m.work = hooks, work
+	m.history = true // HISTORY open, so the offline row is on the board; the closed default is history_test's
 	m.sessions = joinWork(hooks, work)
 	m.rebuildRows()
 	return m
@@ -200,7 +201,7 @@ func TestRepoMatches(t *testing.T) {
 func TestBoardHeaderByMode(t *testing.T) {
 	m := boardWith(t, false)
 	out := m.View()
-	for _, want := range []string{"savannah  work", "2 sessions", "LOCAL SESSIONS", "^N new", "^F fade", "^B open", "^O out"} {
+	for _, want := range []string{"savannah  work", "1 session", "1 closed", "LOCAL SESSIONS", "^N new", "^F fade", "^B open", "^O out"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("work board missing %q:\n%s", want, out)
 		}

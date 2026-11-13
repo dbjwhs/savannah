@@ -190,11 +190,11 @@ func TestPanelForPlainAndOfflineRows(t *testing.T) {
 		t.Errorf("offline panel:\n%s", out)
 	}
 	// Too little height: no panel, the view still fits (the board's minimum
-	// is 15 lines here: header, three table headers, three rows, the prompt
-	// block).
-	m.height = 15
+	// is 17 lines here: header, three table headers, HISTORY's header and
+	// hint, three rows, the prompt block).
+	m.height = 17
 	out = m.View()
-	if strings.Contains(out, "NOTES (") || len(strings.Split(out, "\n")) > 15 {
+	if strings.Contains(out, "NOTES (") || len(strings.Split(out, "\n")) > 17 {
 		t.Errorf("short terminal should drop the panel and fit:\n%s", out)
 	}
 }
