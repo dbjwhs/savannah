@@ -8,36 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func click(m model, y int) (model, tea.Cmd) {
-	next, cmd := m.Update(tea.MouseMsg{X: 3, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	return next.(model), cmd
-}
-
-// indexOfRow is the index of the first row the predicate accepts, -1 when none.
-func indexOfRow(m model, match func(row) bool) int {
-	for i, r := range m.rows {
-		if match(r) {
-			return i
-		}
-	}
-	return -1
-}
-
-func wheel(m model, b tea.MouseButton) model {
-	next, _ := m.Update(tea.MouseMsg{Button: b, Action: tea.MouseActionPress})
-	return next.(model)
-}
-
-// lineOf is the first line of the view holding the text, -1 when none.
-func lineOf(m model, text string) int {
-	for i, ln := range strings.Split(m.View(), "\n") {
-		if strings.Contains(ln, text) {
-			return i
-		}
-	}
-	return -1
-}
-
 // The hits line up with the view: every row line names its row, the
 // section headers their section, the rest nothing.
 func TestHitsMatchTheView(t *testing.T) {

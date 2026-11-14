@@ -5,6 +5,7 @@
 // one test function per behavior, main() runs them all.
 
 #include "../src/config.hpp"
+#include "test_support.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -14,22 +15,7 @@ using savannah::Config;
 using savannah::ConfigError;
 using savannah::NodeConfig;
 
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
-
-#define CHECK_THROWS(expr)                                              \
-    do {                                                                \
-        bool threw = false;                                             \
-        try { (void)(expr); } catch (const ConfigError&) { threw = true; } \
-        CHECK(threw);                                                   \
-    } while (0)
+#define CHECK_THROWS(expr) CHECK_THROWS_AS(expr, ConfigError)
 
 static void test_basic_types() {
     auto cfg = Config::parse_string(R"(
@@ -148,6 +134,5 @@ int main() {
     test_wrong_type_returns_nullopt();
     test_errors();
     test_node_config();
-    if (g_failures == 0) std::printf("test_config: all passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return savannah::test::finish("test_config");
 }

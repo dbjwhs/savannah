@@ -20,16 +20,7 @@
 #include "../src/agent_process.hpp"
 #include "../src/json.hpp"
 #include "../src/stream_json.hpp"
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
+#include "test_support.hpp"
 
 int main() {
     const char* live = std::getenv("SAVANNAH_LIVE");
@@ -75,8 +66,6 @@ int main() {
         CHECK(trailer["is_error"].as_bool(true) == false);
     }
 
-    if (g_failures == 0) {
-        std::printf("test_live_schema: live CLI matches the pinned subset\n");
-    }
-    return g_failures == 0 ? 0 : 1;
+    return savannah::test::finish("test_live_schema",
+                                  "live CLI matches the pinned subset");
 }

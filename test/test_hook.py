@@ -14,51 +14,79 @@ import subprocess
 import sys
 import tempfile
 
-failures = 0
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _support import check, finish  # noqa: E402
 
 
-def check(cond, label):
-    global failures
-    if not cond:
-        print(f"FAIL: {label}")
-        failures += 1
+class HookHarness:
+    """The hook script and the temp directories it reads and writes: the
+    sessions dir (its status files), a work dir (the records SessionStart
+    looks up) and savannah's log dir.
 
+    The sections below run in order against these directories and are not
+    independent: the log section reads what the earlier ones made the hook
+    log."""
 
-def main():
-    script = sys.argv[1]
-    workdir = tempfile.mkdtemp(prefix="savannah-hook-test-")
-    env = dict(os.environ)
-    env["SAVANNAH_SESSIONS_DIR"] = workdir
-    # The work records the SessionStart context reads: a temp dir, so the
-    # user's own sessions never match and nothing prints unless a test says so.
-    work_root = tempfile.mkdtemp(prefix="savannah-hook-work-")
-    env["SAVANNAH_WORK_DIR"] = work_root
-    # savannah's one log: a temp dir, never the user's
-    log_root = tempfile.mkdtemp(prefix="savannah-hook-log-")
-    env["SAVANNAH_LOG_DIR"] = log_root
+    def __init__(self, script):
+        self.script = script
+        self.workdir = tempfile.mkdtemp(prefix="savannah-hook-test-")
+        self.env = dict(os.environ)
+        self.env["SAVANNAH_SESSIONS_DIR"] = self.workdir
+        # The work records the SessionStart context reads: a temp dir, so the
+        # user's own sessions never match and nothing prints unless a test says so.
+        self.work_root = tempfile.mkdtemp(prefix="savannah-hook-work-")
+        self.env["SAVANNAH_WORK_DIR"] = self.work_root
+        # savannah's one log: a temp dir, never the user's
+        self.log_root = tempfile.mkdtemp(prefix="savannah-hook-log-")
+        self.env["SAVANNAH_LOG_DIR"] = self.log_root
+        self.wt = None    # a work session's worktree (test_session_start_context)
 
-    def fire(event, extra_env=None):
-        e = dict(env)
+    def fire(self, event, extra_env=None):
+        """Run the hook on one event, as Claude Code does; it must exit 0."""
+        e = dict(self.env)
         if extra_env:
             e.update(extra_env)
-        p = subprocess.run([sys.executable, script], input=json.dumps(event),
+        p = subprocess.run([sys.executable, self.script], input=json.dumps(event),
                            text=True, capture_output=True, env=e)
         check(p.returncode == 0, f"{event.get('hook_event_name')} exits 0")
         return p
 
-    def load(sid):
-        with open(os.path.join(workdir, sid + ".json")) as f:
+    def load(self, sid):
+        with open(os.path.join(self.workdir, sid + ".json")) as f:
             return json.load(f)
 
-    def exists(sid):
-        return os.path.exists(os.path.join(workdir, sid + ".json"))
+    def exists(self, sid):
+        return os.path.exists(os.path.join(self.workdir, sid + ".json"))
 
+    def put_record(self, name, rec):
+        os.makedirs(os.path.join(self.work_root, name), exist_ok=True)
+        with open(os.path.join(self.work_root, name, "record.json"), "w") as f:
+            json.dump(rec, f)
+
+
+def context_of(p):
+    """The additionalContext a SessionStart printed, None when stdout is not
+    exactly that one JSON object."""
+    try:
+        out = json.loads(p.stdout)
+    except ValueError:
+        return None
+    if not isinstance(out, dict) or set(out) != {"hookSpecificOutput"}:
+        return None
+    hso = out["hookSpecificOutput"]
+    if hso.get("hookEventName") != "SessionStart":
+        return None
+    return hso.get("additionalContext")
+
+
+def test_session_states(h):
+    """The status file through a session's life, SessionStart to SessionEnd."""
     # SessionStart -> idle, with terminal identity from the environment.
-    fire({"session_id": "s1", "hook_event_name": "SessionStart",
-          "cwd": "/home/u/proj", "permission_mode": "default",
-          "transcript_path": "/home/u/.claude/projects/p/s1.jsonl"},
-         {"ITERM_SESSION_ID": "w0t1p0:UUID-1", "TERM_PROGRAM": "iTerm.app"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "SessionStart",
+            "cwd": "/home/u/proj", "permission_mode": "default",
+            "transcript_path": "/home/u/.claude/projects/p/s1.jsonl"},
+           {"ITERM_SESSION_ID": "w0t1p0:UUID-1", "TERM_PROGRAM": "iTerm.app"})
+    r = h.load("s1")
     check(r["state"] == "idle", "SessionStart -> idle")
     check(r["project"] == "/home/u/proj", "cwd captured as project")
     check(r["iterm_session_id"] == "w0t1p0:UUID-1", "iterm id captured")
@@ -70,25 +98,25 @@ def main():
 
     # SAVANNAH_HOOK_IGNORE: savannah's own headless claude calls set it, and
     # the hook then writes nothing (no ghost tab on the board).
-    fire({"session_id": "ghost", "hook_event_name": "SessionStart", "cwd": "/tmp/x"},
-         {"SAVANNAH_HOOK_IGNORE": "1"})
-    check(not exists("ghost"), "SAVANNAH_HOOK_IGNORE: no session file is written")
+    h.fire({"session_id": "ghost", "hook_event_name": "SessionStart", "cwd": "/tmp/x"},
+           {"SAVANNAH_HOOK_IGNORE": "1"})
+    check(not h.exists("ghost"), "SAVANNAH_HOOK_IGNORE: no session file is written")
 
     # UserPromptSubmit -> working; last_prompt from the alternate
     # "user_prompt" field; transcript_path survives an event that omits it.
-    fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
-          "cwd": "/home/u/proj", "user_prompt": "do the thing"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
+            "cwd": "/home/u/proj", "user_prompt": "do the thing"})
+    r = h.load("s1")
     check(r["state"] == "working", "UserPromptSubmit -> working")
     check(r["last_prompt"] == "do the thing", "last_prompt from user_prompt")
     check(r["transcript_path"] == "/home/u/.claude/projects/p/s1.jsonl",
           "transcript_path preserved when an event omits it")
 
     # Notification (permission) -> waiting, carries message + type.
-    fire({"session_id": "s1", "hook_event_name": "Notification",
-          "cwd": "/home/u/proj", "notification_type": "permission_prompt",
-          "notification_message": "needs Bash"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "Notification",
+            "cwd": "/home/u/proj", "notification_type": "permission_prompt",
+            "notification_message": "needs Bash"})
+    r = h.load("s1")
     check(r["state"] == "waiting", "Notification -> waiting")
     check(r["message"] == "needs Bash", "notification_message captured")
     check(r["notify_type"] == "permission_prompt", "notification_type captured")
@@ -97,39 +125,39 @@ def main():
     # The documented "prompt" field wins; multi-line prompts keep the first
     # non-blank line only, cut to 200 chars.
     long_line = "x" * 300
-    fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
-          "cwd": "/home/u/proj",
-          "prompt": "\n  " + long_line + "\nsecond line\n",
-          "user_prompt": "ignored when prompt is present"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
+            "cwd": "/home/u/proj",
+            "prompt": "\n  " + long_line + "\nsecond line\n",
+            "user_prompt": "ignored when prompt is present"})
+    r = h.load("s1")
     check(r["last_prompt"] == "x" * 200, "last_prompt first line, 200 chars")
     check(len(r["last_prompt"]) == 200, "last_prompt length capped")
     check("second" not in r["last_prompt"], "last_prompt drops later lines")
 
     # A fresh transcript_path on a later event replaces the old one.
-    fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
-          "cwd": "/home/u/proj", "prompt": "fix the parser",
-          "transcript_path": "/home/u/.claude/projects/p/s1b.jsonl"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
+            "cwd": "/home/u/proj", "prompt": "fix the parser",
+            "transcript_path": "/home/u/.claude/projects/p/s1b.jsonl"})
+    r = h.load("s1")
     check(r["last_prompt"] == "fix the parser", "last_prompt from prompt")
     check(r["transcript_path"] == "/home/u/.claude/projects/p/s1b.jsonl",
           "transcript_path updated when present")
 
     # An empty UserPromptSubmit does not wipe the previous prompt.
-    fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
-          "cwd": "/home/u/proj", "prompt": "   \n"})
-    check(load("s1")["last_prompt"] == "fix the parser",
+    h.fire({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
+            "cwd": "/home/u/proj", "prompt": "   \n"})
+    check(h.load("s1")["last_prompt"] == "fix the parser",
           "blank prompt keeps previous last_prompt")
 
     # The legacy 'message' field is still accepted if notification_message is absent.
-    fire({"session_id": "s2", "hook_event_name": "Notification",
-          "cwd": "/home/u/other", "message": "legacy text"})
-    check(load("s2")["message"] == "legacy text", "legacy message field accepted")
+    h.fire({"session_id": "s2", "hook_event_name": "Notification",
+            "cwd": "/home/u/other", "message": "legacy text"})
+    check(h.load("s2")["message"] == "legacy text", "legacy message field accepted")
 
     # Stop -> done, and clears the pending message/type.
-    fire({"session_id": "s1", "hook_event_name": "Stop",
-          "cwd": "/home/u/proj", "stop_reason": "end_turn"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "Stop",
+            "cwd": "/home/u/proj", "stop_reason": "end_turn"})
+    r = h.load("s1")
     check(r["state"] == "done", "Stop -> done")
     check(r["message"] == "" and r["notify_type"] == "", "Stop clears message")
     check(r["last_prompt"] == "fix the parser", "last_prompt preserved through Stop")
@@ -138,84 +166,87 @@ def main():
     # the last turn) is not a session that needs you: the state stays done,
     # no message is recorded, the timestamp is refreshed.
     before = r["updated"]
-    fire({"session_id": "s1", "hook_event_name": "Notification", "cwd": "/home/u/proj",
-          "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
-    r = load("s1")
+    h.fire({"session_id": "s1", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+            "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
+    r = h.load("s1")
     check(r["state"] == "done", f"idle_prompt keeps the state ({r['state']})")
     check(r["message"] == "" and r["notify_type"] == "idle_prompt", "idle_prompt records its type and no message")
     check(r["updated"] >= before, "idle_prompt refreshes the timestamp")
-    fire({"session_id": "s9", "hook_event_name": "Notification", "cwd": "/home/u/proj",
-          "notification_type": "idle_prompt"})
-    check(load("s9")["state"] == "idle", "idle_prompt on a session with no file yet is idle")
+    h.fire({"session_id": "s9", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+            "notification_type": "idle_prompt"})
+    check(h.load("s9")["state"] == "idle", "idle_prompt on a session with no file yet is idle")
     check(r["transcript_path"] == "/home/u/.claude/projects/p/s1b.jsonl",
           "transcript_path preserved through Stop")
     # A nudge on top of a real permission prompt leaves the prompt's
     # message and type in place (it still needs you).
-    fire({"session_id": "s8", "hook_event_name": "UserPromptSubmit", "cwd": "/home/u/proj", "prompt": "go"})
-    fire({"session_id": "s8", "hook_event_name": "Notification", "cwd": "/home/u/proj",
-          "notification_type": "permission_prompt", "notification_message": "use Bash"})
-    fire({"session_id": "s8", "hook_event_name": "Notification", "cwd": "/home/u/proj",
-          "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
-    r = load("s8")
+    h.fire({"session_id": "s8", "hook_event_name": "UserPromptSubmit", "cwd": "/home/u/proj", "prompt": "go"})
+    h.fire({"session_id": "s8", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+            "notification_type": "permission_prompt", "notification_message": "use Bash"})
+    h.fire({"session_id": "s8", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+            "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
+    r = h.load("s8")
     check(r["state"] == "waiting" and r["notify_type"] == "permission_prompt" and r["message"] == "use Bash",
           f"a nudge over a permission prompt keeps it waiting with its message ({r['state']}, {r['notify_type']!r})")
     # A file an older hook stamped waiting for the nudge heals on the next
     # nudge: idle, no message.
-    with open(os.path.join(workdir, "s7.json"), "w") as f:
+    with open(os.path.join(h.workdir, "s7.json"), "w") as f:
         json.dump({"session_id": "s7", "project": "/home/u/proj", "state": "waiting",
                    "notify_type": "idle_prompt", "message": "Claude is waiting for your input"}, f)
-    fire({"session_id": "s7", "hook_event_name": "Notification", "cwd": "/home/u/proj",
-          "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
-    r = load("s7")
+    h.fire({"session_id": "s7", "hook_event_name": "Notification", "cwd": "/home/u/proj",
+            "notification_type": "idle_prompt", "notification_message": "Claude is waiting for your input"})
+    r = h.load("s7")
     check(r["state"] == "idle" and r["message"] == "", f"an old waiting-for-the-nudge file heals to idle ({r['state']})")
 
     # A session that never saw a transcript_path or prompt still has both
     # fields, as empty strings, so consumers never need to guard the key.
-    r = load("s2")
+    r = h.load("s2")
     check(r.get("transcript_path") == "", "transcript_path defaults to empty")
     check(r.get("last_prompt") == "", "last_prompt defaults to empty")
 
     # SessionEnd removes the file; a second SessionEnd is harmless.
-    fire({"session_id": "s1", "hook_event_name": "SessionEnd",
-          "session_end_reason": "logout"})
-    check(not exists("s1"), "SessionEnd removes the file")
-    fire({"session_id": "s1", "hook_event_name": "SessionEnd"})
-    check(not exists("s1"), "second SessionEnd is harmless")
+    h.fire({"session_id": "s1", "hook_event_name": "SessionEnd",
+            "session_end_reason": "logout"})
+    check(not h.exists("s1"), "SessionEnd removes the file")
+    h.fire({"session_id": "s1", "hook_event_name": "SessionEnd"})
+    check(not h.exists("s1"), "second SessionEnd is harmless")
 
+
+def test_unusable_input(h):
+    """Events and records the hook cannot use: nothing written, never a traceback."""
     # No session_id: do no harm, write nothing.
-    before = set(os.listdir(workdir))
-    fire({"hook_event_name": "Notification", "notification_message": "x"})
-    check(set(os.listdir(workdir)) == before, "missing session_id writes nothing")
+    before = set(os.listdir(h.workdir))
+    h.fire({"hook_event_name": "Notification", "notification_message": "x"})
+    check(set(os.listdir(h.workdir)) == before, "missing session_id writes nothing")
 
     # Empty stdin: exit clean, write nothing.
-    p = subprocess.run([sys.executable, script], input="", text=True,
-                       capture_output=True, env=env)
+    p = subprocess.run([sys.executable, h.script], input="", text=True,
+                       capture_output=True, env=h.env)
     check(p.returncode == 0, "empty stdin exits 0")
 
     # Valid JSON that is not an object (array, string, number) has no
     # session_id to key on: exit 0, write nothing, never raise.
     for raw in ("[1,2]", "\"just a string\"", "42", "null"):
-        before = set(os.listdir(workdir))
-        p = subprocess.run([sys.executable, script], input=raw, text=True,
-                           capture_output=True, env=env)
+        before = set(os.listdir(h.workdir))
+        p = subprocess.run([sys.executable, h.script], input=raw, text=True,
+                           capture_output=True, env=h.env)
         check(p.returncode == 0, f"non-object stdin {raw!r} exits 0")
         check(p.stderr == "", f"non-object stdin {raw!r} prints no traceback")
-        check(set(os.listdir(workdir)) == before,
+        check(set(os.listdir(h.workdir)) == before,
               f"non-object stdin {raw!r} writes nothing")
 
     # A non-string session_id is treated as missing, not used as a filename.
-    before = set(os.listdir(workdir))
-    fire({"session_id": 7, "hook_event_name": "UserPromptSubmit", "prompt": "x"})
-    check(set(os.listdir(workdir)) == before, "non-string session_id writes nothing")
+    before = set(os.listdir(h.workdir))
+    h.fire({"session_id": 7, "hook_event_name": "UserPromptSubmit", "prompt": "x"})
+    check(set(os.listdir(h.workdir)) == before, "non-string session_id writes nothing")
 
     # A pre-existing record that parses as JSON but is not an object (a
     # damaged or foreign file) is rebuilt as an object, not a crash.
-    with open(os.path.join(workdir, "s3.json"), "w") as f:
+    with open(os.path.join(h.workdir, "s3.json"), "w") as f:
         f.write("\"junk\"")
-    p = fire({"session_id": "s3", "hook_event_name": "UserPromptSubmit",
-              "cwd": "/home/u/three", "prompt": "rebuild me"})
+    p = h.fire({"session_id": "s3", "hook_event_name": "UserPromptSubmit",
+                "cwd": "/home/u/three", "prompt": "rebuild me"})
     check(p.stderr == "", "junk record: no traceback")
-    r = load("s3")
+    r = h.load("s3")
     check(isinstance(r, dict), "junk record rebuilt as an object")
     if not isinstance(r, dict):
         r = {}  # keep reporting clean FAILs below instead of a traceback
@@ -225,57 +256,42 @@ def main():
     check(r.get("project") == "/home/u/three", "junk record: project set")
 
     # Same for an array-shaped record.
-    with open(os.path.join(workdir, "s4.json"), "w") as f:
+    with open(os.path.join(h.workdir, "s4.json"), "w") as f:
         f.write("[1, 2, 3]")
-    fire({"session_id": "s4", "hook_event_name": "Stop", "cwd": "/home/u/four"})
-    r = load("s4")
+    h.fire({"session_id": "s4", "hook_event_name": "Stop", "cwd": "/home/u/four"})
+    r = h.load("s4")
     check(isinstance(r, dict) and r.get("state") == "done",
           "array record rebuilt as an object with new state")
 
     # Unreadable record file (a directory where the file should be): the
     # hook still exits 0 rather than leaking an exception.
-    os.makedirs(os.path.join(workdir, "s5.json"))
-    p = fire({"session_id": "s5", "hook_event_name": "Stop", "cwd": "/home/u/five"})
+    os.makedirs(os.path.join(h.workdir, "s5.json"))
+    p = h.fire({"session_id": "s5", "hook_event_name": "Stop", "cwd": "/home/u/five"})
     check(p.stderr == "", "directory in place of record: no traceback")
 
-    # ---- SessionStart tells a work session's Claude how to report a poll ----
+
+def test_session_start_context(h):
+    """SessionStart tells a work session's Claude how to report a poll."""
     # The hook finds the work record (work/) whose worktree is the event's cwd
     # and prints one JSON object with additionalContext; on any other event,
     # or with no matching record, stdout stays empty. The records are read as
     # files (the module is not imported), archive/ and junk are skipped.
-    wt = tempfile.mkdtemp(prefix="savannah-hook-wt-")
+    h.wt = tempfile.mkdtemp(prefix="savannah-hook-wt-")
 
-    def put_record(name, rec):
-        os.makedirs(os.path.join(work_root, name), exist_ok=True)
-        with open(os.path.join(work_root, name, "record.json"), "w") as f:
-            json.dump(rec, f)
-
-    def context_of(p):
-        try:
-            out = json.loads(p.stdout)
-        except ValueError:
-            return None
-        if not isinstance(out, dict) or set(out) != {"hookSpecificOutput"}:
-            return None
-        hso = out["hookSpecificOutput"]
-        if hso.get("hookEventName") != "SessionStart":
-            return None
-        return hso.get("additionalContext")
-
-    put_record("fix-parser", {"name": "fix-parser", "worktree": wt, "claude_pane": "PANE-A", "created": 10})
-    put_record("elsewhere", {"name": "elsewhere", "worktree": "/home/u/elsewhere", "claude_pane": "", "created": 11})
-    os.makedirs(os.path.join(work_root, "archive"))
-    with open(os.path.join(work_root, "archive", "record.json"), "w") as f:
-        json.dump({"name": "archive", "worktree": wt, "created": 999}, f)
-    os.makedirs(os.path.join(work_root, "broken"))
-    with open(os.path.join(work_root, "broken", "record.json"), "w") as f:
+    h.put_record("fix-parser", {"name": "fix-parser", "worktree": h.wt, "claude_pane": "PANE-A", "created": 10})
+    h.put_record("elsewhere", {"name": "elsewhere", "worktree": "/home/u/elsewhere", "claude_pane": "", "created": 11})
+    os.makedirs(os.path.join(h.work_root, "archive"))
+    with open(os.path.join(h.work_root, "archive", "record.json"), "w") as f:
+        json.dump({"name": "archive", "worktree": h.wt, "created": 999}, f)
+    os.makedirs(os.path.join(h.work_root, "broken"))
+    with open(os.path.join(h.work_root, "broken", "record.json"), "w") as f:
         f.write("[1, 2")
-    os.makedirs(os.path.join(work_root, "alist"))
-    with open(os.path.join(work_root, "alist", "record.json"), "w") as f:
+    os.makedirs(os.path.join(h.work_root, "alist"))
+    with open(os.path.join(h.work_root, "alist", "record.json"), "w") as f:
         f.write("[1, 2]")
-    os.makedirs(os.path.join(work_root, "empty"))
-    p = fire({"session_id": "ws1", "hook_event_name": "SessionStart", "cwd": wt, "permission_mode": "default"},
-             {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
+    os.makedirs(os.path.join(h.work_root, "empty"))
+    p = h.fire({"session_id": "ws1", "hook_event_name": "SessionStart", "cwd": h.wt, "permission_mode": "default"},
+               {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
     check(p.stderr == "", f"SessionStart in a work session: no stderr ({p.stderr!r})")
     ctx = context_of(p)
     check(isinstance(ctx, str) and p.stdout.count("\n") == 1,
@@ -289,47 +305,49 @@ def main():
     check(" with: /" in ctx and ("/build/savannah work status" in ctx or "/work/savannah_work.py work status" in ctx),
           f"the command is the built CLI or the module under python3, by absolute path ({ctx})")
     check("\u2014" not in ctx, "no em dash in the context")
-    r = load("ws1")
-    check(r["state"] == "idle" and r["project"] == wt, "the status file is still written on SessionStart")
+    r = h.load("ws1")
+    check(r["state"] == "idle" and r["project"] == h.wt, "the status file is still written on SessionStart")
     # another directory: nothing printed, file still written
-    p = fire({"session_id": "ws2", "hook_event_name": "SessionStart", "cwd": "/home/u/proj"},
-             {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
+    p = h.fire({"session_id": "ws2", "hook_event_name": "SessionStart", "cwd": "/home/u/proj"},
+               {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
     check(p.stdout == "" and p.stderr == "", f"SessionStart outside every work session prints nothing ({p.stdout!r})")
-    check(exists("ws2"), "the status file is written when nothing prints")
+    check(h.exists("ws2"), "the status file is written when nothing prints")
     # other events in that directory print nothing
     for ev in ("UserPromptSubmit", "Notification", "Stop", "PostToolUse"):
-        p = fire({"session_id": "ws1", "hook_event_name": ev, "cwd": wt, "prompt": "x",
-                  "notification_message": "m"}, {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
+        p = h.fire({"session_id": "ws1", "hook_event_name": ev, "cwd": h.wt, "prompt": "x",
+                    "notification_message": "m"}, {"ITERM_SESSION_ID": "w0t1p0:PANE-A"})
         check(p.stdout == "" and p.stderr == "", f"{ev} prints nothing ({p.stdout!r})")
     # two records on one worktree: the pane decides, else the newest
-    put_record("twin", {"name": "twin", "worktree": wt, "claude_pane": "PANE-B", "created": 99})
-    p = fire({"session_id": "ws3", "hook_event_name": "SessionStart", "cwd": wt},
-             {"ITERM_SESSION_ID": "w0t2p0:PANE-B"})
+    h.put_record("twin", {"name": "twin", "worktree": h.wt, "claude_pane": "PANE-B", "created": 99})
+    p = h.fire({"session_id": "ws3", "hook_event_name": "SessionStart", "cwd": h.wt},
+               {"ITERM_SESSION_ID": "w0t2p0:PANE-B"})
     check('work session "twin"' in (context_of(p) or ""), f"two records on one directory: the pane match wins ({p.stdout!r})")
-    p = fire({"session_id": "ws4", "hook_event_name": "SessionStart", "cwd": wt},
-             {"ITERM_SESSION_ID": "w0t2p0:PANE-A"})
+    p = h.fire({"session_id": "ws4", "hook_event_name": "SessionStart", "cwd": h.wt},
+               {"ITERM_SESSION_ID": "w0t2p0:PANE-A"})
     check('work session "fix-parser"' in (context_of(p) or ""), "the other pane picks the other record")
-    p = fire({"session_id": "ws5", "hook_event_name": "SessionStart", "cwd": wt},
-             {"ITERM_SESSION_ID": "w0t2p0:NEITHER"})
+    p = h.fire({"session_id": "ws5", "hook_event_name": "SessionStart", "cwd": h.wt},
+               {"ITERM_SESSION_ID": "w0t2p0:NEITHER"})
     check('work session "twin"' in (context_of(p) or ""), "no pane match: the newest record wins")
-    p = fire({"session_id": "ws6", "hook_event_name": "SessionStart", "cwd": wt}, {"ITERM_SESSION_ID": ""})
+    p = h.fire({"session_id": "ws6", "hook_event_name": "SessionStart", "cwd": h.wt}, {"ITERM_SESSION_ID": ""})
     check('work session "twin"' in (context_of(p) or ""), "no ITERM_SESSION_ID at all: still the newest record")
     # the cwd spelled through a symlink still matches (realpath on both sides)
     link = os.path.join(tempfile.mkdtemp(prefix="savannah-hook-link-"), "wt")
-    os.symlink(wt, link)
-    p = fire({"session_id": "ws7", "hook_event_name": "SessionStart", "cwd": link},
-             {"ITERM_SESSION_ID": "w0t2p0:PANE-A"})
+    os.symlink(h.wt, link)
+    p = h.fire({"session_id": "ws7", "hook_event_name": "SessionStart", "cwd": link},
+               {"ITERM_SESSION_ID": "w0t2p0:PANE-A"})
     check('work session "fix-parser"' in (context_of(p) or ""), "a symlinked cwd matches by real path")
     # a work dir that does not exist: nothing printed, nothing broken
-    p = fire({"session_id": "ws8", "hook_event_name": "SessionStart", "cwd": wt},
-             {"SAVANNAH_WORK_DIR": os.path.join(work_root, "missing")})
-    check(p.stdout == "" and p.stderr == "" and exists("ws8"), "a missing work dir: nothing printed, file written")
+    p = h.fire({"session_id": "ws8", "hook_event_name": "SessionStart", "cwd": h.wt},
+               {"SAVANNAH_WORK_DIR": os.path.join(h.work_root, "missing")})
+    check(p.stdout == "" and p.stderr == "" and h.exists("ws8"), "a missing work dir: nothing printed, file written")
     # a cwd that is not a string never breaks the hook
-    p = fire({"session_id": "ws9", "hook_event_name": "SessionStart", "cwd": 42})
-    check(p.stderr == "" and exists("ws9"), "a non-string cwd: exit 0, file written")
+    p = h.fire({"session_id": "ws9", "hook_event_name": "SessionStart", "cwd": 42})
+    check(p.stderr == "" and h.exists("ws9"), "a non-string cwd: exit 0, file written")
 
-    # ---- the hook writes savannah's log (src=hook) and never a word anywhere else ----
-    log_file = os.path.join(log_root, "savannah.log")
+
+def test_log(h):
+    """The hook writes savannah's log (src=hook) and never a word anywhere else."""
+    log_file = os.path.join(h.log_root, "savannah.log")
     check(os.path.isfile(log_file), f"events are logged to {log_file} (SAVANNAH_LOG_DIR)")
     try:
         with open(log_file, encoding="utf-8", errors="replace") as f:
@@ -348,20 +366,33 @@ def main():
     check(not any(" level=INFO " in ln and 'msg="work context"' not in ln for ln in lines),
           "nothing but the context is INFO")
     # a log directory that cannot be made: exit 0, file written, nothing printed
-    blocker = os.path.join(log_root, "blocker")
+    blocker = os.path.join(h.log_root, "blocker")
     open(blocker, "w").close()
     unwritable = {"SAVANNAH_LOG_DIR": os.path.join(blocker, "log")}
-    p = fire({"session_id": "lg1", "hook_event_name": "Stop", "cwd": "/home/u/proj"}, unwritable)
-    check(p.stdout == "" and p.stderr == "" and exists("lg1") and load("lg1")["state"] == "done",
+    p = h.fire({"session_id": "lg1", "hook_event_name": "Stop", "cwd": "/home/u/proj"}, unwritable)
+    check(p.stdout == "" and p.stderr == "" and h.exists("lg1") and h.load("lg1")["state"] == "done",
           f"an unwritable SAVANNAH_LOG_DIR: exit 0, file written, nothing printed ({p.stderr!r})")
-    p = fire({"session_id": "lg2", "hook_event_name": "SessionStart", "cwd": wt},
-             dict(unwritable, ITERM_SESSION_ID="w0t2p0:PANE-A"))
+    p = h.fire({"session_id": "lg2", "hook_event_name": "SessionStart", "cwd": h.wt},
+               dict(unwritable, ITERM_SESSION_ID="w0t2p0:PANE-A"))
     check(p.stderr == "" and 'work session "fix-parser"' in (context_of(p) or ""),
           "the context still prints when the log cannot be written")
 
-    if failures == 0:
-        print("test_hook: all passed")
-    return 1 if failures else 0
+
+
+# The sections, in the order they must run (see HookHarness).
+SECTIONS = (
+    test_session_states,
+    test_unusable_input,
+    test_session_start_context,
+    test_log,
+)
+
+
+def main():
+    h = HookHarness(sys.argv[1])
+    for section in SECTIONS:
+        section(h)
+    return finish("test_hook")
 
 
 if __name__ == "__main__":

@@ -11,13 +11,8 @@ import subprocess
 import sys
 import tempfile
 
-FAILS = []
-
-
-def check(cond, msg):
-    print(("ok   " if cond else "FAIL ") + msg)
-    if not cond:
-        FAILS.append(msg)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _support import check, check_format, failures  # noqa: E402
 
 
 def run(script, *args, env=None):
@@ -34,6 +29,7 @@ def commands(out):
 
 
 def main():
+    check_format(fail_prefix="FAIL ", ok_prefix="ok   ")   # this script lists its passes too
     script = os.path.abspath(sys.argv[1])
     here = os.path.dirname(script)
     tmp = tempfile.mkdtemp(prefix="savannah-install-test-")
@@ -104,8 +100,8 @@ def main():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    if FAILS:
-        print(f"\n{len(FAILS)} check(s) failed")
+    if failures():
+        print(f"\n{failures()} check(s) failed")
         return 1
     print("\nall install.sh checks passed")
     return 0

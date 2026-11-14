@@ -14,8 +14,6 @@ import (
 // plain hook session ("s2") that belongs to no work record.
 func boardWith(t *testing.T, plain bool) model {
 	t.Helper()
-	m := newModel(opts{}, "savannah")
-	m.width, m.height = 100, 30
 	hooks := []session{
 		{ID: "s1", Project: "/r/.savannah-worktrees/live", State: "working",
 			Updated: nowUnix(), ITerm: "w0t0p0:UUID-L"},
@@ -28,50 +26,8 @@ func boardWith(t *testing.T, plain bool) model {
 		{Name: "live", Worktree: "/r/.savannah-worktrees/live", ClaudePane: "UUID-L"},
 		{Name: "parked", Worktree: "/r/.savannah-worktrees/parked", ClaudePane: "P"},
 	}
-	m.hooks, m.work = hooks, work
-	m.history = true // HISTORY open, so the offline row is on the board; the closed default is history_test's
-	m.sessions = joinWork(hooks, work)
-	m.rebuildRows()
-	return m
-}
-
-func workRow(name string) func(row) bool {
-	return func(r row) bool { return r.kind == rowSession && r.s.Work == name }
-}
-
-func hookRow(id string) func(row) bool {
-	return func(r row) bool { return r.kind == rowSession && r.s.Work == "" && r.s.ID == id }
-}
-
-// cursorTo moves the cursor to the first row the predicate accepts (row
-// order is the session sort's business, not these tests').
-func cursorTo(t *testing.T, m *model, match func(row) bool) {
-	t.Helper()
-	for i, r := range m.rows {
-		if match(r) {
-			m.cursor = i
-			return
-		}
-	}
-	t.Fatalf("no matching row among %+v", m.rows)
-}
-
-func press(m model, k tea.KeyType) (model, tea.Cmd) {
-	next, cmd := m.Update(tea.KeyMsg{Type: k})
-	return next.(model), cmd
-}
-
-// typeText sends s one key at a time, the way the terminal would.
-func typeText(m model, s string) model {
-	for _, r := range s {
-		k := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
-		if r == ' ' {
-			k = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{r}}
-		}
-		next, _ := m.Update(k)
-		m = next.(model)
-	}
-	return m
+	// HISTORY open, so the offline row is on the board; the closed default is history_test's
+	return testBoard(t, opts{history: true}, withHooks(hooks), withWork(work))
 }
 
 func TestParseArgs(t *testing.T) {
@@ -368,15 +324,13 @@ func TestCtrlNDialog(t *testing.T) {
 		t.Error("Enter while busy must not run work new twice")
 	}
 	// A refusal keeps the dialog, with what was typed, and the CLI's words.
-	next, _ := m.Update(workNewMsg{name: "good-name", err: "fatal: not a git repository\nmore"})
-	m = next.(model)
+	m, _ = send(m, workNewMsg{name: "good-name", err: "fatal: not a git repository\nmore"})
 	if m.mode != modeNew || m.nd.busy || m.nd.err != "fatal: not a git repository" ||
 		m.nd.repo.Value() != "/tmp/repo" {
 		t.Errorf("after refusal: mode=%d busy=%v err=%q repo=%q", m.mode, m.nd.busy, m.nd.err, m.nd.repo.Value())
 	}
 	// Success leaves the dialog and refreshes the board.
-	next, cmd = m.Update(workNewMsg{name: "good-name"})
-	m = next.(model)
+	m, cmd = send(m, workNewMsg{name: "good-name"})
 	if m.mode != modeBoard || cmd == nil || !strings.Contains(m.status, "opened good-name") {
 		t.Errorf("after success: mode=%d cmd=%v status=%q", m.mode, cmd != nil, m.status)
 	}
@@ -392,9 +346,8 @@ func TestViewNewRenders(t *testing.T) {
 			t.Errorf("dialog missing %q:\n%s", want, out)
 		}
 	}
-	next, _ := m.Update(reposMsg{info: reposInfo{Dir: "/hub", Repos: []string{"savannah", "song"},
+	m, _ = send(m, reposMsg{info: reposInfo{Dir: "/hub", Repos: []string{"savannah", "song"},
 		Scratch: "/hub/.savannah-scratch"}})
-	m = next.(model)
 	if out := m.View(); !strings.Contains(out, "/hub: savannah  song  scratch") {
 		t.Errorf("repos hint missing:\n%s", out)
 	}
@@ -407,22 +360,19 @@ func TestViewNewRenders(t *testing.T) {
 	if out := m.View(); !strings.Contains(out, "nothing in /hub matches") {
 		t.Errorf("no-match hint missing:\n%s", out)
 	}
-	next, _ = m.Update(reposMsg{info: reposInfo{Dir: "/cwd", Picked: "cwd", Repos: []string{"one"}}})
-	m = next.(model)
+	m, _ = send(m, reposMsg{info: reposInfo{Dir: "/cwd", Picked: "cwd", Repos: []string{"one"}}})
 	if out := m.View(); !strings.Contains(out, "/cwd (the cwd; savannah work repos DIR remembers a folder)") {
 		t.Errorf("cwd hint missing:\n%s", out)
 	}
-	next, _ = m.Update(reposMsg{info: reposInfo{Dir: "/hub", Repos: []string{"savannah", "song"},
+	m, _ = send(m, reposMsg{info: reposInfo{Dir: "/hub", Repos: []string{"savannah", "song"},
 		Scratch: "/hub/.savannah-scratch"}})
-	m = next.(model)
 	m, _ = press(m, tea.KeyTab)
 	m, _ = press(m, tea.KeyTab) // Worktree
 	m, _ = press(m, tea.KeySpace)
 	if out := m.View(); !strings.Contains(out, "[ ]") {
 		t.Errorf("worktree off should render [ ]:\n%s", out)
 	}
-	next, _ = m.Update(reposMsg{err: "work repos: exit status 2"})
-	m = next.(model)
+	m, _ = send(m, reposMsg{err: "work repos: exit status 2"})
 	if out := m.View(); !strings.Contains(out, "repos: work repos: exit status 2") {
 		t.Errorf("repos error missing:\n%s", out)
 	}
@@ -444,20 +394,18 @@ func TestOutputMode(t *testing.T) {
 	if out := m.View(); !strings.Contains(out, "output live") || !strings.Contains(out, "fetching") {
 		t.Errorf("fresh output view:\n%s", out)
 	}
-	next, _ := m.Update(workOutputMsg{seq: seq, name: "live", text: "you: hi\nclaude: hello there\n"})
-	m = next.(model)
+	m, _ = send(m, workOutputMsg{seq: seq, name: "live", text: "you: hi\nclaude: hello there\n"})
 	if out := m.View(); !strings.Contains(out, "hello there") {
 		t.Errorf("fetched text should render:\n%s", out)
 	}
-	next, _ = m.Update(workOutputMsg{seq: seq - 1, name: "live", text: "STALE"})
-	m = next.(model)
+	m, _ = send(m, workOutputMsg{seq: seq - 1, name: "live", text: "STALE"})
 	if strings.Contains(m.View(), "STALE") {
 		t.Error("a stale fetch must be dropped")
 	}
-	if _, cmd := m.Update(outputTick{seq: seq}); cmd == nil {
+	if _, cmd := send(m, outputTick{seq: seq}); cmd == nil {
 		t.Error("a current tick should refetch")
 	}
-	if _, cmd := m.Update(outputTick{seq: seq - 1}); cmd != nil {
+	if _, cmd := send(m, outputTick{seq: seq - 1}); cmd != nil {
 		t.Error("a stale tick must be dropped")
 	}
 	m, _ = press(m, tea.KeyUp)
@@ -472,10 +420,10 @@ func TestOutputMode(t *testing.T) {
 	if m.mode != modeBoard || cmd != nil {
 		t.Errorf("Esc should return to the board: mode=%d cmd=%v", m.mode, cmd != nil)
 	}
-	if _, cmd := m.Update(outputTick{seq: seq}); cmd != nil {
+	if _, cmd := send(m, outputTick{seq: seq}); cmd != nil {
 		t.Error("after leaving, the old view's tick must be dropped")
 	}
-	if next, _ := m.Update(workOutputMsg{seq: seq, name: "live", text: "LATE"}); next.(model).out.text == "LATE" {
+	if next, _ := send(m, workOutputMsg{seq: seq, name: "live", text: "LATE"}); next.out.text == "LATE" {
 		t.Error("after leaving, a late fetch must be dropped")
 	}
 }
@@ -534,8 +482,8 @@ func TestWorkResultStatuses(t *testing.T) {
 		{workNewMsg{name: "x", err: "boom"}, "new x: boom", false},
 	}
 	for _, c := range cases {
-		next, cmd := m.Update(c.msg)
-		got := next.(model).status
+		next, cmd := send(m, c.msg)
+		got := next.status
 		if !strings.Contains(got, c.want) || (cmd != nil) != c.cmd {
 			t.Errorf("%+v: status=%q (want %q) cmd=%v (want %v)", c.msg, got, c.want, cmd != nil, c.cmd)
 		}

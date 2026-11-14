@@ -22,69 +22,16 @@
 #include <vector>
 
 #include "savannah.hpp"
-#include "../src/wire_ids.hpp"
+#include "test_support.hpp"
 #include "../src/stream_json.hpp"
 
 namespace sw = song::savannah;
-using song::Buffer;
+namespace st = savannah::test;
 using song::ServiceConnection;
 using song::ServiceManager;
-using song::u32;
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
+using st::ask;
 
 namespace {
-
-struct Streamed {
-    std::string text;
-    std::vector<std::string> tools;
-    std::string result;
-    int chunk_count = 0;
-    std::size_t max_payload = 0;
-};
-
-Streamed ask(ServiceConnection& conn, const std::string& prompt,
-             u32 timeout_ms = 0) {
-    sw::AskOptions opts;
-    opts.timeout_ms = timeout_ms;
-    opts.fresh_context = true;
-    opts.system_hint = "";
-
-    Buffer args;
-    song::encode_string(args, prompt);
-    sw::encode_AskOptions(args, opts);
-
-    // Incremental streaming (song finding 14/15 fix): chunks decode as
-    // they arrive, and the chunk timeout is sized to the agent, not the
-    // wire. 30s here comfortably covers the slow-start scenario.
-    Streamed out;
-    conn.call_streaming(
-        sw::kService_AgentNode_Stream,
-        sw::kMethod_AgentNode_ask, args,
-        [&out](Buffer& chunk) {
-            auto c = sw::decode_AgentChunk(chunk);
-            ++out.chunk_count;
-            if (c.payload.size() > out.max_payload) {
-                out.max_payload = c.payload.size();
-            }
-            switch (c.kind) {
-                case 0: out.text += c.payload; break;
-                case 1: out.tools.push_back(c.payload); break;
-                case 2: out.result = c.payload; break;
-                default: break;
-            }
-        },
-        /*chunk_timeout_ms=*/30000);
-    return out;
-}
 
 ServiceConnection connect_with_config(ServiceManager& mgr,
                                       const char* config,
@@ -114,24 +61,16 @@ int main() {
         CHECK(r.tools.empty());
 
         // info/status on the same connection.
-        Buffer req;
-        Buffer resp = conn.call(sw::kService_AgentNode,
-                                sw::kMethod_AgentNode_info, req);
-        auto info = sw::decode_AgentInfo(resp);
+        sw::AgentNodeProxy node(conn);
+        auto info = node.info();
         CHECK(info.name == "echo-node");
         CHECK(info.protocol_ver == 1);
         CHECK(info.tags.size() == 2);
 
-        Buffer req2;
-        Buffer resp2 = conn.call(sw::kService_AgentNode,
-                                 sw::kMethod_AgentNode_status, req2);
-        CHECK(song::decode_string(resp2) == "idle");
+        CHECK(node.status() == "idle");
 
         // cancel with nothing in flight: false.
-        Buffer req3;
-        Buffer resp3 = conn.call(sw::kService_AgentNode,
-                                 sw::kMethod_AgentNode_cancel, req3);
-        CHECK(song::decode_bool(resp3) == false);
+        CHECK(node.cancel() == false);
 
         // Second ask on the same node: single-flight state resets cleanly.
         auto r2 = ask(conn, "again");
@@ -254,12 +193,9 @@ int main() {
         CHECK(r.result.find("\"is_error\":true") != std::string::npos);
         CHECK(r.result.find("timeout") != std::string::npos);
 
-        Buffer req;
-        Buffer resp = conn.call(sw::kService_AgentNode,
-                                sw::kMethod_AgentNode_status, req);
-        CHECK(song::decode_string(resp) == "idle");  // flight cleared after timeout
+        // flight cleared after timeout
+        CHECK(sw::AgentNodeProxy(conn).status() == "idle");
     }
 
-    if (g_failures == 0) std::printf("test_integration_echo: all passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return st::finish("test_integration_echo");
 }

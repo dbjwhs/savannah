@@ -76,7 +76,6 @@ func TestHistoryClosedByDefault(t *testing.T) {
 // TestHistoryOrderAndDrag: closed sessions come newest first whatever
 // their rank, and a drag on one is refused.
 func TestHistoryOrderAndDrag(t *testing.T) {
-	t.Setenv("SAVANNAH_BOARD_FILE", filepath.Join(t.TempDir(), "board.json"))
 	m := boardWith(t, true)
 	m.work = append(m.work,
 		workRecord{Name: "older", Worktree: "/r/.savannah-worktrees/older", ClaudePane: "O", Rank: 5, Updated: nowUnix() - 7200},

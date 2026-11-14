@@ -4,28 +4,14 @@
 // Unit tests: minimal JSON parser.
 
 #include "../src/json.hpp"
+#include "test_support.hpp"
 
 #include <cstdio>
 #include <string>
 
 using namespace savannah::json;
 
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
-
-#define CHECK_THROWS(expr)                                              \
-    do {                                                                \
-        bool threw = false;                                             \
-        try { (void)(expr); } catch (const ParseError&) { threw = true; } \
-        CHECK(threw);                                                   \
-    } while (0)
+#define CHECK_THROWS(expr) CHECK_THROWS_AS(expr, ParseError)
 
 static void test_scalars() {
     CHECK(parse("null").is_null());
@@ -92,6 +78,5 @@ int main() {
     test_string_escapes();
     test_errors();
     test_dump();
-    if (g_failures == 0) std::printf("test_json: all passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return savannah::test::finish("test_json");
 }

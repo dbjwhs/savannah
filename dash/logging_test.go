@@ -194,8 +194,7 @@ func TestLogView(t *testing.T) {
 		t.Fatalf("Ctrl-L: mode=%d cmd=%v follow=%v", m.mode, cmd != nil, m.lg.follow)
 	}
 	seq := m.lg.seq
-	next, _ := m.Update(logReadMsg{seq: seq, err: "no log yet at " + logPath()})
-	m = next.(model)
+	m, _ = send(m, logReadMsg{seq: seq, err: "no log yet at " + logPath()})
 	if out := m.View(); !strings.Contains(out, "no log yet") || !strings.Contains(out, "level normal") {
 		t.Errorf("empty log view:\n%s", out)
 	}
@@ -205,8 +204,7 @@ func TestLogView(t *testing.T) {
 		`time=t level=INFO msg=action src=dash do=say`,
 		`time=t level=WARN msg="command failed" src=work`,
 	}
-	next, _ = m.Update(logReadMsg{seq: seq, lines: lines})
-	m = next.(model)
+	m, _ = send(m, logReadMsg{seq: seq, lines: lines})
 	if m.lg.shown != 2 || !strings.Contains(m.View(), "2 of 4 lines") || strings.Contains(m.View(), "msg=command") {
 		t.Errorf("normal should show INFO and WARN only: shown=%d\n%s", m.lg.shown, m.View())
 	}
@@ -228,15 +226,14 @@ func TestLogView(t *testing.T) {
 	}
 	m = typeText(m, "n")
 	// A stale read (older seq) is ignored; a tick for the live seq refetches.
-	next, _ = m.Update(logReadMsg{seq: seq - 1, lines: nil})
-	m = next.(model)
+	m, _ = send(m, logReadMsg{seq: seq - 1, lines: nil})
 	if m.lg.shown != 2 {
 		t.Errorf("stale read applied: shown=%d", m.lg.shown)
 	}
-	if _, cmd := m.Update(logTick{seq: seq}); cmd == nil {
+	if _, cmd := send(m, logTick{seq: seq}); cmd == nil {
 		t.Error("a live tick should refetch")
 	}
-	if _, cmd := m.Update(logTick{seq: seq - 1}); cmd != nil {
+	if _, cmd := send(m, logTick{seq: seq - 1}); cmd != nil {
 		t.Error("a stale tick should do nothing")
 	}
 	m, _ = press(m, tea.KeyUp)

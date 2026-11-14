@@ -34,16 +34,6 @@ func wideBoard(t *testing.T, width, height int) model {
 	return m
 }
 
-func plainLines(view string) []string {
-	var out []string
-	for _, ln := range strings.Split(view, "\n") {
-		if !strings.Contains(ln, "\x1b") {
-			out = append(out, ln)
-		}
-	}
-	return out
-}
-
 func TestSessionColumns(t *testing.T) {
 	rows := []session{
 		{Work: "live", Project: "/Users/x/ng/repo/.savannah-worktrees/live"},
@@ -133,16 +123,15 @@ func TestPanelForWorkRow(t *testing.T) {
 		}
 	}
 	// A reply lands: the CLI heading loses its "## ", the text shows.
-	next, _ := m.Update(panelOutputMsg{seq: m.panel.seq, text: "## 2026-11-03 16:41 local  you: now add a test\nAdded test_lexer.cpp; it fails on the bug.\n"})
-	m = next.(model)
+	m, _ = send(m, panelOutputMsg{seq: m.panel.seq, text: "## 2026-11-03 16:41 local  you: now add a test\nAdded test_lexer.cpp; it fails on the bug.\n"})
 	out = m.View()
 	if !strings.Contains(out, "2026-11-03 16:41 local you: now add a test") || strings.Contains(out, "## 2026") ||
 		!strings.Contains(out, "Added test_lexer.cpp; it fails on the bug.") || strings.Contains(out, "fetching...") {
 		t.Errorf("reply not shown:\n%s", out)
 	}
 	// A stale fetch (older seq) is ignored.
-	next, _ = m.Update(panelOutputMsg{seq: m.panel.seq - 1, text: "stale"})
-	if strings.Contains(next.(model).View(), "stale") {
+	next, _ := send(m, panelOutputMsg{seq: m.panel.seq - 1, text: "stale"})
+	if strings.Contains(next.View(), "stale") {
 		t.Error("stale panel fetch was shown")
 	}
 	// The same row with a newer hook update refetches, keeping the old text up.
@@ -237,14 +226,12 @@ func TestCtrlTOnPlainRowNamesItFirst(t *testing.T) {
 		t.Errorf("adopt Enter: cmd=%v adoptFor=%q status=%q", cmd != nil, m.adoptFor, m.status)
 	}
 	// The CLI refuses: the name stays for a one-edit fix.
-	next, _ := m.Update(workAdoptMsg{name: "other", err: "adopt: no live Claude session s2"})
-	m = next.(model)
+	m, _ = send(m, workAdoptMsg{name: "other", err: "adopt: no live Claude session s2"})
 	if m.adoptFor != "s2" || m.input.Value() != "other" || !strings.Contains(m.status, "no live Claude session") {
 		t.Errorf("refused adopt: adoptFor=%q input=%q status=%q", m.adoptFor, m.input.Value(), m.status)
 	}
 	// It succeeds: straight into the note for the new name.
-	next, cmd = m.Update(workAdoptMsg{name: "other"})
-	m = next.(model)
+	m, cmd = send(m, workAdoptMsg{name: "other"})
 	if cmd == nil || m.adoptFor != "" || m.noteFor != "other" || m.input.Value() != "" || !strings.Contains(m.status, "named it other") {
 		t.Errorf("adopted: cmd=%v adoptFor=%q noteFor=%q input=%q status=%q", cmd != nil, m.adoptFor, m.noteFor, m.input.Value(), m.status)
 	}
@@ -429,8 +416,7 @@ func TestWrapWordsAndTailFit(t *testing.T) {
 
 func TestInputWidthFollowsTerminal(t *testing.T) {
 	m := wideBoard(t, 100, 30)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 220, Height: 60})
-	m = next.(model)
+	m, _ = send(m, tea.WindowSizeMsg{Width: 220, Height: 60})
 	if m.input.Width != 188 || m.width != 220 || m.height != 60 {
 		t.Errorf("after resize: input=%d width=%d height=%d", m.input.Width, m.width, m.height)
 	}

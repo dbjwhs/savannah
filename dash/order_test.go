@@ -29,23 +29,6 @@ func sectionedBoard(t *testing.T) model {
 	return m
 }
 
-// rowNames lists the session rows in board order: work names, "#<id>" for
-// unnamed tabs.
-func rowNames(m model) []string {
-	var out []string
-	for _, r := range m.rows {
-		if r.kind != rowSession {
-			continue
-		}
-		if r.s.Work != "" {
-			out = append(out, r.s.Work)
-		} else {
-			out = append(out, "#"+r.s.ID)
-		}
-	}
-	return out
-}
-
 func setRank(m *model, name string, priority string, rank int64) {
 	for i := range m.work {
 		if m.work[i].Name == name {
@@ -169,14 +152,12 @@ func TestDragRowMovesAndWrites(t *testing.T) {
 		t.Fatalf("live should be active/20 again: %+v", rec)
 	}
 	// Option-Down (KeyDown with Alt) is the third spelling: back into LATER.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
-	m = next.(model)
+	m, _ = send(m, tea.KeyMsg{Type: tea.KeyDown, Alt: true})
 	rec, _ = m.recordOf("live")
 	if rec.Priority != "later" || rec.Rank != 10 {
 		t.Fatalf("Option-Down should drag like Shift-Down: %+v", rec)
 	}
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
-	m = next.(model)
+	m, _ = send(m, tea.KeyMsg{Type: tea.KeyUp, Alt: true})
 	rec, _ = m.recordOf("live")
 	if rec.Priority != "active" || rec.Rank != 20 {
 		t.Fatalf("live should be active/20 again: %+v", rec)
@@ -216,8 +197,7 @@ func TestDragRowMovesAndWrites(t *testing.T) {
 		t.Errorf("a plain tab with no title is named from its directory: status=%q", m.status)
 	}
 	// A failed move is reported and the records re-read.
-	next, cmd = m.Update(workMovedMsg{err: "live: no such work session"})
-	m = next.(model)
+	m, cmd = send(m, workMovedMsg{err: "live: no such work session"})
 	if cmd == nil || !strings.Contains(m.status, "no such work session") {
 		t.Errorf("move error: cmd=%v status=%q", cmd != nil, m.status)
 	}
@@ -243,8 +223,7 @@ func TestCtrlRNamesPlainTabWithoutNote(t *testing.T) {
 	if cmd == nil || !strings.Contains(m.status, "naming it local-testing") {
 		t.Fatalf("Enter should run adopt: cmd=%v status=%q", cmd != nil, m.status)
 	}
-	next, cmd := m.Update(workAdoptMsg{name: "local-testing", title: "Local testing"})
-	m = next.(model)
+	m, cmd = send(m, workAdoptMsg{name: "local-testing", title: "Local testing"})
 	if m.noteFor != "" || m.adoptFor != "" || !strings.Contains(m.status, "named it local-testing (Local testing)") ||
 		strings.Contains(m.status, "now its note") || cmd == nil {
 		t.Errorf("after adopt: noteFor=%q adoptFor=%q status=%q", m.noteFor, m.adoptFor, m.status)
@@ -255,8 +234,7 @@ func TestCtrlRNamesPlainTabWithoutNote(t *testing.T) {
 	if m.adoptFor != "s2" || !m.adoptNote {
 		t.Errorf("Ctrl-T should name with a note to follow: adoptFor=%q adoptNote=%v", m.adoptFor, m.adoptNote)
 	}
-	next, _ = m.Update(workAdoptMsg{name: "x"})
-	m = next.(model)
+	m, _ = send(m, workAdoptMsg{name: "x"})
 	if m.noteFor != "x" {
 		t.Errorf("Ctrl-T adopt should move on to the note, noteFor=%q", m.noteFor)
 	}
@@ -280,13 +258,11 @@ func TestCtrlREditsTitle(t *testing.T) {
 	if cmd == nil || !strings.Contains(m.status, "titling live") {
 		t.Fatalf("Enter should run work title: cmd=%v status=%q", cmd != nil, m.status)
 	}
-	next, cmd := m.Update(workTitledMsg{name: "live", title: "Live One", err: "title: no such session"})
-	m = next.(model)
+	m, cmd = send(m, workTitledMsg{name: "live", title: "Live One", err: "title: no such session"})
 	if cmd != nil || m.titleFor != "live" || m.input.Value() != "Live One" || !strings.Contains(m.status, "title live: title: no such session") {
 		t.Errorf("refused title should keep the box: titleFor=%q input=%q status=%q", m.titleFor, m.input.Value(), m.status)
 	}
-	next, cmd = m.Update(workTitledMsg{name: "live", title: "Live One"})
-	m = next.(model)
+	m, cmd = send(m, workTitledMsg{name: "live", title: "Live One"})
 	if cmd == nil || m.titleFor != "" || m.input.Value() != "" || !strings.Contains(m.status, "titled live: Live One") {
 		t.Errorf("after title: titleFor=%q input=%q status=%q", m.titleFor, m.input.Value(), m.status)
 	}
@@ -313,8 +289,7 @@ func TestCtrlREditsTitle(t *testing.T) {
 	if cmd == nil || !strings.Contains(m.status, "clearing the title of live") {
 		t.Errorf("empty Enter should clear: cmd=%v status=%q", cmd != nil, m.status)
 	}
-	next, _ = m.Update(workTitledMsg{name: "live", title: ""})
-	m = next.(model)
+	m, _ = send(m, workTitledMsg{name: "live", title: ""})
 	if !strings.Contains(m.status, "cleared the title of live") {
 		t.Errorf("after clear: status=%q", m.status)
 	}

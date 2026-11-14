@@ -11,21 +11,17 @@ import (
 // tab nothing was typed into, one offline record row.
 func autonameBoard(t *testing.T) model {
 	t.Helper()
-	m := newModel(opts{}, "savannah")
-	m.width, m.height = 100, 30
-	m.hooks = []session{
+	hooks := []session{
 		{ID: "s1", Project: "/r/.savannah-worktrees/live", State: "working", Updated: nowUnix(), ITerm: "w0t0p0:L", LastPrompt: "fix it"},
 		{ID: "p1", Project: "/zfs", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:P1", LastPrompt: "review PR 2353"},
 		{ID: "p2", Project: "/net", State: "done", Updated: nowUnix(), ITerm: "w0t0p0:P2", LastPrompt: "why is wifi slow"},
 		{ID: "p3", Project: "/fresh", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:P3"},
 	}
-	m.work = []workRecord{
+	work := []workRecord{
 		{Name: "live", Worktree: "/r/.savannah-worktrees/live", ClaudePane: "L"},
 		{Name: "parked", Worktree: "/r/.savannah-worktrees/parked", ClaudePane: "P"},
 	}
-	m.sessions = joinWork(m.hooks, m.work)
-	m.rebuildRows()
-	return m
+	return testBoard(t, opts{}, withHooks(hooks), withWork(work))
 }
 
 func TestPendingAutoname(t *testing.T) {
@@ -69,10 +65,8 @@ func TestPendingAutoname(t *testing.T) {
 }
 
 func TestSessionsTickStartsAutoname(t *testing.T) {
-	t.Setenv("SAVANNAH_BOARD_FILE", filepath.Join(t.TempDir(), "board.json"))
 	m := autonameBoard(t)
-	next, cmd := m.Update(sessionsMsg{hooks: m.hooks, work: m.work})
-	m = next.(model)
+	m, cmd := send(m, sessionsMsg{hooks: m.hooks, work: m.work})
 	if cmd == nil || !m.naming || len(m.nameTried) != 2 {
 		t.Fatalf("the sessions tick should start naming: naming=%v tried=%v", m.naming, m.nameTried)
 	}
@@ -81,8 +75,7 @@ func TestSessionsTickStartsAutoname(t *testing.T) {
 		{Session: "p1", Name: "zfs-send-resume-review", Title: "ZFS Send Resume Review", How: "claude"},
 		{Session: "p2", Name: "why-is-wifi-slow", Title: "why is wifi slow", How: "prompt", ClaudeError: "claude exited 1"},
 	}}}
-	next, cmd = m.Update(res)
-	m = next.(model)
+	m, cmd = send(m, res)
 	if m.naming || cmd == nil {
 		t.Errorf("after the result: naming=%v cmd=%v", m.naming, cmd != nil)
 	}
@@ -94,8 +87,7 @@ func TestSessionsTickStartsAutoname(t *testing.T) {
 	}
 	// An error from the CLI is a status line, and the tabs stay tried (no
 	// retry storm on a broken CLI).
-	next, _ = m.Update(autonameMsg{ids: []string{"p1"}, err: "work autoname: boom"})
-	m = next.(model)
+	m, _ = send(m, autonameMsg{ids: []string{"p1"}, err: "work autoname: boom"})
 	if !strings.Contains(m.status, "naming tabs: work autoname: boom") || !m.nameTried["p1"] {
 		t.Errorf("error status = %q tried=%v", m.status, m.nameTried)
 	}

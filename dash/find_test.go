@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -45,7 +44,6 @@ func TestSessionHaystack(t *testing.T) {
 // type (HISTORY searched too), Enter keeps the filter, Esc clears it, a
 // drag is refused meanwhile, and the cursor follows the row.
 func TestCtrlKFilters(t *testing.T) {
-	t.Setenv("SAVANNAH_BOARD_FILE", filepath.Join(t.TempDir(), "board.json"))
 	m := sectionedBoard(t) // live, parked, slow, #s3, #s2
 	m.history = false
 	m.work = append(m.work, workRecord{Name: "gone", Worktree: "/r/.savannah-worktrees/gone", ClaudePane: "G", Summary: "Was on the zfs slog."})

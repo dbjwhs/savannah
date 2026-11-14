@@ -13,139 +13,50 @@
 
 #include <song/song.hpp>
 
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <memory>
 #include <string>
 #include <thread>
 
 #include "savannah.hpp"
-#include "../src/wire_ids.hpp"
+#include "test_support.hpp"
 
 namespace sw = song::savannah;
+namespace st = savannah::test;
 using song::Buffer;
 using song::ServiceConnection;
-using song::u16;
-using song::u32;
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
+using st::Streamed;
+using st::ask;
 
 namespace {
 
-// savannahd --tcp 0 as a child; the port comes back on its stdout.
-struct Daemon {
-    pid_t pid = -1;
-    u16 port = 0;
-
-    static Daemon spawn(const char* config) {
-        Daemon d;
-        int fds[2];
-        if (pipe(fds) != 0) return d;
-        pid_t pid = fork();
-        if (pid < 0) {
-            close(fds[0]);
-            close(fds[1]);
-            return d;
-        }
-        if (pid == 0) {
-            dup2(fds[1], STDOUT_FILENO);
-            close(fds[0]);
-            close(fds[1]);
-            setenv("SAVANNAHD_CONFIG", config, 1);
-            execl("./savannahd", "savannahd", "--tcp", "0",
-                  static_cast<char*>(nullptr));
-            _exit(127);
-        }
-        close(fds[1]);
-        // Read the SAVANNAHD_TCP_PORT=N marker line.
-        std::string line;
-        char c;
-        while (read(fds[0], &c, 1) == 1 && c != '\n') line.push_back(c);
-        close(fds[0]);
-        const char* marker = "SAVANNAHD_TCP_PORT=";
-        if (line.rfind(marker, 0) == 0) {
-            d.pid = pid;
-            d.port = static_cast<u16>(
-                std::strtoul(line.c_str() + std::strlen(marker), nullptr, 10));
-        } else {
-            kill(pid, SIGKILL);
-            waitpid(pid, nullptr, 0);
-        }
-        return d;
-    }
-
-    ~Daemon() {
-        if (pid > 0) {
-            kill(pid, SIGKILL);
-            waitpid(pid, nullptr, 0);
-        }
-    }
-};
-
-ServiceConnection connect(u16 port) {
-    auto tcp = std::make_unique<song::TcpTransport>();
-    tcp->connect("127.0.0.1", port, 5000);
-    ServiceConnection conn(std::move(tcp));
-    conn.init_handshake();
-    return conn;
+ServiceConnection connect(song::u16 port) {
+    return st::connect_tcp("127.0.0.1", port);
 }
 
-struct Streamed {
-    std::string text;
-    std::string result;
-    int chunk_count = 0;
-};
-
-Streamed ask(ServiceConnection& conn, const std::string& prompt,
-             u32 timeout_ms = 0) {
-    sw::AskOptions opts;
-    opts.timeout_ms = timeout_ms;
-    opts.fresh_context = true;
-    opts.system_hint = "";
-
+// The same ask on the eager StreamReader overload of call_streaming (the
+// collector built on the incremental one, song's default 5 s chunk timeout).
+// Every other ask in the suite goes through st::ask and the generated proxy;
+// this is the one caller that keeps the eager overload covered.
+Streamed ask_eager(ServiceConnection& conn, const std::string& prompt) {
     Buffer args;
     song::encode_string(args, prompt);
-    sw::encode_AskOptions(args, opts);
+    sw::encode_AskOptions(args, st::ask_options());
 
     auto reader = conn.call_streaming(
         sw::kService_AgentNode_Stream,
         sw::kMethod_AgentNode_ask, args);
     Streamed out;
-    while (reader.next()) {
-        auto c = sw::decode_AgentChunk(reader.chunk());
-        ++out.chunk_count;
-        if (c.kind == 0) out.text += c.payload;
-        if (c.kind == 2) out.result = c.payload;
-    }
+    while (reader.next()) out.add(sw::decode_AgentChunk(reader.chunk()));
     return out;
 }
 
 std::string status(ServiceConnection& conn) {
-    Buffer req;
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_status, req);
-    return song::decode_string(resp);
+    return sw::AgentNodeProxy(conn).status();
 }
 
 bool cancel(ServiceConnection& conn) {
-    Buffer req;
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_cancel, req);
-    return song::decode_bool(resp);
+    return sw::AgentNodeProxy(conn).cancel();
 }
 
 // Poll until the node reports the wanted status (the in-flight ask lands on
@@ -162,10 +73,10 @@ bool wait_status(ServiceConnection& conn, const std::string& want,
 }  // namespace
 
 int main() {
-    Daemon d = Daemon::spawn("cfg_hang.toml");
+    auto d = st::Daemon::spawn("cfg_hang.toml");
     CHECK(d.pid > 0);
     CHECK(d.port != 0);
-    if (g_failures) return 1;
+    if (st::g_failures) return 1;
 
     // ---- single-flight: a second ask while one hangs gets the busy
     //      trailer immediately, and the first flight is undisturbed ----
@@ -178,7 +89,7 @@ int main() {
 
         CHECK(wait_status(conn_b, "busy"));
 
-        auto second = ask(conn_b, "rejected");
+        auto second = ask_eager(conn_b, "rejected");
         CHECK(second.chunk_count == 1);
         CHECK(second.result.find("\"is_error\":true") != std::string::npos);
         CHECK(second.result.find("busy") != std::string::npos);
@@ -222,6 +133,5 @@ int main() {
         CHECK(wait_status(conn_a, "idle"));
     }
 
-    if (g_failures == 0) std::printf("test_tcp_flight: all passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return st::finish("test_tcp_flight");
 }

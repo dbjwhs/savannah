@@ -39,8 +39,7 @@ func TestSnapshotScreen(t *testing.T) {
 		t.Errorf("fresh screen:\n%s", out)
 	}
 	// r before any snapshot exists is refused on the spot.
-	next, _ := m.Update(snapshotsMsg{rows: nil})
-	m = next.(model)
+	m, _ = send(m, snapshotsMsg{rows: nil})
 	if out := m.View(); !strings.Contains(out, "No snapshot yet") {
 		t.Errorf("no snapshots:\n%s", out)
 	}
@@ -54,8 +53,7 @@ func TestSnapshotScreen(t *testing.T) {
 		t.Errorf("s: busy=%q", m.snap.busy)
 	}
 	m = typeText(m, "s") // ignored while busy
-	next, cmd = m.Update(snapshotDoneMsg{path: "/w/snapshots/20261106-083000.json", work: 2, live: 1, plain: 1})
-	m = next.(model)
+	m, cmd = send(m, snapshotDoneMsg{path: "/w/snapshots/20261106-083000.json", work: 2, live: 1, plain: 1})
 	if cmd == nil || m.snap.busy != "" || !strings.Contains(m.snap.lines[0], "saved /w/snapshots/20261106-083000.json: 2 work sessions (1 live), 1 plain tabs") {
 		t.Errorf("after save: cmd=%v busy=%q lines=%q", cmd != nil, m.snap.busy, m.snap.lines)
 	}
@@ -63,8 +61,7 @@ func TestSnapshotScreen(t *testing.T) {
 		{Stamp: "20261106-083000", Taken: time.Now().Unix(), TakenLocal: "2026-11-06 08:30", Work: 2, Live: 1, Plain: 1, Note: "before reboot"},
 		{Stamp: "20261105-220000", Taken: time.Now().Unix() - 40000, TakenLocal: "2026-11-05 22:00", Work: 1},
 	}
-	next, _ = m.Update(snapshotsMsg{rows: rows})
-	m = next.(model)
+	m, _ = send(m, snapshotsMsg{rows: rows})
 	if out := m.View(); !strings.Contains(out, "Latest snapshot: 20261106-083000 (2026-11-06 08:30, note before reboot): 2 work sessions (1 live), 1 plain tab") ||
 		!strings.Contains(out, "Older: 20261105-220000") {
 		t.Errorf("with snapshots:\n%s", out)
@@ -85,8 +82,7 @@ func TestSnapshotScreen(t *testing.T) {
 		Project string `json:"project"`
 		Why     string `json:"why"`
 	}{Name: "live", Why: "open"})
-	next, cmd = m.Update(restoreDoneMsg{dry: true, res: res})
-	m = next.(model)
+	m, cmd = send(m, restoreDoneMsg{dry: true, res: res})
 	if cmd != nil || m.snap.busy != "" {
 		t.Errorf("dry run result: cmd=%v busy=%q", cmd != nil, m.snap.busy)
 	}
@@ -104,8 +100,7 @@ func TestSnapshotScreen(t *testing.T) {
 		Project string `json:"project"`
 		Error   string `json:"error"`
 	}{Project: "/Users/me/x", Error: "it2: no window"})
-	next, cmd = m.Update(restoreDoneMsg{res: res})
-	m = next.(model)
+	m, cmd = send(m, restoreDoneMsg{res: res})
 	if cmd == nil {
 		t.Error("a real restore should re-read the sessions")
 	}
@@ -113,8 +108,7 @@ func TestSnapshotScreen(t *testing.T) {
 		t.Errorf("restore lines:\n%s", out)
 	}
 	// A failure of the command itself.
-	next, _ = m.Update(restoreDoneMsg{err: "restore: no snapshot latest"})
-	m = next.(model)
+	m, _ = send(m, restoreDoneMsg{err: "restore: no snapshot latest"})
 	if !strings.Contains(m.snap.lines[0], "restore: restore: no snapshot latest") {
 		t.Errorf("error line: %q", m.snap.lines)
 	}
@@ -131,15 +125,13 @@ func TestSnapshotHintOnce(t *testing.T) {
 	m := boardWith(t, true) // parked is offline
 	m.sessTicks = 1
 	fresh := []snapshotRow{{Stamp: "20261106-083000", Taken: time.Now().Unix() - 3600, Work: 2}}
-	next, _ := m.Update(snapshotsMsg{rows: fresh})
-	m = next.(model)
+	m, _ = send(m, snapshotsMsg{rows: fresh})
 	if !strings.Contains(m.status, "snapshot 20261106-083000 holds 2 sessions; Ctrl-S restores") || !m.snap.hinted {
 		t.Errorf("hint: status=%q hinted=%v", m.status, m.snap.hinted)
 	}
 	// Decided once: a later list never hints again.
 	m.status = ""
-	next, _ = m.Update(snapshotsMsg{rows: fresh})
-	m = next.(model)
+	m, _ = send(m, snapshotsMsg{rows: fresh})
 	if m.status != "" {
 		t.Errorf("second list should not hint: %q", m.status)
 	}
@@ -170,21 +162,18 @@ func TestSnapshotHintOnce(t *testing.T) {
 			rows = []snapshotRow{{Stamp: "x", Taken: time.Now().Unix() - 3*24*3600, Work: 2}}
 		}
 		c.setup(&m)
-		next, _ := m.Update(snapshotsMsg{rows: rows})
-		m = next.(model)
+		m, _ = send(m, snapshotsMsg{rows: rows})
 		if m.status != "" {
 			t.Errorf("%s: unexpected hint %q", c.name, m.status)
 		}
 	}
 	// The hint waits for the first sessions read and then fires from it.
 	m = boardWith(t, true)
-	next, _ = m.Update(snapshotsMsg{rows: fresh})
-	m = next.(model)
+	m, _ = send(m, snapshotsMsg{rows: fresh})
 	if m.status != "" || m.snap.hinted {
 		t.Fatalf("before sessions: status=%q hinted=%v", m.status, m.snap.hinted)
 	}
-	next, _ = m.Update(sessionsMsg{hooks: m.hooks, work: m.work})
-	m = next.(model)
+	m, _ = send(m, sessionsMsg{hooks: m.hooks, work: m.work})
 	if !strings.Contains(m.status, "Ctrl-S restores") {
 		t.Errorf("hint after the first sessions read: %q", m.status)
 	}

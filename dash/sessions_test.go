@@ -153,12 +153,10 @@ func TestReadSessions(t *testing.T) {
 }
 
 func TestSessionRowsInRebuild(t *testing.T) {
-	m := model{
-		tasks:    map[string][]task{"n1": {{ID: "t-1", State: "idle"}}},
-		nodes:    []string{"n1"},
-		sessions: []session{{ID: "s1", State: "waiting"}},
-	}
-	m.rebuildRows()
+	m := testBoard(t, bare, sized(0, 0), withSessions([]session{{ID: "s1", State: "waiting"}}), func(m *model) {
+		m.tasks = map[string][]task{"n1": {{ID: "t-1", State: "idle"}}}
+		m.nodes = []string{"n1"}
+	})
 	if len(m.rows) != 2 {
 		t.Fatalf("rows = %d, want 2", len(m.rows))
 	}
@@ -404,9 +402,7 @@ func TestOfflineRowsNotAttention(t *testing.T) {
 	if n := countSessionAttention(offline); n != 0 {
 		t.Errorf("countSessionAttention(offline rows) = %d, want 0", n)
 	}
-	m := model{width: 100, tasks: map[string][]task{}, errs: map[string]string{},
-		sessions: offline}
-	m.rebuildRows()
+	m := testBoard(t, bare, sized(100, 0), withSessions(offline))
 	if out := m.View(); strings.Contains(out, "need you") {
 		t.Errorf("header must not count offline rows as needing you:\n%s", out)
 	}
@@ -422,21 +418,19 @@ func TestOfflineRowsNotAttention(t *testing.T) {
 // work record would flip to offline), and the error line must render even
 // with zero rows.
 func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
-	m := model{width: 100, tasks: map[string][]task{}, errs: map[string]string{}}
+	m := testBoard(t, bare, sized(100, 0))
 	hooks := []session{
 		{ID: "s1", Project: "/r/.savannah-worktrees/feat", State: "working", Updated: nowUnix(), ITerm: "w0t0p0:UUID-F"},
 		{ID: "s2", Project: "/other", State: "waiting", Updated: nowUnix()},
 	}
 	work := []workRecord{{Name: "feat", Worktree: "/r/.savannah-worktrees/feat", ClaudePane: "UUID-F"}}
-	next, _ := m.Update(sessionsMsg{hooks: hooks, work: work})
-	m = next.(model)
+	m, _ = send(m, sessionsMsg{hooks: hooks, work: work})
 	if len(m.rows) != 2 || m.sessions[0].State == "offline" || m.sessions[1].State == "offline" {
 		t.Fatalf("populated board: %+v", m.sessions)
 	}
 
 	// Now the sessions dir fails to read: hooks nil, err set, work still fresh.
-	next, _ = m.Update(sessionsMsg{err: "permission denied", work: work})
-	m = next.(model)
+	m, _ = send(m, sessionsMsg{err: "permission denied", work: work})
 	if len(m.rows) != 2 {
 		t.Fatalf("rows after error = %d, want 2 (last good list kept): %+v", len(m.rows), m.sessions)
 	}
@@ -463,8 +457,7 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 
 	// Fresh work records still re-join against the kept hooks: the record is
 	// gone, so the tag clears, no offline row appears.
-	next, _ = m.Update(sessionsMsg{err: "permission denied", work: nil})
-	m = next.(model)
+	m, _ = send(m, sessionsMsg{err: "permission denied", work: nil})
 	if len(m.rows) != 2 {
 		t.Errorf("rows = %d, want 2", len(m.rows))
 	}
@@ -475,10 +468,8 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 	}
 
 	// A work-dir read error keeps the last good records the same way.
-	next, _ = m.Update(sessionsMsg{hooks: hooks, work: work})
-	m = next.(model)
-	next, _ = m.Update(sessionsMsg{hooks: hooks, workErr: "disk gone"})
-	m = next.(model)
+	m, _ = send(m, sessionsMsg{hooks: hooks, work: work})
+	m, _ = send(m, sessionsMsg{hooks: hooks, workErr: "disk gone"})
 	for _, s := range m.sessions {
 		if s.ID == "s1" && s.Work != "feat" {
 			t.Errorf("work tag should survive a work-dir error: %+v", s)
@@ -489,17 +480,15 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 	}
 
 	// Recovery: a clean read replaces the kept list and clears the line.
-	next, _ = m.Update(sessionsMsg{hooks: hooks[:1], work: work})
-	m = next.(model)
+	m, _ = send(m, sessionsMsg{hooks: hooks[:1], work: work})
 	if len(m.rows) != 1 || m.sessErr != "" || m.workErr != "" {
 		t.Errorf("recovery: rows=%d sessErr=%q workErr=%q", len(m.rows), m.sessErr, m.workErr)
 	}
 
 	// Zero rows and an error: the line must still render (it used to sit
 	// inside the row-count guard).
-	empty := model{width: 100, tasks: map[string][]task{}, errs: map[string]string{}}
-	next, _ = empty.Update(sessionsMsg{err: "boom"})
-	empty = next.(model)
+	empty := testBoard(t, bare, sized(100, 0))
+	empty, _ = send(empty, sessionsMsg{err: "boom"})
 	if len(empty.rows) != 0 {
 		t.Fatalf("rows = %d, want 0", len(empty.rows))
 	}
@@ -507,7 +496,7 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 		t.Errorf("error with zero rows must render:\n%s", out)
 	}
 	// And with no error and no rows, the section stays hidden as before.
-	empty = model{width: 100, tasks: map[string][]task{}, errs: map[string]string{}}
+	empty = testBoard(t, bare, sized(100, 0))
 	if out := empty.View(); strings.Contains(out, "LOCAL SESSIONS") {
 		t.Errorf("empty board without error should hide the section:\n%s", out)
 	}
@@ -634,11 +623,10 @@ func TestCtrlXOnOfflineWorkRowKeepsRecord(t *testing.T) {
 		t.Fatalf("rows = %+v", m.rows)
 	}
 	// The first Ctrl-X only asks: nothing runs and the record is untouched.
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, cmd := press(m, tea.KeyCtrlX)
 	if cmd != nil {
 		t.Error("the first Ctrl-X on a work row must not run anything")
 	}
-	m = next.(model)
 	if !strings.Contains(m.status, "keepme") || !strings.Contains(m.status, "again") {
 		t.Errorf("status should ask for a second Ctrl-X and name the session: %q", m.status)
 	}
@@ -647,25 +635,23 @@ func TestCtrlXOnOfflineWorkRowKeepsRecord(t *testing.T) {
 	}
 	// The second one hands the session to `work rm` (not run here: the CLI
 	// removes the record, never the dash).
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX}); cmd == nil {
+	if _, cmd := press(m, tea.KeyCtrlX); cmd == nil {
 		t.Error("the second Ctrl-X should produce the work rm command")
 	}
 	// Enter on an offline row reopens it through `work open`.
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+	if _, cmd := press(m, tea.KeyEnter); cmd == nil {
 		t.Error("Enter on an offline work row should produce an open command")
 	}
 }
 
 func TestViewHasWorkColumn(t *testing.T) {
-	m := model{
-		width: 100, tasks: map[string][]task{}, errs: map[string]string{}, history: true,
-		sessions: []session{
-			{ID: "s1", State: "working", Project: "/r/.savannah-worktrees/feat", Work: "feat", Updated: nowUnix()},
-			offlineWorkRow(workRecord{Name: "parked", Worktree: "/r/.savannah-worktrees/parked",
-				lastNote: "resume at step 3 " + strings.Repeat("and keep going ", 8), Updated: nowUnix()}),
-		},
-	}
-	m.rebuildRows()
+	withHistory := bare
+	withHistory.history = true
+	m := testBoard(t, withHistory, sized(100, 0), withSessions([]session{
+		{ID: "s1", State: "working", Project: "/r/.savannah-worktrees/feat", Work: "feat", Updated: nowUnix()},
+		offlineWorkRow(workRecord{Name: "parked", Worktree: "/r/.savannah-worktrees/parked",
+			lastNote: "resume at step 3 " + strings.Repeat("and keep going ", 8), Updated: nowUnix()}),
+	}))
 	out := m.View()
 	if !strings.Contains(out, "WORK") || !strings.Contains(out, "PROJECT") {
 		t.Errorf("header missing WORK/PROJECT:\n%s", out)

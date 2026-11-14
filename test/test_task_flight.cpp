@@ -14,93 +14,26 @@
 
 #include <song/song.hpp>
 
-#include <signal.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <memory>
 #include <string>
 #include <thread>
 
 #include "savannah.hpp"
+#include "test_support.hpp"
 
 namespace sw = song::savannah;
-using song::Buffer;
+namespace st = savannah::test;
+using savannah::ChunkKind;
 using song::ServiceConnection;
-using song::u16;
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
 
 namespace {
 
-struct Daemon {
-    pid_t pid = -1;
-    u16 port = 0;
-
-    static Daemon spawn(const char* config) {
-        Daemon d;
-        int fds[2];
-        if (pipe(fds) != 0) return d;
-        pid_t pid = fork();
-        if (pid < 0) {
-            close(fds[0]);
-            close(fds[1]);
-            return d;
-        }
-        if (pid == 0) {
-            dup2(fds[1], STDOUT_FILENO);
-            close(fds[0]);
-            close(fds[1]);
-            setenv("SAVANNAHD_CONFIG", config, 1);
-            execl("./savannahd", "savannahd", "--tcp", "0",
-                  static_cast<char*>(nullptr));
-            _exit(127);
-        }
-        close(fds[1]);
-        std::string line;
-        char c;
-        while (read(fds[0], &c, 1) == 1 && c != '\n') line.push_back(c);
-        close(fds[0]);
-        const char* marker = "SAVANNAHD_TCP_PORT=";
-        if (line.rfind(marker, 0) == 0) {
-            d.pid = pid;
-            d.port = static_cast<u16>(
-                std::strtoul(line.c_str() + std::strlen(marker), nullptr, 10));
-        } else {
-            kill(pid, SIGKILL);
-            waitpid(pid, nullptr, 0);
-        }
-        return d;
-    }
-
-    ~Daemon() {
-        if (pid > 0) {
-            kill(pid, SIGKILL);
-            waitpid(pid, nullptr, 0);
-        }
-    }
-};
-
-ServiceConnection connect(u16 port) {
-    auto tcp = std::make_unique<song::TcpTransport>();
-    tcp->connect("127.0.0.1", port, 5000);
-    ServiceConnection conn(std::move(tcp));
-    conn.init_handshake();
-    return conn;
-}
-
+// Every call below goes through the generated proxy; these only fill in the
+// arguments the test never varies.
 sw::TaskInfo task_new(ServiceConnection& conn, const std::string& title,
                       const std::string& prompt, bool worktree) {
     sw::TaskSpec spec;
@@ -109,66 +42,39 @@ sw::TaskInfo task_new(ServiceConnection& conn, const std::string& title,
     spec.workdir = "";
     spec.make_worktree = worktree;
     spec.timeout_ms = 0;
-    Buffer args;
-    sw::encode_TaskSpec(args, spec);
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_new, args);
-    return sw::decode_TaskInfo(resp);
+    return sw::AgentNodeProxy(conn).task_new(spec);
 }
 
 sw::TaskInfo task_status(ServiceConnection& conn, const std::string& id) {
-    Buffer args;
-    song::encode_string(args, id);
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_status, args);
-    return sw::decode_TaskInfo(resp);
+    return sw::AgentNodeProxy(conn).task_status(id);
 }
 
 bool task_send(ServiceConnection& conn, const std::string& id,
                const std::string& prompt) {
-    Buffer args;
-    song::encode_string(args, id);
-    song::encode_string(args, prompt);
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_send, args);
-    return song::decode_bool(resp);
+    return sw::AgentNodeProxy(conn).task_send(id, prompt);
 }
 
 bool task_cancel(ServiceConnection& conn, const std::string& id) {
-    Buffer args;
-    song::encode_string(args, id);
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_cancel, args);
-    return song::decode_bool(resp);
+    return sw::AgentNodeProxy(conn).task_cancel(id);
 }
 
 bool task_rm(ServiceConnection& conn, const std::string& id) {
-    Buffer args;
-    song::encode_string(args, id);
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_rm, args);
-    return song::decode_bool(resp);
+    return sw::AgentNodeProxy(conn).task_rm(id);
 }
 
 std::size_t task_count(ServiceConnection& conn) {
-    Buffer args;
-    Buffer resp = conn.call(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_list, args);
-    return sw::decode_TaskList(resp).tasks.size();
+    return sw::AgentNodeProxy(conn).task_list().tasks.size();
 }
 
 // Tail a task; concatenate its TEXT chunks.
 std::string task_output(ServiceConnection& conn, const std::string& id) {
-    Buffer args;
-    song::encode_string(args, id);
     std::string text;
-    conn.call_streaming(sw::kService_AgentNode_Stream,
-                        sw::kMethod_AgentNode_task_output, args,
-                        [&](Buffer& chunk) {
-                            auto c = sw::decode_AgentChunk(chunk);
-                            if (c.kind == 0) text += c.payload;
-                        },
-                        /*chunk_timeout_ms=*/30000);
+    sw::AgentNodeProxy(conn).task_output(
+        id,
+        [&](sw::AgentChunk& c) {
+            if (st::is_kind(c, ChunkKind::Text)) text += c.payload;
+        },
+        /*chunk_timeout_ms=*/30000);
     return text;
 }
 
@@ -206,12 +112,12 @@ int main() {
         "git -C task_repo config user.name t && "
         "git -C task_repo commit -q --allow-empty -m init");
 
-    Daemon d = Daemon::spawn("cfg_task.toml");
+    auto d = st::Daemon::spawn("cfg_task.toml");
     CHECK(d.pid > 0);
     CHECK(d.port != 0);
-    if (g_failures) return 1;
+    if (st::g_failures) return 1;
 
-    auto conn = connect(d.port);
+    auto conn = st::connect_tcp("127.0.0.1", d.port);
 
     // ---- task_new with a worktree drives turn 1 ----
     auto t1 = task_new(conn, "adder", "add a feature", /*worktree=*/true);
@@ -301,6 +207,5 @@ int main() {
     // A tail of a removed task reports the error result, same as unknown.
     CHECK(task_output(conn, t1.id).find("hello") == std::string::npos);
 
-    if (g_failures == 0) std::printf("test_task_flight: all passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return st::finish("test_task_flight");
 }

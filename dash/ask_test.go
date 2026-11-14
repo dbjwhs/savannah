@@ -11,21 +11,17 @@ import (
 // waiting one, an offline record.
 func askBoard(t *testing.T) model {
 	t.Helper()
-	m := newModel(opts{autoname: -1}, "savannah")
-	m.width, m.height = 100, 30
-	m.hooks = []session{
+	hooks := []session{
 		{ID: "s1", Project: "/r/.savannah-worktrees/live", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:L", LastPrompt: "fix it"},
 		{ID: "p1", Project: "/zfs", State: "done", Updated: nowUnix(), ITerm: "w0t0p0:P1", LastPrompt: "review"},
 		{ID: "p2", Project: "/net", State: "working", Updated: nowUnix(), ITerm: "w0t0p0:P2", LastPrompt: "why"},
 		{ID: "p3", Project: "/x", State: "waiting", Updated: nowUnix(), ITerm: "w0t0p0:P3", LastPrompt: "do"},
 	}
-	m.work = []workRecord{
+	work := []workRecord{
 		{Name: "live", Worktree: "/r/.savannah-worktrees/live", ClaudePane: "L", Summary: "Fixing the parser.\nTests next.", SummaryAt: nowUnix() - 120},
 		{Name: "parked", Worktree: "/r/.savannah-worktrees/parked", ClaudePane: "P"},
 	}
-	m.sessions = joinWork(m.hooks, m.work)
-	m.rebuildRows()
-	return m
+	return testBoard(t, opts{autoname: -1}, withHooks(hooks), withWork(work))
 }
 
 func TestCtrlAArmsThenAsks(t *testing.T) {
@@ -70,8 +66,7 @@ func TestCtrlAArmsThenAsks(t *testing.T) {
 		Project string `json:"project"`
 		Why     string `json:"why"`
 	}{"p2", "", "/net", "working (not interrupted)"})
-	next, cmd := m.Update(askMsg{out: o})
-	m = next.(model)
+	m, cmd = send(m, askMsg{out: o})
 	if m.ask.busy || cmd == nil || m.mode != modeAsk || !m.ask.have {
 		t.Fatalf("the result should open the screen and re-read sessions: busy=%v cmd=%v mode=%d", m.ask.busy, cmd != nil, m.mode)
 	}
@@ -95,14 +90,12 @@ func TestCtrlAArmsThenAsks(t *testing.T) {
 	if cmd != nil || m.mode != modeAsk {
 		t.Fatalf("Ctrl-A with replies should show them: cmd=%v mode=%d", cmd != nil, m.mode)
 	}
-	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	m = next.(model)
+	m, cmd = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if cmd == nil || !m.ask.busy || m.mode != modeBoard {
 		t.Errorf("`a` on the screen should ask again: cmd=%v busy=%v mode=%d", cmd != nil, m.ask.busy, m.mode)
 	}
 	// An error is a status line and nothing opens.
-	next, _ = m.Update(askMsg{err: "work ask: boom"})
-	m = next.(model)
+	m, _ = send(m, askMsg{err: "work ask: boom"})
 	if m.ask.busy || m.mode != modeBoard || !strings.Contains(m.status, "ask: work ask: boom") {
 		t.Errorf("error: busy=%v mode=%d status=%q", m.ask.busy, m.mode, m.status)
 	}

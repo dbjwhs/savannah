@@ -5,6 +5,7 @@
 // inputs fake-claude can produce.
 
 #include "../src/stream_json.hpp"
+#include "test_support.hpp"
 
 #include <cstdio>
 #include <string>
@@ -13,16 +14,6 @@
 using savannah::Chunk;
 using savannah::ChunkKind;
 using savannah::ChunkMapper;
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            ++g_failures;                                               \
-        }                                                               \
-    } while (0)
 
 struct Collector {
     std::vector<Chunk> chunks;
@@ -118,6 +109,5 @@ int main() {
     test_garbage_and_unknown();
     test_error_result_and_synthetic();
     test_empty_text_skipped();
-    if (g_failures == 0) std::printf("test_stream_json: all passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return savannah::test::finish("test_stream_json");
 }

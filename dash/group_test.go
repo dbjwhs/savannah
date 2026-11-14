@@ -140,25 +140,21 @@ func TestInRepoLabelAndGroupLabel(t *testing.T) {
 // row in LATER, and two plain tabs (one in repo a, one under no repo).
 func groupedBoard(t *testing.T) model {
 	t.Helper()
-	m := newModel(opts{}, "savannah")
-	m.width, m.height = 100, 40
-	m.hooks = []session{
+	hooks := []session{
 		{ID: "s1", Project: "/a/.savannah-worktrees/a1", State: "working", Updated: nowUnix(), ITerm: "w0t0p0:A1"},
 		{ID: "s2", Project: "/b/.savannah-worktrees/b1", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:B1"},
 		{ID: "s3", Project: "/a/.savannah-worktrees/a2", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:A2"},
 		{ID: "s4", Project: "/a/.savannah-worktrees/plain-a", State: "waiting", Updated: nowUnix() - 50, ITerm: "w0t0p0:PA"},
 		{ID: "s5", Project: "/nowhere/else", State: "idle", Updated: nowUnix() - 10, ITerm: "w0t0p0:PN"},
 	}
-	m.work = []workRecord{
+	work := []workRecord{
 		{Name: "a1", Worktree: "/a/.savannah-worktrees/a1", ClaudePane: "A1", Priority: "active", Rank: 10},
 		{Name: "b1", Worktree: "/b/.savannah-worktrees/b1", ClaudePane: "B1", Priority: "active", Rank: 20},
 		{Name: "a2", Worktree: "/a/.savannah-worktrees/a2", ClaudePane: "A2", Priority: "active", Rank: 30},
 		{Name: "b2", Worktree: "/b/.savannah-worktrees/b2", ClaudePane: "B2", Priority: "later", Rank: 10},
 	}
-	m.history = true // b2 has no tab: it is a closed session, shown in HISTORY
-	m.sessions = joinWork(m.hooks, m.work)
-	m.rebuildRows()
-	return m
+	// b2 has no tab: it is a closed session, shown in HISTORY
+	return testBoard(t, opts{history: true}, sized(100, 40), withHooks(hooks), withWork(work))
 }
 
 func TestGroupSessions(t *testing.T) {
@@ -285,7 +281,6 @@ func TestCtrlGTogglesAndRemembers(t *testing.T) {
 }
 
 func TestDragRefusedWhileGrouped(t *testing.T) {
-	t.Setenv("SAVANNAH_BOARD_FILE", filepath.Join(t.TempDir(), "board.json"))
 	m := groupedBoard(t)
 	m.group = true
 	m.rebuildRows()
@@ -352,25 +347,23 @@ func TestFitHelp(t *testing.T) {
 // inside each; the view shows the tree.
 func TestGroupOrdersByCheckout(t *testing.T) {
 	ng := checkoutLayout(t)
-	m := newModel(opts{}, "savannah")
-	m.width, m.height = 100, 40
-	m.home = filepath.Dir(ng)
-	m.hooks = []session{
+	hooks := []session{
 		{ID: "s1", Project: ng + "/zfs-DLPX-98816", State: "idle", Updated: nowUnix(), ITerm: "w0t0p0:P1", LastPrompt: "a"},
 		{ID: "s2", Project: ng + "/zfs-CP-11610", State: "idle", Updated: nowUnix() - 1, ITerm: "w0t0p0:P2", LastPrompt: "b"},
 		{ID: "s3", Project: ng + "/zfs/module/zfs", State: "idle", Updated: nowUnix() - 2, ITerm: "w0t0p0:P3", LastPrompt: "c"},
 		{ID: "s4", Project: ng + "/zfs-DLPX-98816/module", State: "idle", Updated: nowUnix() - 3, ITerm: "w0t0p0:P4", LastPrompt: "d"},
 		{ID: "s5", Project: ng + "/notes", State: "idle", Updated: nowUnix() - 4, ITerm: "w0t0p0:P5", LastPrompt: "e"},
 	}
-	m.work = []workRecord{
+	work := []workRecord{
 		{Name: "handoff", Worktree: ng + "/zfs-DLPX-98816", ClaudePane: "P1", Priority: "active", Rank: 10, Adopted: true},
 		{Name: "cp", Worktree: ng + "/zfs-CP-11610", ClaudePane: "P2", Priority: "active", Rank: 20, Adopted: true},
 		{Name: "main", Worktree: ng + "/zfs/module/zfs", ClaudePane: "P3", Priority: "active", Rank: 30, Adopted: true},
 		{Name: "handoff2", Worktree: ng + "/zfs-DLPX-98816/module", ClaudePane: "P4", Priority: "active", Rank: 40, Adopted: true},
 	}
-	m.sessions = joinWork(m.hooks, m.work)
-	m.group = true
-	m.rebuildRows()
+	m := testBoard(t, opts{}, sized(100, 40), withHooks(hooks), withWork(work), func(m *model) {
+		m.home = filepath.Dir(ng)
+		m.group = true
+	})
 	// zfs leads (its first row is first); inside: the main checkout, then
 	// zfs-CP-11610, then zfs-DLPX-98816's two rows in rank order.
 	want := []string{"main", "cp", "handoff", "handoff2", "#s5"}

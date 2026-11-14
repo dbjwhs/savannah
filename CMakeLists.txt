@@ -107,80 +107,62 @@ add_executable(fake-claude tools/fake_claude.cpp)
 # ---- tests ------------------------------------------------------------------
 enable_testing()
 
-foreach(t test_config test_json test_stream_json)
-    add_executable(${t} test/${t}.cpp)
-    target_link_libraries(${t} PRIVATE savannah_core)
-    add_test(NAME ${t} COMMAND ${t})
-endforeach()
+# One C++ test: executable test/<name>.cpp linked against savannah_core,
+# registered with ctest under the same name.
+#   TIMEOUT n  ctest timeout in seconds (ctest's default when absent)
+#   SKIP77     exit code 77 reports Skipped (opt-in and tool-gated tests)
+#   DAEMON     an integration test that spawns ./savannahd and ./fake-claude:
+#              runs with cwd = build dir (binaries + generated fixtures) and
+#              builds after both targets
+function(savannah_test NAME)
+    cmake_parse_arguments(T "SKIP77;DAEMON" "TIMEOUT" "" ${ARGN})
+    add_executable(${NAME} test/${NAME}.cpp test/test_support.hpp)
+    target_link_libraries(${NAME} PRIVATE savannah_core)
+    if(T_DAEMON)
+        add_dependencies(${NAME} savannahd fake-claude)
+        add_test(NAME ${NAME} COMMAND ${NAME}
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    else()
+        add_test(NAME ${NAME} COMMAND ${NAME})
+    endif()
+    if(T_TIMEOUT)
+        set_tests_properties(${NAME} PROPERTIES TIMEOUT ${T_TIMEOUT})
+    endif()
+    if(T_SKIP77)
+        set_tests_properties(${NAME} PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endfunction()
 
-add_executable(test_integration_echo test/test_integration_echo.cpp)
-target_link_libraries(test_integration_echo PRIVATE savannah_core)
-add_test(NAME test_integration_echo COMMAND test_integration_echo
-         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_integration_echo PROPERTIES TIMEOUT 60)
+savannah_test(test_config)
+savannah_test(test_json)
+savannah_test(test_stream_json)
+savannah_test(test_integration_echo DAEMON TIMEOUT 60)
+savannah_test(test_live_schema SKIP77 TIMEOUT 180)
+savannah_test(test_tcp_flight DAEMON TIMEOUT 60)
+savannah_test(test_secure DAEMON TIMEOUT 60)
+savannah_test(test_mdns DAEMON SKIP77 TIMEOUT 60)
+savannah_test(test_task_flight DAEMON SKIP77 TIMEOUT 90)
 
-add_executable(test_live_schema test/test_live_schema.cpp)
-target_link_libraries(test_live_schema PRIVATE savannah_core)
-add_test(NAME test_live_schema COMMAND test_live_schema)
-set_tests_properties(test_live_schema PROPERTIES
-    SKIP_RETURN_CODE 77 TIMEOUT 180)
+# One Python suite: test/<name>.py run by the found interpreter, the
+# remaining arguments passed through (the paths of what it tests). Pure
+# stdlib Python; all of them are disabled only if no interpreter is found.
+function(py_test NAME TIMEOUT)
+    add_test(NAME ${NAME} COMMAND ${Python3_EXECUTABLE}
+             ${CMAKE_CURRENT_SOURCE_DIR}/test/${NAME}.py ${ARGN})
+    set_tests_properties(${NAME} PROPERTIES TIMEOUT ${TIMEOUT})
+endfunction()
 
-add_executable(test_tcp_flight test/test_tcp_flight.cpp)
-target_link_libraries(test_tcp_flight PRIVATE savannah_core)
-add_test(NAME test_tcp_flight COMMAND test_tcp_flight
-         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_tcp_flight PROPERTIES TIMEOUT 60)
-
-add_executable(test_secure test/test_secure.cpp)
-target_link_libraries(test_secure PRIVATE savannah_core)
-add_test(NAME test_secure COMMAND test_secure
-         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_secure PROPERTIES TIMEOUT 60)
-
-add_executable(test_mdns test/test_mdns.cpp)
-target_link_libraries(test_mdns PRIVATE savannah_core)
-add_test(NAME test_mdns COMMAND test_mdns
-         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_mdns PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
-
-add_executable(test_task_flight test/test_task_flight.cpp)
-target_link_libraries(test_task_flight PRIVATE savannah_core)
-add_test(NAME test_task_flight COMMAND test_task_flight
-         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_task_flight PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
-
-# MCP shim test: real MCP frames against shim/peer.py backed by the fake
-# CLI. Pure stdlib Python; skipped only if no interpreter is found.
+set(SRC ${CMAKE_CURRENT_SOURCE_DIR})
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
-    add_test(NAME test_shim COMMAND ${Python3_EXECUTABLE}
-             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_shim.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/shim/peer.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_savannah.py)
-    set_tests_properties(test_shim PROPERTIES TIMEOUT 60)
-
-    add_test(NAME test_hook COMMAND ${Python3_EXECUTABLE}
-             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hook.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/hooks/session-status.py)
-    set_tests_properties(test_hook PROPERTIES TIMEOUT 60)
-
-    add_test(NAME test_install COMMAND ${Python3_EXECUTABLE}
-             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_install.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/install.sh)
-    set_tests_properties(test_install PROPERTIES TIMEOUT 60)
-
-    add_test(NAME test_work COMMAND ${Python3_EXECUTABLE}
-             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_work.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/work/savannah_work.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_it2.py
-             $<TARGET_FILE:savannah>)
-    set_tests_properties(test_work PROPERTIES TIMEOUT 120)
-
-    add_test(NAME test_restore COMMAND ${Python3_EXECUTABLE}
-             ${CMAKE_CURRENT_SOURCE_DIR}/test/test_restore.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/work/savannah_work.py
-             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fake_it2.py)
-    set_tests_properties(test_restore PROPERTIES TIMEOUT 120)
+    # MCP shim: real MCP frames against shim/peer.py backed by the fake CLI.
+    py_test(test_shim 60 ${SRC}/shim/peer.py ${SRC}/tools/fake_savannah.py)
+    py_test(test_hook 60 ${SRC}/hooks/session-status.py)
+    py_test(test_install 60 ${SRC}/install.sh)
+    py_test(test_work 120 ${SRC}/work/savannah_work.py ${SRC}/tools/fake_it2.py
+            $<TARGET_FILE:savannah>)
+    py_test(test_restore 120 ${SRC}/work/savannah_work.py
+            ${SRC}/tools/fake_it2.py)
 else()
     message(STATUS "Python3 not found - shim and hook tests disabled")
 endif()
@@ -188,18 +170,33 @@ endif()
 # Integration test fixtures: per-scenario savannahd configs pointing at
 # fake-claude. Generated at configure time into the build dir.
 set(FAKE ${CMAKE_CURRENT_BINARY_DIR}/fake-claude)
+# scenario_config(NAME SCENARIO EXTRA [NODE name] [WORKSPACE dir] [KEYED])
+# writes cfg_<NAME>.toml. EXTRA is appended to the agent args verbatim. The
+# node is "<NAME>-node" in /tmp unless NODE / WORKSPACE say otherwise; KEYED
+# adds the [mesh] section pointing at test.key.
 function(scenario_config NAME SCENARIO EXTRA)
+    cmake_parse_arguments(C "KEYED" "NODE;WORKSPACE" "" ${ARGN})
+    if(NOT C_NODE)
+        set(C_NODE "${NAME}-node")
+    endif()
+    if(NOT C_WORKSPACE)
+        set(C_WORKSPACE "/tmp")
+    endif()
+    set(MESH "")
+    if(C_KEYED)
+        set(MESH "\n[mesh]\nhmac_key_file = \"test.key\"\n")
+    endif()
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_${NAME}.toml
 "[node]
-name = \"${NAME}-node\"
-workspace = \"/tmp\"
+name = \"${C_NODE}\"
+workspace = \"${C_WORKSPACE}\"
 tags = [\"test\", \"${NAME}\"]
 
 [agent]
 cmd = \"${FAKE}\"
 args = [\"--scenario\", \"${SCENARIO}\"${EXTRA}]
 timeout_ms = 30000
-")
+${MESH}")
 endfunction()
 scenario_config(echo echo "")
 scenario_config(tools tool_storm ", \"--chunks\", \"3\"")
@@ -209,53 +206,19 @@ scenario_config(utf8 utf8_split "")
 scenario_config(drip chunks ", \"--chunks\", \"6\", \"--delay-ms\", \"150\"")
 scenario_config(noise stderr_noise "")
 scenario_config(slow echo ", \"--initial-delay-ms\", \"6000\"")
+scenario_config(die die_before_result "")
+scenario_config(hang hang "")
 
 # Task supervisor fixture: session-aware fake agent, workspace = a scratch git
 # repo the test creates at runtime (worktrees need a real repo).
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_task.toml
-"[node]
-name = \"task-node\"
-workspace = \"${CMAKE_CURRENT_BINARY_DIR}/task_repo\"
-tags = [\"test\", \"task\"]
+scenario_config(task session ""
+                WORKSPACE "${CMAKE_CURRENT_BINARY_DIR}/task_repo")
 
-[agent]
-cmd = \"${FAKE}\"
-args = [\"--scenario\", \"session\"]
-timeout_ms = 30000
-")
-
-# HMAC fixtures: deterministic 32+ byte keys and a secured echo node config.
+# HMAC fixtures: deterministic 32+ byte keys, a secured echo node config and
+# the mDNS self-test node (--mdns hard-requires the key).
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test.key
      "savannah-test-hmac-key-0123456789abcdef")
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test_wrong.key
      "savannah-WRONG-hmac-key-0123456789abcdef")
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_secure.toml
-"[node]
-name = \"secure-node\"
-workspace = \"/tmp\"
-tags = [\"test\", \"secure\"]
-
-[agent]
-cmd = \"${FAKE}\"
-args = [\"--scenario\", \"echo\"]
-timeout_ms = 30000
-
-[mesh]
-hmac_key_file = \"test.key\"
-")
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/cfg_mdns.toml
-"[node]
-name = \"savannah-mdns-selftest\"
-workspace = \"/tmp\"
-tags = [\"test\", \"mdns\"]
-
-[agent]
-cmd = \"${FAKE}\"
-args = [\"--scenario\", \"echo\"]
-timeout_ms = 30000
-
-[mesh]
-hmac_key_file = \"test.key\"
-")
-scenario_config(die die_before_result "")
-scenario_config(hang hang "")
+scenario_config(secure echo "" KEYED)
+scenario_config(mdns echo "" KEYED NODE savannah-mdns-selftest)

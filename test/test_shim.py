@@ -21,14 +21,8 @@ import subprocess
 import sys
 import tempfile
 
-failures = 0
-
-
-def check(cond, label):
-    global failures
-    if not cond:
-        print(f"FAIL: {label}")
-        failures += 1
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _support import check, finish, load_module  # noqa: E402
 
 
 class Shim:
@@ -90,139 +84,156 @@ def text_of(r):
     return r["result"]["content"][0]["text"]
 
 
-def test_work_tools(peer, fake, tmp):
-    """Drive the real work module through the shim, end to end."""
-    work_py = os.path.normpath(os.path.join(
-        os.path.dirname(os.path.abspath(peer)), "..", "work", "savannah_work.py"))
-    fake_it2 = os.path.join(os.path.dirname(os.path.abspath(fake)),
-                            "fake_it2.py")
-    check(os.path.exists(work_py), f"work module present at {work_py}")
-    check(os.path.exists(fake_it2), f"fake it2 present at {fake_it2}")
+class WorkToolsHarness:
+    """What the work_* sections share: one live Shim over the real work
+    module, its temp work dir and sessions dir, a throwaway repo and the
+    fake it2's call log.
 
-    work_dir = os.path.join(tmp, "work")
-    sessions_dir = os.path.join(tmp, "sessions")
-    repo = os.path.join(tmp, "repo")
-    log = os.path.join(tmp, "it2.log")
-    for d in (work_dir, sessions_dir, repo):
-        os.makedirs(d)
-    have_git = git_ok(repo)
-    if not have_git:
-        print("test_shim: git unavailable, worktree checks skipped")
+    The sections run in order against this one world and are not
+    independent: shim-demo and shim-flat are made first and removed last.
+    What a later section reads from an earlier one is named here."""
 
-    env = {
-        "HOME": tmp,  # keep the user's gitconfig out of the temp repo
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "SAVANNAH_WORK_BIN": f"{sys.executable} {work_py}",
-        "SAVANNAH_WORK_DIR": work_dir,
-        "SAVANNAH_SESSIONS_DIR": sessions_dir,
-        "SAVANNAH_IT2": f"{sys.executable} {fake_it2}",
-        "SAVANNAH_LOG_DIR": os.path.join(tmp, "log"),   # savannah's one log, never the user's
-        "FAKE_IT2_LOG": log,
-        "ITERM_SESSION_ID": "w9t9p9:NOT-IN-FAKE",
-    }
-    shim = Shim(peer, fake, env)
-    shim.request("initialize", {"protocolVersion": "2025-06-18",
-                                "capabilities": {},
-                                "clientInfo": {"name": "test", "version": "0"}})
-    shim.notify("notifications/initialized")
+    def __init__(self, peer, fake, tmp):
+        self.peer, self.fake, self.tmp = peer, fake, tmp
+        work_py = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(peer)), "..", "work", "savannah_work.py"))
+        fake_it2 = os.path.join(os.path.dirname(os.path.abspath(fake)),
+                                "fake_it2.py")
+        check(os.path.exists(work_py), f"work module present at {work_py}")
+        check(os.path.exists(fake_it2), f"fake it2 present at {fake_it2}")
 
-    def it2_calls():
+        self.work_dir = os.path.join(tmp, "work")
+        self.sessions_dir = os.path.join(tmp, "sessions")
+        self.repo = os.path.join(tmp, "repo")
+        self.it2_log = os.path.join(tmp, "it2.log")
+        for d in (self.work_dir, self.sessions_dir, self.repo):
+            os.makedirs(d)
+        self.have_git = git_ok(self.repo)
+        if not self.have_git:
+            print("test_shim: git unavailable, worktree checks skipped")
+
+        self.env = {
+            "HOME": tmp,  # keep the user's gitconfig out of the temp repo
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "SAVANNAH_WORK_BIN": f"{sys.executable} {work_py}",
+            "SAVANNAH_WORK_DIR": self.work_dir,
+            "SAVANNAH_SESSIONS_DIR": self.sessions_dir,
+            "SAVANNAH_IT2": f"{sys.executable} {fake_it2}",
+            "SAVANNAH_LOG_DIR": os.path.join(tmp, "log"),   # savannah's one log, never the user's
+            "FAKE_IT2_LOG": self.it2_log,
+            "ITERM_SESSION_ID": "w9t9p9:NOT-IN-FAKE",
+        }
+        self.shim = Shim(peer, fake, self.env)
+        self.shim.request("initialize", {"protocolVersion": "2025-06-18",
+                                         "capabilities": {},
+                                         "clientInfo": {"name": "test", "version": "0"}})
+        self.shim.notify("notifications/initialized")
+        self.rec = None     # shim-demo's record (test_work_new)
+        self.hook = None    # shim-demo's hook file, as a dict (test_work_list)
+
+    def it2_calls(self):
         """Every it2 argv the fake saw, in order (one JSON array per line)."""
         try:
-            with open(log) as f:
+            with open(self.it2_log) as f:
                 return [json.loads(ln) for ln in f if ln.strip()]
         except OSError:
             return []
 
-    def runs_into(calls, pane):
-        """The texts typed into a pane (`session run --session PANE -- TEXT`)."""
-        return [c[-1] for c in calls if c[:4] == ["session", "run", "--session", pane] and len(c) == 6]
 
-    def sent_into(calls, pane):
-        """The texts say/sh typed into a pane: `session send --session PANE -- TEXT`,
-        each followed by a `session send` of a carriage return (the Enter key;
-        a text without one is reported as such so the check fails loudly)."""
-        sends = [c[-1] for c in calls if c[:4] == ["session", "send", "--session", pane] and len(c) == 6]
-        texts, i = [], 0
-        while i < len(sends):
-            if i + 1 < len(sends) and sends[i + 1] == "\r":
-                texts.append(sends[i])
-                i += 2
-            else:
-                texts.append(sends[i] + " (no Enter)")
-                i += 1
-        return texts
+def runs_into(calls, pane):
+    """The texts typed into a pane (`session run --session PANE -- TEXT`)."""
+    return [c[-1] for c in calls if c[:4] == ["session", "run", "--session", pane] and len(c) == 6]
 
-    # ---- work_new: worktree path when git works, else --no-worktree ----
-    new_args = {"name": "shim-demo", "repo": repo, "prompt": "hello there",
+
+def sent_into(calls, pane):
+    """The texts say/sh typed into a pane: `session send --session PANE -- TEXT`,
+    each followed by a `session send` of a carriage return (the Enter key;
+    a text without one is reported as such so the check fails loudly)."""
+    sends = [c[-1] for c in calls if c[:4] == ["session", "send", "--session", pane] and len(c) == 6]
+    texts, i = [], 0
+    while i < len(sends):
+        if i + 1 < len(sends) and sends[i + 1] == "\r":
+            texts.append(sends[i])
+            i += 2
+        else:
+            texts.append(sends[i] + " (no Enter)")
+            i += 1
+    return texts
+
+
+def test_work_new(h):
+    """work_new: worktree path when git works, else --no-worktree."""
+    new_args = {"name": "shim-demo", "repo": h.repo, "prompt": "hello there",
                 "note": "first note"}
-    if not have_git:
+    if not h.have_git:
         new_args["no_worktree"] = True
-    r = shim.call_tool("work_new", new_args)
+    r = h.shim.call_tool("work_new", new_args)
     check(r["result"]["isError"] is False, f"work_new ok: {text_of(r)}")
-    rec = json.loads(text_of(r))
-    check(rec["name"] == "shim-demo", "work_new record name")
-    check(rec["repo"] == repo, "work_new record repo")
-    check(rec["tab_id"] == "TAB-1", "work_new tab id from the fake it2")
-    check(rec["claude_pane"] == "PANE-C-1", "work_new claude pane id")
-    check(rec["shell_pane"] == "PANE-S-1", "work_new shell pane id")
-    check(rec["terminal"] == "iterm", "work_new terminal kind")
-    check(rec["prompt"] == "hello there", "work_new prompt recorded")
-    check(isinstance(rec["created"], int) and rec["created"] > 0,
+    h.rec = json.loads(text_of(r))
+    check(h.rec["name"] == "shim-demo", "work_new record name")
+    check(h.rec["repo"] == h.repo, "work_new record repo")
+    check(h.rec["tab_id"] == "TAB-1", "work_new tab id from the fake it2")
+    check(h.rec["claude_pane"] == "PANE-C-1", "work_new claude pane id")
+    check(h.rec["shell_pane"] == "PANE-S-1", "work_new shell pane id")
+    check(h.rec["terminal"] == "iterm", "work_new terminal kind")
+    check(h.rec["prompt"] == "hello there", "work_new prompt recorded")
+    check(isinstance(h.rec["created"], int) and h.rec["created"] > 0,
           "work_new created epoch")
-    if have_git:
-        wt = os.path.join(repo, ".savannah-worktrees", "shim-demo")
-        check(rec["worktree"] == wt, "work_new worktree path")
-        check(rec["branch"] == "work/shim-demo", "work_new branch")
+    if h.have_git:
+        wt = os.path.join(h.repo, ".savannah-worktrees", "shim-demo")
+        check(h.rec["worktree"] == wt, "work_new worktree path")
+        check(h.rec["branch"] == "work/shim-demo", "work_new branch")
         check(os.path.isdir(os.path.join(wt, ".git")) or
               os.path.isfile(os.path.join(wt, ".git")), "worktree exists")
     else:
-        check(rec["worktree"] == repo, "work_new no-worktree cwd is repo")
-        check(rec["branch"] == "", "work_new no-worktree branch empty")
-    check(os.path.isfile(os.path.join(work_dir, "shim-demo", "record.json")),
+        check(h.rec["worktree"] == h.repo, "work_new no-worktree cwd is repo")
+        check(h.rec["branch"] == "", "work_new no-worktree branch empty")
+    check(os.path.isfile(os.path.join(h.work_dir, "shim-demo", "record.json")),
           "record.json written")
-    first = it2_calls()
+    first = h.it2_calls()
     check(any(c[:2] == ["session", "split"] for c in first), "create splits the tab")
     up = runs_into(first, "PANE-C-1")
-    check(up == [f" cd {rec['worktree']} && claude -n shim-demo 'hello there'"],
+    check(up == [f" cd {h.rec['worktree']} && claude -n shim-demo 'hello there'"],
           f"upper pane: ' cd worktree && claude -n <name> <shlex-quoted prompt>' ({up})")
-    check(runs_into(first, "PANE-S-1") == [f" cd {rec['worktree']}"], "lower pane cds into the worktree")
+    check(runs_into(first, "PANE-S-1") == [f" cd {h.rec['worktree']}"], "lower pane cds into the worktree")
 
     # a second, flat session: the --no-worktree path is always covered
-    r = shim.call_tool("work_new", {"name": "shim-flat", "repo": repo,
-                                    "no_worktree": True})
+    r = h.shim.call_tool("work_new", {"name": "shim-flat", "repo": h.repo,
+                                      "no_worktree": True})
     check(r["result"]["isError"] is False, f"work_new flat ok: {text_of(r)}")
     flat = json.loads(text_of(r))
-    check(flat["worktree"] == repo and flat["branch"] == "",
+    check(flat["worktree"] == h.repo and flat["branch"] == "",
           "flat session runs in the repo itself")
     check(flat["claude_pane"] == "PANE-C-2", "second tab gets fresh pane ids")
 
     # values starting with "-" are values, not options (--prompt=VALUE form)
-    r = shim.call_tool("work_new", {"name": "shim-dash", "repo": repo,
-                                    "no_worktree": True,
-                                    "prompt": "-h is not help here",
-                                    "note": "--note starting with dashes"})
+    r = h.shim.call_tool("work_new", {"name": "shim-dash", "repo": h.repo,
+                                      "no_worktree": True,
+                                      "prompt": "-h is not help here",
+                                      "note": "--note starting with dashes"})
     check(r["result"]["isError"] is False, f"work_new dash prompt ok: {text_of(r)}")
     dash = json.loads(text_of(r)) if not r["result"]["isError"] else {}
     check(dash.get("prompt") == "-h is not help here",
           "work_new dash-prefixed prompt reaches the record")
-    r = shim.call_tool("work_notes", {"name": "shim-dash"})
+    r = h.shim.call_tool("work_notes", {"name": "shim-dash"})
     check("--note starting with dashes" in text_of(r),
           "work_new dash-prefixed note reaches notes")
-    r = shim.call_tool("work_rm", {"name": "shim-dash", "keep_worktree": True})
+    r = h.shim.call_tool("work_rm", {"name": "shim-dash", "keep_worktree": True})
     check(r["result"]["isError"] is False, "work_new dash session removed")
 
     # duplicate and reserved names surface as tool errors
-    r = shim.call_tool("work_new", {"name": "shim-demo", "repo": repo,
-                                    "no_worktree": True})
+    r = h.shim.call_tool("work_new", {"name": "shim-demo", "repo": h.repo,
+                                      "no_worktree": True})
     check(r["result"]["isError"] is True, "work_new duplicate is error")
     check("already exists" in text_of(r), "work_new duplicate reason")
-    r = shim.call_tool("work_new", {"name": "t-0001", "repo": repo,
-                                    "no_worktree": True})
+    r = h.shim.call_tool("work_new", {"name": "t-0001", "repo": h.repo,
+                                      "no_worktree": True})
     check(r["result"]["isError"] is True, "work_new reserved name is error")
 
-    # ---- work_list: offline (no hook session yet), then joined ----
-    r = shim.call_tool("work_list", {})
+
+def test_work_list(h):
+    """work_list: offline (no hook session yet), then joined."""
+    r = h.shim.call_tool("work_list", {})
     check(r["result"]["isError"] is False, "work_list ok")
     entries = {e["name"]: e for e in json.loads(text_of(r))}
     check(set(entries) == {"shim-demo", "shim-flat"}, "work_list names")
@@ -233,32 +244,34 @@ def test_work_tools(peer, fake, tmp):
     check(demo["notes_path"].endswith(os.path.join("shim-demo", "notes.md")),
           "work_list notes_path")
 
-    hook = {
+    h.hook = {
         "session_id": "sess-abc",
-        "project": rec["worktree"],
+        "project": h.rec["worktree"],
         "state": "waiting",
         "message": "needs an answer",
         "last_prompt": "fix the flaky test",
-        "transcript_path": os.path.join(tmp, "t.jsonl"),
+        "transcript_path": os.path.join(h.tmp, "t.jsonl"),
         "iterm_session_id": "w0t1p0:PANE-C-1",
         "updated": 1234567890,
     }
-    with open(os.path.join(sessions_dir, "sess-abc.json"), "w") as f:
-        json.dump(hook, f)
-    r = shim.call_tool("work_list", {})
+    with open(os.path.join(h.sessions_dir, "sess-abc.json"), "w") as f:
+        json.dump(h.hook, f)
+    r = h.shim.call_tool("work_list", {})
     demo = {e["name"]: e for e in json.loads(text_of(r))}["shim-demo"]
     check(demo["state"] == "waiting", "work_list joins hook state")
     check(demo["claude_session_id"] == "sess-abc", "work_list joins session id")
     check(demo["last_prompt"] == "fix the flaky test", "work_list last_prompt")
     check(demo["message"] == "needs an answer", "work_list message")
-    check(demo["transcript_path"] == hook["transcript_path"],
+    check(demo["transcript_path"] == h.hook["transcript_path"],
           "work_list transcript_path")
 
-    # ---- work_output: the reply channel, read from the hook's transcript ----
-    r = shim.call_tool("work_output", {"name": "shim-demo"})
+
+def test_work_output(h):
+    """work_output: the reply channel, read from the hook's transcript."""
+    r = h.shim.call_tool("work_output", {"name": "shim-demo"})
     check(r["result"]["isError"] is True and "no transcript" in text_of(r),
           f"work_output before the transcript exists is an error ({text_of(r)})")
-    with open(hook["transcript_path"], "w") as f:
+    with open(h.hook["transcript_path"], "w") as f:
         for obj in (
             {"type": "user", "timestamp": "2026-10-30T01:00:00Z",
              "message": {"role": "user", "content": "fix the flaky test"}},
@@ -272,227 +285,244 @@ def test_work_tools(peer, fake, tmp):
              "message": {"role": "assistant", "content": [{"type": "text", "text": "Docs updated."}]}},
         ):
             f.write(json.dumps(obj) + "\n")
-    r = shim.call_tool("work_output", {"name": "shim-demo"})
+    r = h.shim.call_tool("work_output", {"name": "shim-demo"})
     check(r["result"]["isError"] is False, f"work_output ok: {text_of(r)}")
     check("Docs updated." in text_of(r) and "Fixed it" not in text_of(r),
           "work_output default returns only the last turn")
-    r = shim.call_tool("work_output", {"name": "shim-demo", "last": 2})
+    r = h.shim.call_tool("work_output", {"name": "shim-demo", "last": 2})
     check("Fixed it: the sleep was too short." in text_of(r) and "you: fix the flaky test" in text_of(r)
           and "ctest" not in text_of(r), f"work_output last=2 has both turns, no tool calls ({text_of(r)!r})")
     for bad in (0, -1, "2", 1.5, True):
-        r = shim.call_tool("work_output", {"name": "shim-demo", "last": bad})
+        r = h.shim.call_tool("work_output", {"name": "shim-demo", "last": bad})
         check(r["result"]["isError"] is True, f"work_output last={bad!r} is an error")
-    # ---- work_ask: the question goes to the tabs that are safe to interrupt ----
+
+
+def test_work_ask(h):
+    """work_ask: the question goes to the tabs that are safe to interrupt."""
     # shim-demo's hook says idle: it is asked (the fake it2 logs the send);
     # with --timeout 1 and no answer the result is a timeout, exit 0.
-    r = shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
+    r = h.shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
     check(r["result"]["isError"] is False and "skipped shim-demo: waiting for you" in text_of(r),
           f"work_ask skips a waiting tab and says so ({text_of(r)!r})")
-    hook["state"] = "done"
-    with open(os.path.join(sessions_dir, "sess-abc.json"), "w") as f:
-        json.dump(hook, f)
-    r = shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
+    h.hook["state"] = "done"
+    with open(os.path.join(h.sessions_dir, "sess-abc.json"), "w") as f:
+        json.dump(h.hook, f)
+    r = h.shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
     check(r["result"]["isError"] is False and "## shim-demo" in text_of(r) and "no reply within 1" in text_of(r),
           f"work_ask asks a done tab, waits, reports the timeout ({text_of(r)!r})")
     for bad in ({"names": "shim-demo"}, {"question": ""}, {"timeout": 0}, {"timeout": "5"}):
-        r = shim.call_tool("work_ask", bad)
+        r = h.shim.call_tool("work_ask", bad)
         check(r["result"]["isError"] is True, f"work_ask {bad} is an error")
-    r = shim.call_tool("work_output", {"name": "shim-flat"})
+    r = h.shim.call_tool("work_output", {"name": "shim-flat"})
     check(r["result"]["isError"] is True, "work_output of a session with no transcript is an error")
 
-    # ---- work_note / work_notes (multi-line survives) ----
-    r = shim.call_tool("work_note", {"name": "shim-demo",
-                                     "text": "second note\nwith a 2nd line"})
+
+def test_work_note(h):
+    """work_note / work_notes (multi-line survives)."""
+    r = h.shim.call_tool("work_note", {"name": "shim-demo",
+                                       "text": "second note\nwith a 2nd line"})
     check(r["result"]["isError"] is False, f"work_note ok: {text_of(r)}")
-    r = shim.call_tool("work_notes", {"name": "shim-demo"})
+    r = h.shim.call_tool("work_notes", {"name": "shim-demo"})
     check(r["result"]["isError"] is False, "work_notes ok")
     notes = text_of(r)
     check("first note" in notes and "second note" in notes
           and "with a 2nd line" in notes, "work_notes has both notes")
     check(notes.count(" local\n") == 2, "work_notes has two stamped headers")
-    r = shim.call_tool("work_note", {"name": "shim-demo", "text": "   "})
+    r = h.shim.call_tool("work_note", {"name": "shim-demo", "text": "   "})
     check(r["result"]["isError"] is True, "work_note empty text is error")
-    r = shim.call_tool("work_note", {"name": "shim-demo", "text": None})
+    r = h.shim.call_tool("work_note", {"name": "shim-demo", "text": None})
     check(r["result"]["isError"] is True, "work_note null text is error")
-    r = shim.call_tool("work_note", {"name": "shim-demo", "text": 42})
+    r = h.shim.call_tool("work_note", {"name": "shim-demo", "text": 42})
     check(r["result"]["isError"] is True, "work_note non-string text is error")
-    r = shim.call_tool("work_notes", {"name": "shim-demo"})
+    r = h.shim.call_tool("work_notes", {"name": "shim-demo"})
     # Compare note bodies, not the whole text: the stamped headers carry the
     # local time, and "42" was in them at 11:42 (a real failure, 11/3/2026).
     bodies = [ln for ln in text_of(r).splitlines() if not ln.startswith("## ")]
     check("None" not in bodies and "42" not in bodies,
           f"work_note never str()'s a rejected value into the notes ({bodies})")
-    r = shim.call_tool("work_notes", {"name": "shim-flat"})
+    r = h.shim.call_tool("work_notes", {"name": "shim-flat"})
     check(text_of(r) == "(no notes yet)", "work_notes empty placeholder")
 
-    # ---- work_say / work_shell / work_jump type into the right panes ----
-    before = len(it2_calls())
-    r = shim.call_tool("work_say", {"name": "shim-demo", "text": "carry on"})
+
+def test_work_say_shell_jump(h):
+    """work_say / work_shell / work_jump type into the right panes."""
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_say", {"name": "shim-demo", "text": "carry on"})
     check(r["result"]["isError"] is False, "work_say ok")
-    check(sent_into(it2_calls()[before:], "PANE-C-1") == ["carry on"],
+    check(sent_into(h.it2_calls()[before:], "PANE-C-1") == ["carry on"],
           "work_say types into the claude pane")
 
-    before = len(it2_calls())
-    r = shim.call_tool("work_shell", {"name": "shim-demo", "cmd": "git status"})
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_shell", {"name": "shim-demo", "cmd": "git status"})
     check(r["result"]["isError"] is False, "work_shell ok")
-    check(sent_into(it2_calls()[before:], "PANE-S-1") == ["git status"],
+    check(sent_into(h.it2_calls()[before:], "PANE-S-1") == ["git status"],
           "work_shell types into the shell pane")
 
     # text starting with "-" is typed verbatim, never parsed as an option
     # ("-h" used to return argparse help as a successful result)
-    before = len(it2_calls())
-    r = shim.call_tool("work_say", {"name": "shim-demo", "text": "-h"})
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_say", {"name": "shim-demo", "text": "-h"})
     check(r["result"]["isError"] is False, f"work_say -h ok: {text_of(r)}")
     check("usage:" not in text_of(r), "work_say -h is not argparse help")
-    check(sent_into(it2_calls()[before:], "PANE-C-1") == ["-h"],
+    check(sent_into(h.it2_calls()[before:], "PANE-C-1") == ["-h"],
           "work_say types dash-prefixed text into the claude pane")
-    before = len(it2_calls())
-    r = shim.call_tool("work_say", {"name": "shim-demo",
-                                    "text": "--force is the flag"})
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_say", {"name": "shim-demo",
+                                      "text": "--force is the flag"})
     check(r["result"]["isError"] is False, "work_say --prefixed ok")
-    check(sent_into(it2_calls()[before:], "PANE-C-1") == ["--force is the flag"],
+    check(sent_into(h.it2_calls()[before:], "PANE-C-1") == ["--force is the flag"],
           "work_say types --prefixed text verbatim")
-    before = len(it2_calls())
-    r = shim.call_tool("work_shell", {"name": "shim-demo", "cmd": "-la"})
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_shell", {"name": "shim-demo", "cmd": "-la"})
     check(r["result"]["isError"] is False, f"work_shell -la ok: {text_of(r)}")
-    check(sent_into(it2_calls()[before:], "PANE-S-1") == ["-la"],
+    check(sent_into(h.it2_calls()[before:], "PANE-S-1") == ["-la"],
           "work_shell types dash-prefixed cmd into the shell pane")
 
-    # ---- work_open: focus a live tab (the reopen path is test_work's) ----
-    before = len(it2_calls())
-    r = shim.call_tool("work_open", {"name": "shim-demo"})
+
+def test_work_open(h):
+    """work_open: focus a live tab (the reopen path is test_work's)."""
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_open", {"name": "shim-demo"})
     check(r["result"]["isError"] is False, f"work_open ok: {text_of(r)}")
     opened = json.loads(text_of(r)) if not r["result"]["isError"] else {}
     check(opened.get("action") == "focused" and opened.get("claude_pane") == "PANE-C-1",
           f"work_open on a live tab reports focused ({opened})")
-    check(["session", "focus", "PANE-C-1"] in it2_calls()[before:], "work_open focuses the claude pane")
-    r = shim.call_tool("work_open", {"name": "shim-demo", "shell": True})
-    check(r["result"]["isError"] is False and ["session", "focus", "PANE-S-1"] in it2_calls()[before:],
+    check(["session", "focus", "PANE-C-1"] in h.it2_calls()[before:], "work_open focuses the claude pane")
+    r = h.shim.call_tool("work_open", {"name": "shim-demo", "shell": True})
+    check(r["result"]["isError"] is False and ["session", "focus", "PANE-S-1"] in h.it2_calls()[before:],
           "work_open shell=true focuses the shell pane")
-    r = shim.call_tool("work_open", {"name": "no-such"})
+    r = h.shim.call_tool("work_open", {"name": "no-such"})
     check(r["result"]["isError"] is True, "work_open of an unknown name is an error")
 
-    # ---- work_adopt: a tab the human opened becomes a named session ----
+
+def test_work_adopt(h):
+    """work_adopt: a tab the human opened becomes a named session."""
     # (the module's own checks are test_work's; this is the tool's plumbing)
-    adopt_hook = os.path.join(sessions_dir, "adopt-s.json")
+    adopt_hook = os.path.join(h.sessions_dir, "adopt-s.json")
     with open(adopt_hook, "w") as f:
-        json.dump({"session_id": "adopt-s", "project": repo, "state": "idle",
+        json.dump({"session_id": "adopt-s", "project": h.repo, "state": "idle",
                    "iterm_session_id": "w0t0p0:SHIM-PANE", "updated": 1}, f)
-    before = len(it2_calls())
-    r = shim.call_tool("work_adopt", {"name": "shim-adopt", "session_id": "adopt-s",
-                                      "note": "taken in"})
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_adopt", {"name": "shim-adopt", "session_id": "adopt-s",
+                                        "note": "taken in"})
     check(r["result"]["isError"] is False, f"work_adopt ok: {text_of(r)}")
     adopted = json.loads(text_of(r)) if not r["result"]["isError"] else {}
-    check(adopted.get("adopted") is True and adopted.get("worktree") == repo
+    check(adopted.get("adopted") is True and adopted.get("worktree") == h.repo
           and adopted.get("claude_pane") == "SHIM-PANE" and adopted.get("shell_pane") == "",
           f"work_adopt returns the adopted record ({adopted})")
-    check(not any(c[:2] in (["tab", "new"], ["session", "split"]) for c in it2_calls()[before:]),
+    check(not any(c[:2] in (["tab", "new"], ["session", "split"]) for c in h.it2_calls()[before:]),
           "work_adopt opens no tab")
-    r = shim.call_tool("work_notes", {"name": "shim-adopt"})
+    r = h.shim.call_tool("work_notes", {"name": "shim-adopt"})
     check("taken in" in text_of(r), "work_adopt note recorded")
-    r = shim.call_tool("work_adopt", {"name": "shim-adopt2"})
+    r = h.shim.call_tool("work_adopt", {"name": "shim-adopt2"})
     check(r["result"]["isError"] is True and "session id" in text_of(r),
           f"work_adopt without session_id is a tool error ({text_of(r)})")
-    r = shim.call_tool("work_rm", {"name": "shim-adopt"})
+    r = h.shim.call_tool("work_rm", {"name": "shim-adopt"})
     check(r["result"]["isError"] is False and "directory kept" in text_of(r),
           f"work_rm of an adopted session keeps its directory ({text_of(r)})")
-    check(os.path.isdir(repo), "work_rm left the adopted directory alone")
+    check(os.path.isdir(h.repo), "work_rm left the adopted directory alone")
     os.remove(adopt_hook)
 
-    # ---- work_status / work_move / work_rename: the board's new fields ----
+
+def test_work_status_move_rename(h):
+    """work_status / work_move / work_rename: the board's new fields."""
     # (the module's own checks are test_work's; this is the tool's plumbing)
-    r = shim.call_tool("work_status", {"name": "shim-demo", "text": "waiting for ctest (run 1 of 3)"})
+    r = h.shim.call_tool("work_status", {"name": "shim-demo", "text": "waiting for ctest (run 1 of 3)"})
     check(r["result"]["isError"] is False, f"work_status report ok: {text_of(r)}")
     st = json.loads(text_of(r)) if not r["result"]["isError"] else {}
     check(st.get("name") == "shim-demo" and st.get("count") == 1
           and st.get("text") == "waiting for ctest (run 1 of 3)" and isinstance(st.get("updated"), int),
           f"work_status returns the report with its count ({st})")
-    r = shim.call_tool("work_status", {"name": "shim-demo"})
+    r = h.shim.call_tool("work_status", {"name": "shim-demo"})
     st = json.loads(text_of(r)) if not r["result"]["isError"] else {}
     check((st.get("status") or {}).get("count") == 1, f"work_status without text reads it ({st})")
-    r = shim.call_tool("work_status", {"name": "shim-demo", "text": "x", "clear": True})
+    r = h.shim.call_tool("work_status", {"name": "shim-demo", "text": "x", "clear": True})
     check(r["result"]["isError"] is True, "work_status with text and clear is a tool error")
-    r = shim.call_tool("work_status", {"name": "shim-demo", "text": "   "})
+    r = h.shim.call_tool("work_status", {"name": "shim-demo", "text": "   "})
     check(r["result"]["isError"] is True, "work_status with blank text is a tool error")
-    r = shim.call_tool("work_status", {"name": "shim-demo", "text": 7})
+    r = h.shim.call_tool("work_status", {"name": "shim-demo", "text": 7})
     check(r["result"]["isError"] is True, "work_status with a non-string text is a tool error")
-    r = shim.call_tool("work_list", {})
+    r = h.shim.call_tool("work_list", {})
     row = {e["name"]: e for e in json.loads(text_of(r))}["shim-demo"]
     check((row.get("status") or {}).get("count") == 1 and row.get("priority") == "active"
           and row.get("rank") == row.get("created"), f"work_list carries status, priority, rank ({row})")
-    r = shim.call_tool("work_status", {"name": "shim-demo", "clear": True})
+    r = h.shim.call_tool("work_status", {"name": "shim-demo", "clear": True})
     check(r["result"]["isError"] is False and json.loads(text_of(r)) == {"name": "shim-demo", "status": None},
           f"work_status clear ({text_of(r)})")
-    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "later", "rank": -2})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "later", "rank": -2})
     check(r["result"]["isError"] is False
           and json.loads(text_of(r)) == {"name": "shim-demo", "priority": "later", "rank": -2},
           f"work_move ({text_of(r)})")
-    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
     check(r["result"]["isError"] is False and json.loads(text_of(r)) == {"name": "shim-demo", "priority": "active", "rank": -2},
           f"work_move priority alone keeps the rank ({text_of(r)})")
-    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "now"})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "now"})
     check(r["result"]["isError"] is False and json.loads(text_of(r)) == {"name": "shim-demo", "priority": "now", "rank": -2},
           f"work_move priority now ({text_of(r)})")
-    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
-    r = shim.call_tool("work_move", {"name": "shim-demo"})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo"})
     check(r["result"]["isError"] is True, "work_move without priority or rank is a tool error")
-    r = shim.call_tool("work_move", {"name": "shim-demo", "priority": "urgent"})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "urgent"})
     check(r["result"]["isError"] is True, "work_move with an unknown priority is a tool error")
-    r = shim.call_tool("work_move", {"name": "shim-demo", "rank": "3"})
+    r = h.shim.call_tool("work_move", {"name": "shim-demo", "rank": "3"})
     check(r["result"]["isError"] is True, "work_move with a string rank is a tool error")
-    r = shim.call_tool("work_rename", {"old": "shim-demo", "new": "shim-renamed"})
+    r = h.shim.call_tool("work_rename", {"old": "shim-demo", "new": "shim-renamed"})
     check(r["result"]["isError"] is False and json.loads(text_of(r)).get("name") == "shim-renamed"
           and json.loads(text_of(r)).get("old") == "shim-demo", f"work_rename ({text_of(r)})")
-    r = shim.call_tool("work_notes", {"name": "shim-renamed"})
+    r = h.shim.call_tool("work_notes", {"name": "shim-renamed"})
     check("first note" in text_of(r), "the notes travelled with the rename")
-    r = shim.call_tool("work_rename", {"old": "shim-renamed", "new": "shim-demo"})
+    r = h.shim.call_tool("work_rename", {"old": "shim-renamed", "new": "shim-demo"})
     check(r["result"]["isError"] is False, "renamed back")
-    r = shim.call_tool("work_rename", {"old": "shim-demo"})
+    r = h.shim.call_tool("work_rename", {"old": "shim-demo"})
     check(r["result"]["isError"] is True, "work_rename without new is a tool error")
-    r = shim.call_tool("work_rename", {"old": "shim-demo", "new": "shim-flat"})
+    r = h.shim.call_tool("work_rename", {"old": "shim-demo", "new": "shim-flat"})
     check(r["result"]["isError"] is True and "exists" in text_of(r), "work_rename onto an existing name is a tool error")
 
-    # ---- work_title: the free-text title beside the name ----
-    r = shim.call_tool("work_title", {"name": "shim-demo", "text": "  Shim Demo Title  "})
+
+def test_work_title(h):
+    """work_title: the free-text title beside the name."""
+    r = h.shim.call_tool("work_title", {"name": "shim-demo", "text": "  Shim Demo Title  "})
     check(r["result"]["isError"] is False
           and json.loads(text_of(r)) == {"name": "shim-demo", "title": "Shim Demo Title"},
           f"work_title sets the stripped title ({text_of(r)})")
-    r = shim.call_tool("work_title", {"name": "shim-demo"})
+    r = h.shim.call_tool("work_title", {"name": "shim-demo"})
     check(json.loads(text_of(r)) == {"name": "shim-demo", "title": "Shim Demo Title"}, "work_title without text reads it")
-    r = shim.call_tool("work_list", {})
+    r = h.shim.call_tool("work_list", {})
     row = {e["name"]: e for e in json.loads(text_of(r))}["shim-demo"]
     check(row.get("title") == "Shim Demo Title", f"work_list carries the title ({row.get('title')!r})")
-    r = shim.call_tool("work_title", {"name": "shim-demo", "text": "-starts with a dash"})
+    r = h.shim.call_tool("work_title", {"name": "shim-demo", "text": "-starts with a dash"})
     check(json.loads(text_of(r)).get("title") == "-starts with a dash", "work_title text starting with - is text")
-    r = shim.call_tool("work_title", {"name": "shim-demo", "text": "x", "clear": True})
+    r = h.shim.call_tool("work_title", {"name": "shim-demo", "text": "x", "clear": True})
     check(r["result"]["isError"] is True, "work_title with text and clear is a tool error")
-    r = shim.call_tool("work_title", {"name": "shim-demo", "text": "   "})
+    r = h.shim.call_tool("work_title", {"name": "shim-demo", "text": "   "})
     check(r["result"]["isError"] is True, "work_title with blank text is a tool error")
-    r = shim.call_tool("work_title", {"name": "shim-demo", "text": 7})
+    r = h.shim.call_tool("work_title", {"name": "shim-demo", "text": 7})
     check(r["result"]["isError"] is True, "work_title with a non-string text is a tool error")
-    r = shim.call_tool("work_title", {"name": "shim-demo", "clear": True})
+    r = h.shim.call_tool("work_title", {"name": "shim-demo", "clear": True})
     check(r["result"]["isError"] is False and json.loads(text_of(r)) == {"name": "shim-demo", "title": ""},
           f"work_title clear ({text_of(r)})")
-    r = shim.call_tool("work_title", {"name": "nope"})
+    r = h.shim.call_tool("work_title", {"name": "nope"})
     check(r["result"]["isError"] is True and "no such work session" in text_of(r),
           "work_title of an unknown name is a tool error")
-    r = shim.call_tool("work_new", {"name": "shim-titled", "repo": repo, "no_worktree": True,
-                                    "title": "Titled At Birth"})
+    r = h.shim.call_tool("work_new", {"name": "shim-titled", "repo": h.repo, "no_worktree": True,
+                                      "title": "Titled At Birth"})
     check(r["result"]["isError"] is False and json.loads(text_of(r)).get("title") == "Titled At Birth",
           f"work_new title ({text_of(r)})")
-    r = shim.call_tool("work_rm", {"name": "shim-titled"})
+    r = h.shim.call_tool("work_rm", {"name": "shim-titled"})
     check(r["result"]["isError"] is False, "work_new titled session removed")
-    with open(os.path.join(sessions_dir, "adopt-t.json"), "w") as f:
-        json.dump({"session_id": "adopt-t", "project": repo, "state": "idle", "iterm_session_id": ""}, f)
-    r = shim.call_tool("work_adopt", {"name": "shim-adopt-t", "session_id": "adopt-t", "title": "Adopted With Title"})
+    with open(os.path.join(h.sessions_dir, "adopt-t.json"), "w") as f:
+        json.dump({"session_id": "adopt-t", "project": h.repo, "state": "idle", "iterm_session_id": ""}, f)
+    r = h.shim.call_tool("work_adopt", {"name": "shim-adopt-t", "session_id": "adopt-t", "title": "Adopted With Title"})
     check(r["result"]["isError"] is False and json.loads(text_of(r)).get("title") == "Adopted With Title",
           f"work_adopt title ({text_of(r)})")
-    r = shim.call_tool("work_rm", {"name": "shim-adopt-t"})
+    r = h.shim.call_tool("work_rm", {"name": "shim-adopt-t"})
     check(r["result"]["isError"] is False, "adopted titled session removed")
 
-    # ---- the shim writes savannah's log: src=shim, an INFO line per tool call ----
+
+def test_shim_log(h):
+    """The shim writes savannah's log: src=shim, an INFO line per tool call."""
     try:
-        with open(os.path.join(tmp, "log", "savannah.log"), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(h.tmp, "log", "savannah.log"), encoding="utf-8", errors="replace") as f:
             slog = f.read().splitlines()
     except OSError:
         slog = []
@@ -510,42 +540,46 @@ def test_work_tools(peer, fake, tmp):
     # empty, whitespace, null or non-string text never presses Enter in a pane
     for tool, key in (("work_say", "text"), ("work_shell", "cmd")):
         for bad in ("", "   ", "\n", None, 7, ["x"], {"t": "x"}):
-            before = len(it2_calls())
-            r = shim.call_tool(tool, {"name": "shim-demo", key: bad})
+            before = len(h.it2_calls())
+            r = h.shim.call_tool(tool, {"name": "shim-demo", key: bad})
             check(r["result"]["isError"] is True,
                   f"{tool} rejects {bad!r}: {text_of(r)}")
-            check(it2_calls()[before:] == [],
+            check(h.it2_calls()[before:] == [],
                   f"{tool} with {bad!r} never reaches it2")
-        before = len(it2_calls())
-        r = shim.call_tool(tool, {"name": "shim-demo"})
+        before = len(h.it2_calls())
+        r = h.shim.call_tool(tool, {"name": "shim-demo"})
         check(r["result"]["isError"] is True, f"{tool} missing {key} is error")
-        check(it2_calls()[before:] == [], f"{tool} missing {key} no it2")
+        check(h.it2_calls()[before:] == [], f"{tool} missing {key} no it2")
 
-    before = len(it2_calls())
-    r = shim.call_tool("work_jump", {"name": "shim-demo"})
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_jump", {"name": "shim-demo"})
     check(r["result"]["isError"] is False, "work_jump ok")
-    check(it2_calls()[before:] == [["session", "focus", "PANE-C-1"], ["app", "activate"]],
-          f"work_jump focuses the claude pane and brings iTerm2 forward ({it2_calls()[before:]})")
-    before = len(it2_calls())
-    r = shim.call_tool("work_jump", {"name": "shim-demo", "shell": True})
+    check(h.it2_calls()[before:] == [["session", "focus", "PANE-C-1"], ["app", "activate"]],
+          f"work_jump focuses the claude pane and brings iTerm2 forward ({h.it2_calls()[before:]})")
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_jump", {"name": "shim-demo", "shell": True})
     check(r["result"]["isError"] is False, "work_jump shell ok")
-    check(["session", "focus", "PANE-S-1"] in it2_calls()[before:], "work_jump --shell focuses shell")
+    check(["session", "focus", "PANE-S-1"] in h.it2_calls()[before:], "work_jump --shell focuses shell")
 
-    # ---- unknown name: a tool error, never a crash ----
+
+def test_unknown_name(h):
+    """Unknown name: a tool error, never a crash."""
     for tool, args in (("work_notes", {"name": "nope"}),
                        ("work_say", {"name": "nope", "text": "x"}),
                        ("work_shell", {"name": "nope", "cmd": "x"}),
                        ("work_jump", {"name": "nope"}),
                        ("work_note", {"name": "nope", "text": "x"}),
                        ("work_rm", {"name": "nope"})):
-        r = shim.call_tool(tool, args)
+        r = h.shim.call_tool(tool, args)
         check(r["result"]["isError"] is True, f"{tool} unknown name is error")
         check("no such work session" in text_of(r), f"{tool} unknown reason")
-    r = shim.request("ping")
+    r = h.shim.request("ping")
     check(r["result"] == {}, "shim alive after unknown-name errors")
 
-    # ---- a pane that vanished: say fails, rm still works (best effort) ----
-    gone = Shim(peer, fake, dict(env, FAKE_IT2_MISSING="PANE-C-2"))
+
+def test_vanished_pane(h):
+    """A pane that vanished: say fails, rm still works (best effort)."""
+    gone = Shim(h.peer, h.fake, dict(h.env, FAKE_IT2_MISSING="PANE-C-2"))
     r = gone.call_tool("work_say", {"name": "shim-flat", "text": "hi"})
     check(r["result"]["isError"] is True, "work_say missing pane is error")
     check("no longer exists" in text_of(r), "work_say missing pane reason")
@@ -553,45 +587,73 @@ def test_work_tools(peer, fake, tmp):
     check(r["result"]["isError"] is True, "work_jump missing pane is error")
     gone.close()
 
-    # ---- work_rm: dirty worktree refused, then forced; notes archived ----
-    if have_git:
-        with open(os.path.join(rec["worktree"], "scratch.txt"), "w") as f:
+
+def test_work_rm(h):
+    """work_rm: dirty worktree refused, then forced; notes archived."""
+    if h.have_git:
+        with open(os.path.join(h.rec["worktree"], "scratch.txt"), "w") as f:
             f.write("dirty\n")
-        r = shim.call_tool("work_rm", {"name": "shim-demo"})
+        r = h.shim.call_tool("work_rm", {"name": "shim-demo"})
         check(r["result"]["isError"] is True, "work_rm dirty worktree refused")
         check("--force" in text_of(r), "work_rm dirty hint mentions --force")
-        check(os.path.isfile(os.path.join(work_dir, "shim-demo", "record.json")),
+        check(os.path.isfile(os.path.join(h.work_dir, "shim-demo", "record.json")),
               "work_rm refused leaves the record")
-        check(os.path.isdir(rec["worktree"]), "work_rm refused leaves worktree")
-        r = shim.call_tool("work_rm", {"name": "shim-demo", "force": True})
+        check(os.path.isdir(h.rec["worktree"]), "work_rm refused leaves worktree")
+        r = h.shim.call_tool("work_rm", {"name": "shim-demo", "force": True})
         check(r["result"]["isError"] is False, f"work_rm force ok: {text_of(r)}")
-        check(not os.path.exists(rec["worktree"]), "work_rm removed worktree")
+        check(not os.path.exists(h.rec["worktree"]), "work_rm removed worktree")
         branches = subprocess.run(
-            ["git", "-C", repo, "branch", "--list", "work/shim-demo"],
+            ["git", "-C", h.repo, "branch", "--list", "work/shim-demo"],
             capture_output=True, text=True, env=GIT_ENV).stdout
         check("work/shim-demo" in branches, "work_rm leaves the branch alone")
     else:
-        r = shim.call_tool("work_rm", {"name": "shim-demo"})
+        r = h.shim.call_tool("work_rm", {"name": "shim-demo"})
         check(r["result"]["isError"] is False, f"work_rm ok: {text_of(r)}")
     check("removed shim-demo" in text_of(r), "work_rm reports removal")
-    check(not os.path.exists(os.path.join(work_dir, "shim-demo")),
+    check(not os.path.exists(os.path.join(h.work_dir, "shim-demo")),
           "work_rm deleted the record dir")
-    archived = [fn for fn in os.listdir(os.path.join(work_dir, "archive"))
+    archived = [fn for fn in os.listdir(os.path.join(h.work_dir, "archive"))
                 if fn.startswith("shim-demo-") and fn.endswith(".md")]
     check(len(archived) == 1, "work_rm archived notes")
     if archived:
-        with open(os.path.join(work_dir, "archive", archived[0])) as f:
+        with open(os.path.join(h.work_dir, "archive", archived[0])) as f:
             check("second note" in f.read(), "archived notes keep content")
-    check(["session", "close", "--session", "PANE-C-1", "--force"] in it2_calls()
-          and ["session", "close", "--session", "PANE-S-1", "--force"] in it2_calls(),
+    check(["session", "close", "--session", "PANE-C-1", "--force"] in h.it2_calls()
+          and ["session", "close", "--session", "PANE-S-1", "--force"] in h.it2_calls(),
           "work_rm closes the tab pane by pane")
 
-    r = shim.call_tool("work_rm", {"name": "shim-flat", "keep_worktree": True})
+    r = h.shim.call_tool("work_rm", {"name": "shim-flat", "keep_worktree": True})
     check(r["result"]["isError"] is False, "work_rm flat ok")
-    r = shim.call_tool("work_list", {})
+    r = h.shim.call_tool("work_list", {})
     check(json.loads(text_of(r)) == [], "work_list empty after rm")
 
-    shim.close()
+
+
+# The work_* sections, in the order they must run (see WorkToolsHarness).
+WORK_TOOL_SECTIONS = (
+    test_work_new,
+    test_work_list,
+    test_work_output,
+    test_work_ask,
+    test_work_note,
+    test_work_say_shell_jump,
+    test_work_open,
+    test_work_adopt,
+    test_work_status_move_rename,
+    test_work_title,
+    test_shim_log,
+    test_unknown_name,
+    test_vanished_pane,
+    test_work_rm,
+)
+
+
+def test_work_tools(peer, fake, tmp):
+    """Drive the real work module through the shim, end to end."""
+    h = WorkToolsHarness(peer, fake, tmp)
+    for section in WORK_TOOL_SECTIONS:
+        section(h)
+    h.shim.close()
 
 
 def test_work_argv(peer):
@@ -617,11 +679,9 @@ def test_work_argv(peer):
     check(override == ["a", "b", "c d"], "SAVANNAH_WORK_BIN override is shlex-split")
 
 
-def main():
-    peer, fake = sys.argv[1], sys.argv[2]
-    shim = Shim(peer, fake)
 
-    # ---- MCP lifecycle ----
+def test_mcp_lifecycle(shim, peer):
+    """MCP lifecycle: initialize, tools/list, and the hub's allow list."""
     r = shim.request("initialize", {
         "protocolVersion": "2025-06-18",
         "capabilities": {},
@@ -644,16 +704,16 @@ def main():
               f"schema for {t['name']}")
     # The hub pre-approves every work tool the shim serves: a tool missing
     # from that list stops a hub at a permission prompt nobody answers.
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("savannah_work_allow", os.path.join(
-        os.path.dirname(os.path.realpath(peer)), "..", "work", "savannah_work.py"))
-    work_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(work_mod)
+    work_mod = load_module(os.path.join(
+        os.path.dirname(os.path.realpath(peer)), "..", "work", "savannah_work.py"), "savannah_work_allow")
     served = {"mcp__peer__" + n for n in names if n.startswith("work_")}
     allowed = {a for a in work_mod.HUB_ALLOW if a.startswith("mcp__")}
     check(served == allowed, f"the hub allows exactly the work tools the shim serves "
                              f"(missing {sorted(served - allowed)}, extra {sorted(allowed - served)})")
 
+
+def test_peer_tools(shim):
+    """list_peers, ask_peer, peer_status against the fake savannah."""
     # ---- list_peers ----
     r = shim.call_tool("list_peers", {})
     check(r["result"]["isError"] is False, "ls not error")
@@ -687,6 +747,9 @@ def main():
     r = shim.call_tool("peer_status", {"name": "busy-node"})
     check(r["result"]["content"][0]["text"] == "busy", "status busy")
 
+
+def test_task_tools(shim):
+    """The task_* tools against the fake savannah."""
     # ---- task_new ----
     r = shim.call_tool("task_new",
                        {"name": "dbj-devone", "title": "demo", "prompt": "hi"})
@@ -732,7 +795,9 @@ def main():
     r = shim.call_tool("task_rm", {"name": "dbj-devone", "id": "t-404"})
     check(r["result"]["isError"] is True, "task_rm missing is error")
 
-    # ---- protocol errors ----
+
+def test_protocol_errors(shim):
+    """Protocol errors."""
     r = shim.call_tool("no_such_tool", {})
     check("error" in r and r["error"]["code"] == -32602, "unknown tool")
     r = shim.request("no/such/method")
@@ -740,6 +805,15 @@ def main():
     r = shim.request("ping")
     check(r["result"] == {}, "ping")
 
+
+
+def main():
+    peer, fake = sys.argv[1], sys.argv[2]
+    shim = Shim(peer, fake)
+    test_mcp_lifecycle(shim, peer)
+    test_peer_tools(shim)
+    test_task_tools(shim)
+    test_protocol_errors(shim)
     shim.close()
 
     # ---- work_* tools against the real work module ----
@@ -747,9 +821,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="savannah-shim-") as tmp:
         test_work_tools(peer, fake, tmp)
 
-    if failures == 0:
-        print("test_shim: all passed")
-    return 1 if failures else 0
+    return finish("test_shim")
 
 
 if __name__ == "__main__":

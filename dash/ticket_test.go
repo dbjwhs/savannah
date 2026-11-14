@@ -153,10 +153,7 @@ func TestTicketLinks(t *testing.T) {
 	if got := linkify("DLPX-98~", a); got != "DLPX-98~" {
 		t.Errorf("a cut id should stay plain: %q", got)
 	}
-	m := newModel(opts{autoname: -1}, "savannah")
-	m.width, m.height = 160, 30
-	m.hooks, m.sessions = rows, rows
-	m.rebuildRows()
+	m := testBoard(t, opts{autoname: -1}, sized(160, 30), withHooks(rows), withSessions(rows))
 	if out := m.View(); !strings.Contains(out, "\x1b]8;;https://perforce.atlassian.net/browse/DLPX-98816\x1b\\") {
 		t.Errorf("the board should carry the ticket link")
 	}
@@ -174,10 +171,7 @@ func TestCtrlBOpensLinks(t *testing.T) {
 		{ID: "a", Project: ng + "/zfs-DLPX-98816", State: "idle", Updated: nowUnix()},
 		{ID: "n", Project: ng + "/notes", State: "idle", Updated: nowUnix()},
 	}, nil)
-	m := newModel(opts{autoname: -1}, "savannah")
-	m.width, m.height = 100, 30
-	m.hooks, m.sessions = rows, rows
-	m.rebuildRows()
+	m := testBoard(t, opts{autoname: -1}, withHooks(rows), withSessions(rows))
 	at := func(id string) {
 		for i, r := range m.rows {
 			if r.kind == rowSession && r.s.ID == id {
@@ -199,8 +193,7 @@ func TestCtrlBOpensLinks(t *testing.T) {
 	if !ok || msg.err != "" || msg.what != "DLPX-98816" {
 		t.Fatalf("open result: %+v", msg)
 	}
-	next, _ := m.Update(msg)
-	if m = next.(model); !strings.Contains(m.status, "opened DLPX-98816 in the browser") {
+	if m, _ = send(m, msg); !strings.Contains(m.status, "opened DLPX-98816 in the browser") {
 		t.Errorf("status after opening: %q", m.status)
 	}
 	ticketURLPattern = ""
@@ -272,10 +265,7 @@ func TestTicketColumn(t *testing.T) {
 	if w.ticket != c.ticket || sum > 160 {
 		t.Errorf("wide plan with tickets sums to %d: %+v", sum, w)
 	}
-	m := newModel(opts{autoname: -1}, "savannah")
-	m.width, m.height = 100, 30
-	m.hooks, m.sessions = rows, rows
-	m.rebuildRows()
+	m := testBoard(t, opts{autoname: -1}, withHooks(rows), withSessions(rows))
 	out := strings.Join(plainLines(m.View()), "\n")
 	if !strings.Contains(out, "TICKET") || !strings.Contains(out, "DLPX-98816") || !strings.Contains(out, "DP-2817 PR-940") {
 		t.Errorf("the board should show the TICKET column:\n%s", out)
