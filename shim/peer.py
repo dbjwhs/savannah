@@ -44,8 +44,8 @@
 # Implementation: a Model Context Protocol stdio server in pure stdlib
 # Python that shells out to the savannah CLI, which carries the tested
 # C++ paths for discovery, HMAC, and streaming. Generated song Python
-# bindings are the v2 path once song's Python runtime learns streaming
-# and SecureTransport (today it is unary-only).
+# bindings are the v2 path: song's Python runtime has streaming and HMAC
+# (song main d4387e8, 87e37cb) but no mDNS discovery yet.
 #
 # Config (environment):
 #   SAVANNAH_BIN             savannah CLI (default: "savannah" on PATH)

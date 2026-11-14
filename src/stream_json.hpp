@@ -21,9 +21,10 @@ namespace savannah {
 
 enum class ChunkKind : int { Text = 0, ToolEvent = 1, Result = 2 };
 
-/// The largest payload one chunk carries on the wire. song's encode_string
-/// refuses anything over kMaxStringSize (1 MB), so savannahd splits a bigger
-/// TEXT payload across chunks of this size (song finding 8).
+/// The largest payload one chunk carries on the wire. savannahd splits a
+/// bigger TEXT payload across chunks of this size. Introduced for song's old
+/// 1 MB string cap (song finding 8; 16 MB since song main 2dbbfc1) and kept
+/// as the stream contract: nodes on older song still reject over 1 MB.
 inline constexpr std::size_t kMaxChunkPayload = 512 * 1024;
 
 struct Chunk {

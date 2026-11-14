@@ -120,12 +120,16 @@ exercises worktree isolation); `test_mdns` is opt-in via `SAVANNAH_MDNS=1`
   service type name.
 - **Properties are class-level in songc**, not service-level. `status()` is a
   polled method in v1. v2: promote the agent to a song class with a `status`
-  property to get push via subscription fan-out. **song wishlist #2.**
-- **Streaming methods need their own service id.** runtime.cpp checks stream
-  dispatchers first and they shadow the unary dispatcher for that id, so
-  streaming methods (`ask`, `task_output`) live on the generated
-  `kService_AgentNode_Stream`, exactly like backup.song's split. songc now
-  emits the split itself (wishlist #3 resolved by finding 6's codegen).
+  property to get push via subscription fan-out. **song wishlist #2**: still
+  open as an IDL feature, but the class route is believed unblocked on the
+  song side (findings 16, 17, 18, 20 fixed; push now works over pipes too),
+  so adopting it is savannah work.
+- **Streaming methods live on their own generated service id.** `ask` and
+  `task_output` are on `kService_AgentNode_Stream`, exactly like
+  backup.song's split; songc emits the split itself (wishlist #3 resolved by
+  finding 6's codegen). The runtime no longer forces this: since song main
+  bb4f4c3 a stream and a unary dispatcher may share an id, routed by
+  `register_method` flags (finding 7). Generated code still splits.
 - Register every method with `runtime.register_method(...)` for capability
   exchange; streaming methods get `wire::MethodFlags::streaming` and
   `runtime.set_capability(wire::Capability::streaming)`.
@@ -158,8 +162,20 @@ Found while building against song @ HEAD on Linux GCC 13:
    generated form and deleted its hand-wiring (commit 08e3d95). Closes song
    wishlist #1.
 7. Streaming dispatchers shadow unary dispatchers per service id (see above).
-8. `encode_string` throws over `kMaxStringSize` (1 MB, buffer.hpp). savannahd
-   splits big TEXT payloads into 512 KiB chunks (`kMaxChunkPayload`).
+   Fixed upstream 11/13/2026 (song main bb4f4c3): on a shared id the runtime
+   routes each call by the flags given to `register_method`
+   (`MethodFlags::streaming` goes to the stream dispatcher; an undeclared
+   method on a shared id still goes to the stream dispatcher). savannah keeps
+   the generated `_Stream` id; nothing to change here.
+8. `encode_string` throws over `kMaxStringSize` (1 MB, buffer.hpp). Fixed
+   upstream 11/13/2026 (song main 2dbbfc1): the string and bytes cap is now
+   16 MB, the message payload cap; decoders check a length prefix against
+   the data present before allocating, and a message over 16 MB fails at the
+   sender with `ProtocolError`. savannahd still splits big TEXT payloads into
+   512 KiB chunks (`kMaxChunkPayload`). song no longer forces that, but it
+   stays: it is the pinned stream contract, and a node built on older song
+   still rejects strings over 1 MB, so every node must be on the new song
+   before the split is raised or removed.
 9. When a stream dispatcher throws, the StreamWriter destructor sends
    `stream_end` during unwind, then the catch sends the error reply. Streaming
    clients stop at `stream_end` and never read the error: the failure looks
@@ -207,8 +223,10 @@ Found while exploring song's object/class system during Phase 5 planning
     `prop_subscribe` silently (fan-out needs a Transport target; a raw stdout
     fd has none). Made loud upstream 8/12/2026 (song main c5497a3):
     `handle_message_fd` logs a warning naming the cause and pointing at
-    `--tcp`. Push over pipes would need an fd-subscriber model; savannah uses
-    TCP for push by design.
+    `--tcp`. Fixed upstream 11/13/2026 (song main 9cfdf9f): `run()` now
+    writes through a `PipeTransport` and shares the one dispatch path with
+    TCP (`handle_message_fd` is gone), so a pipe client can subscribe and
+    receive `prop_notify`. Push is no longer a reason to require `--tcp`.
 18. Calls and subscriptions on one `ServiceConnection` were mutually
     destructive: an unsolicited `prop_notify` arriving mid-call tripped the
     sequence-id check and killed the call. Fixed upstream 8/12/2026 (song
@@ -232,6 +250,21 @@ Found while exploring song's object/class system during Phase 5 planning
     `register_<Name><Impl>(ServiceRuntime&)` template decodes constructor
     args and builds the concrete Impl.
 
+Fixed upstream alongside the above (the shim's blockers, not numbered
+during Phase 4):
+
+21. song's Python runtime was unary-only, so `shim/peer.py` shells out to the
+    CLI. Fixed upstream 11/13/2026 (song main d4387e8):
+    `ServiceConnection.call_streaming` yields chunks as they arrive, and
+    `songc --lang python` emits `stream` methods as generators on
+    `SERVICE_<Name>_STREAM`. The same commit fixed Python service numbering
+    (a streaming service took one id in Python, two in C++).
+22. song's Python runtime had no SecureTransport. Fixed upstream 11/13/2026
+    (song main 87e37cb): `ServiceConnection(..., key=...)` tags and verifies
+    every message, byte-compatible with the C++ `SecureTransport`. Still
+    missing in Python: mDNS discovery, TLS, objects, properties. A native
+    shim would need `--addr` (or discovery through the CLI) until then.
+
 ## stream-json contract (pinned subset)
 
 `fake-claude` and `src/stream_json.cpp` both implement exactly this subset; if
@@ -242,8 +275,9 @@ the real CLI drifts, `SAVANNAH_LIVE=1 ctest -R test_live_schema` catches it
 - `{"type":"assistant","message":{"content":[{"type":"text","text":...} |
   {"type":"tool_use","name":...,"input":{...}}]}}` → TEXT chunk per text block,
   TOOL_EVENT chunk per tool_use ("name: first-string-arg, truncated")
-- A text block over 512 KiB arrives as multiple TEXT chunks (song's 1 MB
-  string cap; finding 8). Clients concatenate TEXT payloads; split points can
+- A text block over 512 KiB arrives as multiple TEXT chunks (introduced for
+  song's old 1 MB string cap, finding 8; song now allows 16 MB but the split
+  is kept as the contract). Clients concatenate TEXT payloads; split points can
   land mid-UTF8 and concatenation restores the byte sequence.
 - `{"type":"user",...}` (tool results) → ignored in v1
 - `{"type":"result","subtype":...,"total_cost_usd":...,"duration_ms":...,

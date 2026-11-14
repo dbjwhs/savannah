@@ -27,7 +27,8 @@ Claude Code (A)                          Claude Code (B)
   typed chunks (TEXT, TOOL_EVENT, RESULT), and streams them back. Timeout,
   cancel, crash synthesis, and cost reporting per ask.
 - **Streaming hardening** (Phase 2, core cases): 4 MiB text blocks survive
-  intact (split into 512 KiB chunks around song's 1 MB string cap), UTF-8
+  intact (split into 512 KiB chunks, a contract dating from song's old 1 MB
+  string cap), UTF-8
   split mid-codepoint at both the pipe layer and the chunk layer reassembles
   byte-identically, garbage JSON lines are skipped, an agent that dies or
   hangs produces an honest error trailer.
@@ -69,9 +70,9 @@ Claude Code (A)                          Claude Code (B)
 
 Stated on purpose; this list shrinks phase by phase (see `DESIGN.md`).
 
-- The shim wraps the CLI rather than speaking song natively: song's
-  Python runtime is unary-only today (no streaming, no HMAC), so
-  generated Python bindings are the v2 path.
+- The shim wraps the CLI rather than speaking song natively. song's
+  Python runtime has had streaming and HMAC since 11/13/2026 but still has
+  no mDNS discovery, so generated Python bindings remain the v2 path.
 - The real `claude` CLI is never exercised in CI. fake-claude pins the
   stream-json subset; run `SAVANNAH_LIVE=1 ctest --test-dir build -R
   test_live_schema` manually to check the live CLI against it (one tiny

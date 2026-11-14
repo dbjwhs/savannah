@@ -17,7 +17,7 @@
 // is not a wire-level thrown error yet).
 
 #include <song/song.hpp>
-#include <song/logging.hpp>  // not in the umbrella header (song wishlist)
+#include <song/logging.hpp>  // also in the umbrella header since song b51a93f
 
 #include <atomic>
 #include <cstdio>
@@ -68,10 +68,11 @@ std::vector<std::string> build_agent_argv(const savannah::NodeConfig& config,
     return argv;
 }
 
-// song's encode_string refuses anything over kMaxStringSize (1 MB), so a
-// giant agent text block must be split across multiple TEXT chunks of
+// A giant agent text block is split across multiple TEXT chunks of
 // kMaxChunkPayload (stream_json.hpp); the client concatenates TEXT payloads
-// already (that is the stream contract).
+// already (that is the stream contract). The split dates from song's old
+// 1 MB string cap (16 MB since song main 2dbbfc1) and is kept for nodes
+// still on older song.
 // Split points may land mid-UTF8; concatenation restores the byte sequence.
 // Non-TEXT chunks are bounded by construction (RESULT is a compact trailer,
 // TOOL_EVENT is truncated at kToolSummaryMax); truncate defensively rather
