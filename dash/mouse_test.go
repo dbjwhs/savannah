@@ -161,3 +161,34 @@ func TestMouseFlags(t *testing.T) {
 		t.Errorf("--mouse: %+v %v", o, err)
 	}
 }
+
+// A click on a MESH WORKERS row selects that worker: every line topLines
+// draws there has its hit, so the header lines never shift the rows.
+func TestClickMeshWorkerRows(t *testing.T) {
+	m := boardWith(t, true)
+	m.mesh = true
+	m.nodes = []string{"n1"}
+	m.tasks = map[string][]task{"n1": {
+		{ID: "t-1", Title: "first", State: "idle"},
+		{ID: "t-2", Title: "second", State: "idle"},
+		{ID: "t-3", Title: "third", State: "idle"},
+	}}
+	m.rebuildRows()
+	top, hits := m.topLines(m.width, "")
+	if len(top) != len(hits) {
+		t.Fatalf("topLines: %d lines, %d hits", len(top), len(hits))
+	}
+	for _, id := range []string{"t-1", "t-2", "t-3"} {
+		y := lineOf(m, " "+id+" ")
+		if y < 0 {
+			y = lineOf(m, id)
+		}
+		h := m.hitAt(y)
+		if h.row < 0 || h.row >= len(m.rows) || m.rows[h.row].kind != rowTask || m.rows[h.row].t.ID != id {
+			t.Errorf("click on %s hits row %d", id, h.row)
+		}
+	}
+	if h := m.hitAt(lineOf(m, "MESH WORKERS")); h.row >= 0 {
+		t.Errorf("the MESH WORKERS header hits row %d", h.row)
+	}
+}

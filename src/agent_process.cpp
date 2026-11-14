@@ -35,8 +35,18 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
     AgentOutcome out;
     if (argv.empty()) return out;
 
+    // Close-on-exec on both ends: a child another thread forks (a second
+    // task worker) must not inherit this agent's write end, or the read loop
+    // below would wait for that child too. dup2 in our own child clears the
+    // flag on its stdout copy.
     int fds[2];
+#if defined(__linux__)
+    if (pipe2(fds, O_CLOEXEC) != 0) return out;
+#else
     if (pipe(fds) != 0) return out;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+#endif
 
     pid_t pid = fork();
     if (pid < 0) {

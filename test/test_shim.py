@@ -642,6 +642,17 @@ def main():
     for t in r["result"]["tools"]:
         check("inputSchema" in t and "description" in t,
               f"schema for {t['name']}")
+    # The hub pre-approves every work tool the shim serves: a tool missing
+    # from that list stops a hub at a permission prompt nobody answers.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("savannah_work_allow", os.path.join(
+        os.path.dirname(os.path.realpath(peer)), "..", "work", "savannah_work.py"))
+    work_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(work_mod)
+    served = {"mcp__peer__" + n for n in names if n.startswith("work_")}
+    allowed = {a for a in work_mod.HUB_ALLOW if a.startswith("mcp__")}
+    check(served == allowed, f"the hub allows exactly the work tools the shim serves "
+                             f"(missing {sorted(served - allowed)}, extra {sorted(allowed - served)})")
 
     # ---- list_peers ----
     r = shim.call_tool("list_peers", {})

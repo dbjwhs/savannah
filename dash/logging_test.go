@@ -14,10 +14,19 @@ import (
 )
 
 // TestMain keeps slog quiet: the board logs through the default logger, and
-// a test run is not a board run.
+// a test run is not a board run. It also points the board file at a temp
+// directory, so no test ever writes the owner's own board.json (a test that
+// wants a particular file still sets SAVANNAH_BOARD_FILE itself).
 func TestMain(m *testing.M) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "savannah-dash-test")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("SAVANNAH_BOARD_FILE", filepath.Join(dir, "board.json"))
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 func TestLevelNames(t *testing.T) {

@@ -36,15 +36,17 @@ song="${SONG_ROOT:-$here/../song}"
 bin="${HOME}/.local/bin"
 pull=0 test=0 dry=0 hook=1 link=1 build_type=""
 
-usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --pull) pull=1 ;;
         --test) test=1 ;;
         --dry-run) dry=1 ;;
-        --bin) bin="$2"; shift ;;
-        --song) song="$2"; shift ;;
+        --bin|--song)
+            [ $# -ge 2 ] || { echo "install.sh: $1 needs a directory" >&2; usage >&2; exit 2; }
+            if [ "$1" = --bin ]; then bin="$2"; else song="$2"; fi
+            shift ;;
         --no-hook) hook=0 ;;
         --no-link) link=0 ;;
         --release) build_type=Release ;;

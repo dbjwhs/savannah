@@ -942,6 +942,8 @@ def main():
                 "        'hook_ignore': os.environ.get('SAVANNAH_HOOK_IGNORE', '')}) + '\\n')\n"
                 "if os.environ.get('FAKE_CLAUDE_FAIL'):\n"
                 "    sys.stderr.write('boom\\n'); sys.exit(1)\n"
+                "if os.environ.get('FAKE_CLAUDE_LIST'):\n"
+                "    print('[1]'); sys.exit(0)\n"
                 "prompt = sys.argv[-1]\n"
                 "title = 'Parser Rewrite' if 'parser' in prompt else 'ZFS Send Resume Review'\n"
                 "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,\n"
@@ -1111,6 +1113,10 @@ def main():
     check(e.get("title") == "look at the flaky test" and e.get("how") == "prompt" and "exited 1" in e.get("claude_error", "")
           and e.get("name") == "look-at-the-flaky-test",
           f"autoname falls back to the first prompt when claude fails, and says so ({e})")
+    j = run_json(["autoname", "an-fresh", "--dry-run", "--json"], dict(claude_env, FAKE_CLAUDE_LIST="1"))
+    e = (j.get("named") or [{}])[0]
+    check(e.get("how") == "prompt" and "not a result object" in e.get("claude_error", ""),
+          f"autoname falls back when claude prints JSON that is not an object ({e})")
     n_calls = len(claude_calls())
     j = run_json(["autoname", "an-fresh", "--dry-run", "--no-claude", "--json"], claude_env)
     e = (j.get("named") or [{}])[0]

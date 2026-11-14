@@ -118,7 +118,7 @@ int main() {
     CHECK(d.port != 0);
     if (g_failures) return 1;
 
-    // ---- browse: the node shows up under _agent._song._tcp ----
+    // ---- browse: the node shows up under _agent-song._tcp ----
     auto found = discovery->discover_one(
         kNodeName, savannah_wire::kMeshServiceType,
         std::chrono::milliseconds(5000));

@@ -251,7 +251,13 @@ int main(int argc, char** argv) {
         }
         if (std::string(argv[i]) == "--tcp" && i + 1 < argc) {
             tcp = true;
-            tcp_port = std::strtol(argv[i + 1], nullptr, 10);
+            char* end = nullptr;
+            tcp_port = std::strtol(argv[i + 1], &end, 10);
+            if (end == argv[i + 1] || *end != '\0' || tcp_port < 0 || tcp_port > 65535) {
+                song::Log::error(std::string("savannahd: --tcp wants a port, 0 to 65535, not ") +
+                                 argv[i + 1]);
+                return 2;
+            }
         }
         if (std::string(argv[i]) == "--mdns") mdns = true;
     }

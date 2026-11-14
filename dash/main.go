@@ -942,19 +942,24 @@ func (m model) topLines(width int, header string) ([]string, []lineHit) {
 			avail = 12
 		}
 		top = append(top, headerStyle.Render("MESH WORKERS"))
+		hits = append(hits, noHit)
 		if m.lsErr != "" {
 			top = append(top, warnStyle.Render("  discovery: "+m.lsErr))
+			hits = append(hits, noHit)
 		}
 		if nTask == 0 {
 			if m.pin == "" && len(m.nodes) == 0 {
 				top = append(top, helpStyle.Render("  discovering nodes..."))
+				hits = append(hits, noHit)
 			} else {
 				top = append(top, helpStyle.Render("  (no workers yet)"))
+				hits = append(hits, noHit)
 			}
 		} else {
 			top = append(top, colStyle.Render(
 				pad("NODE", 14)+pad("ID", 7)+pad("STATE", 11)+pad("TURN", 4)+
 					pad("TITLE", 20)+"LAST LINE"))
+			hits = append(hits, noHit)
 			for i, r := range m.rows {
 				if r.kind != rowTask {
 					continue
@@ -978,8 +983,6 @@ func (m model) topLines(width int, header string) ([]string, []lineHit) {
 			}
 		}
 		top = append(top, "")
-	}
-	for len(hits) < len(top) {
 		hits = append(hits, noHit)
 	}
 	return top, hits

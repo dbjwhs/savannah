@@ -162,6 +162,18 @@ int exec_work(const std::vector<std::string>& args) {
     return 1;
 }
 
+// A whole non-negative decimal number no larger than max, or false: a flag
+// value like "abc" is a usage error, never a silent 0.
+bool parse_number(const char* text, unsigned long max, unsigned long& out) {
+    if (text == nullptr || *text < '0' || *text > '9') return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long n = std::strtoul(text, &end, 10);
+    if (errno != 0 || *end != '\0' || n > max) return false;
+    out = n;
+    return true;
+}
+
 bool task_sub_valid(const std::string& s) {
     return s == "new" || s == "ls" || s == "status" || s == "send" ||
            s == "tail" || s == "cancel" || s == "rm";
@@ -207,7 +219,9 @@ bool parse_cli(int argc, char** argv, Cli& c) {
         if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             c.config = argv[++i];
         } else if (std::strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
-            c.timeout_ms = static_cast<u32>(std::strtoul(argv[++i], nullptr, 10));
+            unsigned long ms = 0;
+            if (!parse_number(argv[++i], 0xFFFFFFFFul, ms)) return false;
+            c.timeout_ms = static_cast<u32>(ms);
         } else if (std::strcmp(argv[i], "--addr") == 0 && i + 1 < argc) {
             c.addr = argv[++i];
         } else if (std::strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
@@ -267,8 +281,11 @@ ServiceConnection connect_remote(const Cli& cli) {
             throw std::runtime_error("--addr wants HOST:PORT");
         }
         host = cli.addr.substr(0, colon);
-        port = static_cast<u16>(
-            std::strtoul(cli.addr.c_str() + colon + 1, nullptr, 10));
+        unsigned long n = 0;
+        if (!parse_number(cli.addr.c_str() + colon + 1, 65535, n) || n == 0) {
+            throw std::runtime_error("--addr wants HOST:PORT, PORT 1 to 65535");
+        }
+        port = static_cast<u16>(n);
     } else {
         auto discovery = create_discovery();
         if (!discovery || !discovery->is_available()) {

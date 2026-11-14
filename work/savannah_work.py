@@ -126,8 +126,10 @@ SCRATCH_SUBDIR = ".savannah-scratch"   # tabs for tasks that belong to no repo
 HUB_SERVER = "peer"                # the mcpServers key the hub registers
 # Pre-approved in DIR/.claude/settings.json so the hub never stops at a
 # permission prompt for its own tools (headless runs cannot answer one).
-HUB_ALLOW = [f"mcp__{HUB_SERVER}__work_{v}" for v in
-             ("new", "list", "note", "notes", "say", "output", "shell", "jump", "rm")] + ["Bash(sleep *)"]
+# Every work_* tool the shim serves (shim/peer.py; test_shim compares the two).
+HUB_WORK_TOOLS = ("new", "adopt", "list", "note", "notes", "say", "ask", "output", "shell", "jump", "open",
+                  "move", "rename", "title", "status", "rm")
+HUB_ALLOW = [f"mcp__{HUB_SERVER}__work_{v}" for v in HUB_WORK_TOOLS] + ["Bash(sleep *)"]
 IT2_DEFAULT = "/Applications/iTerm.app/Contents/Resources/utilities/it2"  # inside iTerm2 3.5+
 WORKTREE_INCLUDE = ".worktreeinclude"   # paths/globs to copy into every new worktree
 
@@ -1780,9 +1782,11 @@ def ask_title(excerpt):
         d = json.loads(p.stdout)
     except ValueError:
         raise UserError(f"{argv[0]} printed no JSON result")
-    if not isinstance(d, dict) or d.get("is_error"):
-        why = d.get("result") if isinstance(d, dict) else ""
-        raise UserError(f"{argv[0]} reported an error: {squeeze(str(why or ''), 160) or d.get('subtype', '?')}")
+    if not isinstance(d, dict):
+        raise UserError(f"{argv[0]} printed JSON that is not a result object")
+    if d.get("is_error"):
+        raise UserError(f"{argv[0]} reported an error: "
+                        f"{squeeze(str(d.get('result') or ''), 160) or d.get('subtype', '?')}")
     title = clean_title(d.get("result"))
     if not title:
         raise UserError(f"{argv[0]} gave no title")
@@ -2440,7 +2444,12 @@ def cmd_ask(a):
             # The reply is the session's own account: it goes into its notes
             # (the question after it, so the NOTE column shows the answer's
             # first line) and onto the record as the latest summary.
-            rec = t["rec"]
+            # Read again first: the wait was long enough for a move, a title
+            # or a status to land on this record, and it must not be undone.
+            try:
+                rec = load_record(t["rec"]["name"])
+            except UserError:
+                rec = t["rec"]
             rec["summary"] = reply
             rec["summary_at"] = int(time.time())
             save_record(rec)
