@@ -127,12 +127,16 @@ def test_module_units(h):
                             [{"project": os.getcwd(), "session_id": "s"}]) is None,
           "join_session: empty worktree never joins (realpath('') would be cwd)")
 
-    # timeout message names both causes; patched subprocess so nothing hangs
-    real_run = h.sw.subprocess.run
+    # timeout message names both causes; patched subprocess so nothing hangs.
+    # The patch goes on the module that owns ITerm.run (savannah_terminal),
+    # not on the entry module: that is where the it2 call is made.
+    term_mod = h.sw.savannah_terminal
+    check(h.sw.ITerm is term_mod.ITerm, "the entry module re-exports savannah_terminal's ITerm")
+    real_run = term_mod.subprocess.run
 
     def fake_timeout(*a, **k):
-        raise h.sw.subprocess.TimeoutExpired(cmd=a[0], timeout=60)
-    h.sw.subprocess.run = fake_timeout
+        raise term_mod.subprocess.TimeoutExpired(cmd=a[0], timeout=60)
+    term_mod.subprocess.run = fake_timeout
     try:
         h.sw.ITerm().write("P", "x")
         check(False, "timeout raises UserError")
@@ -140,7 +144,7 @@ def test_module_units(h):
         check("Python API" in str(e) and "iTerm2" in str(e),
               f"timeout message names iTerm2 and its Python API switch ({e})")
     finally:
-        h.sw.subprocess.run = real_run
+        term_mod.subprocess.run = real_run
     os.environ["SAVANNAH_IT2"] = "/nonexistent/it2 --flag"
     check(h.sw.it2_argv() == ["/nonexistent/it2", "--flag"], "it2_argv splits SAVANNAH_IT2 like a shell line")
     os.environ["SAVANNAH_IT2"] = "   "
@@ -1593,8 +1597,13 @@ def test_rm(h):
 
     # Rollback closes the tab when a step AFTER create_split_tab fails
     # (in-process: make the record write fail; the fake it2 logs the close).
+    # The patch goes on the module that owns atomic_write (savannah_core):
+    # every module calls it as savannah_core.atomic_write at call time, and
+    # the entry module keeps no copy of the name a patch could miss.
     h.clear_log()
-    real_write = h.sw.atomic_write
+    core_mod = h.sw.savannah_core
+    check(not hasattr(h.sw, "atomic_write"), "the entry module has no atomic_write of its own to patch by mistake")
+    real_write = core_mod.atomic_write
 
     def boom(*a, **k):
         raise OSError(28, "No space left on device")
@@ -1605,7 +1614,7 @@ def test_rm(h):
                   "SAVANNAH_LOG_DIR")}
     for k in saved_env:
         os.environ[k] = h.env[k]
-    h.sw.atomic_write = boom
+    core_mod.atomic_write = boom
     try:
         h.sw.cmd_new(types.SimpleNamespace(name="nospace", repo=h.repo, branch=None,
                                            no_worktree=True, prompt="", note="", json=False))
@@ -1613,7 +1622,7 @@ def test_rm(h):
     except OSError:
         pass
     finally:
-        h.sw.atomic_write = real_write
+        core_mod.atomic_write = real_write
         for k, v in saved_env.items():
             if v is None:
                 os.environ.pop(k, None)

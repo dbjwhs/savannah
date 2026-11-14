@@ -638,6 +638,28 @@ and not used: it would run without your shell's environment and PATH, and
 the pane would close when Claude exits, taking the place you restart it
 from.
 
+## Files
+
+`savannah_work.py` is the entry point: the one path the CLI, the shim, the
+hook and the tests name, runnable from any cwd (and through a symlink). It
+holds the core verbs, the parser and `main`. The rest of the code sits beside
+it as flat modules imported by plain name (not a package), each importing
+only the ones listed before it and none of them `savannah_work.py`:
+
+| File | What |
+|---|---|
+| `savannah_log.py` | the one log |
+| `savannah_core.py` | `UserError`, constants, paths, atomic writes, records, notes, status, text and output helpers |
+| `savannah_terminal.py` | the `Terminal` seam and `ITerm` (it2) |
+| `savannah_git.py` | `run_git`, the repo root, a session's worktree, `.worktreeinclude` |
+| `savannah_sessions.py` | hook sessions and the join with records |
+| `savannah_transcript.py` | finding and parsing Claude Code transcripts |
+| `savannah_tabs.py` | `claude_command`, `reclaim_pane`, `remake_tab`, `adopt_session` |
+| `savannah_hub.py` | `repos`, `hub` |
+| `savannah_snapshot.py` | `snapshot`, `snapshots`, `restore` |
+| `savannah_autoname.py` | `autoname` |
+| `savannah_ask.py` | `ask` |
+
 ## Tests
 
 `test/test_work.py` runs under ctest as `test_work`, against a temp work dir,

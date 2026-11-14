@@ -72,8 +72,11 @@ def finish(name, passed="all passed", count=False):
 
 def load_module(path, name="savannah_work_under_test"):
     """Import work/savannah_work.py (or any module) from its path. The caller
-    gets the module object, so a test can patch names on it (sw.atomic_write,
-    sw.subprocess.run) and put them back."""
+    gets the module object. savannah_work.py is the entry point of a set of
+    flat sibling modules, which it imports by plain name and re-exports from,
+    so a test patches a function on the module that owns it
+    (sw.savannah_core.atomic_write, sw.savannah_terminal.subprocess.run) and
+    puts it back: a patch on the entry module would not reach the code."""
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
