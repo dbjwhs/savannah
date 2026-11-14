@@ -46,6 +46,16 @@ type dismissMsg struct {
 	ok bool
 }
 
+// A session's state: the four the hook writes, and offline, which only the
+// board gives (a work record with no live tab, offlineWorkRow).
+const (
+	stateWorking = "working"
+	stateWaiting = "waiting"
+	stateIdle    = "idle"
+	stateDone    = "done"
+	stateOffline = "offline"
+)
+
 // session mirrors one hook-written status file (hooks/session-status.py).
 type session struct {
 	ID      string `json:"session_id"`
@@ -112,16 +122,7 @@ type sessionsMsg struct {
 	workErr string       // work-dir read error
 }
 
-func sessionsDir() string {
-	if d := os.Getenv("SAVANNAH_SESSIONS_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude", "savannah", "sessions")
-}
+func sessionsDir() string { return savannahPath("SAVANNAH_SESSIONS_DIR", "sessions") }
 
 // readSessions loads every status file in dir, sorted for display. A missing
 // directory is not an error (no sessions yet); an unparseable file is skipped.
@@ -158,16 +159,7 @@ func readSessions(dir string) ([]session, error) {
 	return out, nil
 }
 
-func workDir() string {
-	if d := os.Getenv("SAVANNAH_WORK_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude", "savannah", "work")
-}
+func workDir() string { return savannahPath("SAVANNAH_WORK_DIR", "work") }
 
 // validWorkName is the work-session name rule, mirrored from
 // work/savannah_work.py (valid_name) so the dash and the CLI list the same
@@ -307,7 +299,7 @@ func joinCandidate(rec workRecord, sessions []session, claimed []bool, i int) bo
 		return false
 	}
 	s := sessions[i]
-	return !isWorkRow(s) && samePath(s.Project, rec.Worktree)
+	return !isOfflineRow(s) && samePath(s.Project, rec.Worktree)
 }
 
 // matchPane finds the unclaimed candidate running in the record's Claude
@@ -359,7 +351,7 @@ func offlineWorkRow(rec workRecord) session {
 	return session{
 		ID:        workRowPrefix + rec.Name,
 		Project:   rec.Worktree,
-		State:     "offline",
+		State:     stateOffline,
 		Message:   rec.lastNote,
 		ITerm:     rec.ClaudePane,
 		Term:      rec.Terminal,
@@ -369,9 +361,13 @@ func offlineWorkRow(rec workRecord) session {
 	}
 }
 
-// isWorkRow reports whether a session is a synthesized offline work row (no
-// hook file behind it, so nothing to dismiss; `work rm` owns the record).
-func isWorkRow(s session) bool { return strings.HasPrefix(s.ID, workRowPrefix) }
+// isOfflineRow reports whether a session is a synthesized offline work row
+// (no hook file behind it, so nothing to dismiss; `work rm` owns the record).
+func isOfflineRow(s session) bool { return strings.HasPrefix(s.ID, workRowPrefix) }
+
+// closed reports whether a session is a closed one: a work session with no
+// live tab, which sits in HISTORY (history.go).
+func (s session) closed() bool { return s.State == stateOffline }
 
 // joinWork tags each hook session with the work session it belongs to and
 // appends an offline row for every work record with no live session. The
@@ -391,7 +387,7 @@ func isWorkRow(s session) bool { return strings.HasPrefix(s.ID, workRowPrefix) }
 func joinWork(sessions []session, work []workRecord) []session {
 	out := make([]session, 0, len(sessions)+len(work))
 	for _, s := range sessions {
-		if isWorkRow(s) {
+		if isOfflineRow(s) {
 			continue
 		}
 		s.Work, s.WorkTitle = "", ""
@@ -428,8 +424,8 @@ func joinWork(sessions []session, work []workRecord) []session {
 // nudge (Notification idle_prompt) is not a session that needs you, so a
 // file from an older hook that stamped it "waiting" reads as idle.
 func normalizeSession(s *session) {
-	if s.State == "waiting" && s.Notify == "idle_prompt" {
-		s.State = "idle"
+	if s.State == stateWaiting && s.Notify == "idle_prompt" {
+		s.State = stateIdle
 		s.Message = ""
 	}
 }
@@ -442,11 +438,11 @@ func rowStyle(s session) lipgloss.Style {
 	switch {
 	case sessionAttention(s):
 		return needStyle
-	case s.State == "working": // a polling row is a working one with a live report
+	case s.State == stateWorking: // a polling row is a working one with a live report
 		return warnStyle
-	case s.State == "idle", s.State == "done":
+	case s.State == stateIdle, s.State == stateDone:
 		return okStyle
-	case s.State == "offline":
+	case s.closed():
 		return helpStyle
 	}
 	return lipgloss.NewStyle()
@@ -455,13 +451,13 @@ func rowStyle(s session) lipgloss.Style {
 // attentionRank orders states for display: what needs you first.
 func attentionRank(state string) int {
 	switch state {
-	case "waiting":
+	case stateWaiting:
 		return 0
-	case "working":
+	case stateWorking:
 		return 1
-	case "done":
+	case stateDone:
 		return 2
-	case "offline": // a work session with no live tab
+	case stateOffline: // a work session with no live tab
 		return 4
 	default: // idle, unknown
 		return 3
@@ -477,14 +473,14 @@ func sortSessions(s []session) {
 		if ri != rj {
 			return ri < rj
 		}
-		if s[i].State == "waiting" {
+		if s[i].State == stateWaiting {
 			return s[i].Updated < s[j].Updated // longest wait on top
 		}
 		return s[i].Updated > s[j].Updated // freshest on top
 	})
 }
 
-func sessionAttention(s session) bool { return s.State == "waiting" }
+func sessionAttention(s session) bool { return s.State == stateWaiting }
 
 func countSessionAttention(ss []session) int {
 	n := 0
@@ -498,9 +494,7 @@ func countSessionAttention(ss []session) int {
 
 // humanAge renders a seconds delta compactly: 5s, 3m, 2h, 4d.
 func humanAge(sec int64) string {
-	if sec < 0 {
-		sec = 0
-	}
+	sec = max(sec, 0)
 	switch {
 	case sec < 60:
 		return fmt.Sprintf("%ds", sec)
@@ -544,13 +538,13 @@ func projectLabel(path string) string {
 // stateGlyph is a one-rune status marker for a session row.
 func stateGlyph(state string) string {
 	switch state {
-	case "waiting":
+	case stateWaiting:
 		return "●"
-	case "working":
+	case stateWorking:
 		return "…"
-	case "done":
+	case stateDone:
 		return "✓"
-	case "offline":
+	case stateOffline:
 		return "○"
 	default:
 		return "·"
@@ -560,7 +554,7 @@ func stateGlyph(state string) string {
 // sessionDetail is the right-hand cell: the reason it needs you, or a mode
 // hint, or the state word.
 func sessionDetail(s session) string {
-	if s.State == "waiting" {
+	if s.State == stateWaiting {
 		switch s.Notify {
 		case "permission_prompt":
 			if s.Message != "" {
@@ -573,7 +567,7 @@ func sessionDetail(s session) string {
 		}
 		return "needs you"
 	}
-	if s.State == "offline" {
+	if s.closed() {
 		if s.Message != "" {
 			return s.Message
 		}
@@ -601,6 +595,11 @@ func it2Argv() []string {
 	return []string{it2Bundled}
 }
 
+// it2 runs one it2 command (logged, like every subprocess of the board);
+// it2Poll is the same for a periodic read.
+func it2(args ...string) ([]byte, error)     { return runArgv(run, it2Argv(), args...) }
+func it2Poll(args ...string) ([]byte, error) { return runArgv(poll, it2Argv(), args...) }
+
 // jumpSessionCmd focuses a session's terminal tab. iTerm2 first (the id after
 // the colon in ITERM_SESSION_ID is the session id it2 takes), then tmux.
 // Best-effort: no known terminal is a no-op with a status hint, not an error.
@@ -611,17 +610,14 @@ func jumpSessionCmd(s session) tea.Cmd {
 			// pane reads as "tab not found" instead of a false "jumped";
 			// iTerm2 is only brought forward after a hit, so a miss never
 			// yanks it over whatever you were doing.
-			argv := it2Argv()
-			focus := append(append([]string{}, argv[1:]...), "session", "focus", itermUUID(s.ITerm))
-			if _, err := run(argv[0], focus...); err != nil {
+			if _, err := it2("session", "focus", itermUUID(s.ITerm)); err != nil {
 				how := "iTerm: tab not found"
 				if _, exited := err.(*exec.ExitError); !exited {
 					how = "it2: " + err.Error()
 				}
 				return jumpMsg{id: s.ID, ok: false, how: how}
 			}
-			activate := append(append([]string{}, argv[1:]...), "app", "activate")
-			_, _ = run(argv[0], activate...)
+			_, _ = it2("app", "activate")
 			return jumpMsg{id: s.ID, ok: true, how: "iTerm"}
 		}
 		if s.Tmux != "" {

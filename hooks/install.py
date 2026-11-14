@@ -13,6 +13,7 @@
 
 import json
 import os
+import shutil
 import sys
 import time
 
@@ -38,12 +39,37 @@ def settings_path(project):
 def load(path):
     try:
         with open(path) as f:
-            return json.load(f)
+            settings = json.load(f)
     except FileNotFoundError:
         return {}
     except ValueError:
         print("refusing to touch %s: it is not valid JSON" % path, file=sys.stderr)
         sys.exit(1)
+    if not isinstance(settings, dict):
+        print("refusing to touch %s: its top level is not a JSON object" % path, file=sys.stderr)
+        sys.exit(1)
+    return settings
+
+
+def write_atomic(path, text):
+    """Replace path with text in one step: a temp file beside the real file
+    (a symlinked settings.json keeps its link; the file it names is the one
+    replaced), then os.replace, so a crash or a full disk mid-write never
+    leaves a half-written settings.json. An existing file's mode is kept."""
+    target = os.path.realpath(path)
+    tmp = "%s.tmp.%d" % (target, os.getpid())
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+        if os.path.exists(target):
+            shutil.copymode(target, tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def group_has_command(group, cmd):
@@ -112,8 +138,7 @@ def main():
         with open(path) as src, open(backup, "w") as dst:
             dst.write(src.read())
         print("backed up %s -> %s" % (path, backup))
-    with open(path, "w") as f:
-        f.write(rendered + "\n")
+    write_atomic(path, rendered + "\n")
 
     verb = "removed from" if uninstall else "installed into"
     print("hook %s %s (%d event%s)" %

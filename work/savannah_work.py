@@ -119,6 +119,7 @@ STATUS_FILE = "status.json"        # the tab's own Claude's poll report, beside 
 STATUS_TEXT_MAX = 200
 TITLE_MAX = 120                    # chars of a session's free-text title (first line, stripped)
 PRIORITIES = ("now", "active", "later")   # the board's sections, top first; rank orders rows within one
+DEFAULT_PRIORITY = "active"        # where a new session lands, and how a record that names none reads
 OUTPUT_PROMPT_CLIP = 120           # chars of the prompt shown on an output header
 HUB_TEMPLATE = "hub_CLAUDE.md"     # sibling of this module; copied into a new hub
 SCRATCH_TEMPLATE = "scratch_CLAUDE.md"
@@ -155,18 +156,17 @@ savannah_log.configure("work")
 # paths and records
 
 
+def env_path(var, *default):
+    """$var when it is set and not empty, else ~/.claude/<default...>."""
+    return os.environ.get(var) or os.path.join(os.path.expanduser("~"), ".claude", *default)
+
+
 def work_dir():
-    d = os.environ.get("SAVANNAH_WORK_DIR")
-    if d:
-        return d
-    return os.path.join(os.path.expanduser("~"), ".claude", "savannah", "work")
+    return env_path("SAVANNAH_WORK_DIR", "savannah", "work")
 
 
 def sessions_dir():
-    d = os.environ.get("SAVANNAH_SESSIONS_DIR")
-    if d:
-        return d
-    return os.path.join(os.path.expanduser("~"), ".claude", "savannah", "sessions")
+    return env_path("SAVANNAH_SESSIONS_DIR", "savannah", "sessions")
 
 
 def record_dir(name):
@@ -185,12 +185,34 @@ def status_path(name):
     return os.path.join(record_dir(name), STATUS_FILE)
 
 
-def atomic_write(path, obj):
+def atomic_write_text(path, text, encoding=None):
     tmp = path + ".tmp.%d" % os.getpid()
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=2, sort_keys=True)
-        f.write("\n")
+    with open(tmp, "w", encoding=encoding) as f:
+        f.write(text)
     os.replace(tmp, path)  # atomic on POSIX; a reader never sees a half file
+
+
+def atomic_write(path, obj):
+    atomic_write_text(path, json.dumps(obj, indent=2, sort_keys=True) + "\n")
+
+
+def oserr(e):
+    """What an OSError says for a one-line message: its strerror, else itself."""
+    return e.strerror or e
+
+
+def emit(a, obj, line):
+    """A verb's one-value result: obj as JSON under --json, else the line."""
+    print(json.dumps(obj) if a.json else line)
+
+
+def print_table(rows):
+    """Rows of strings (the header first) as columns two spaces apart: every
+    column but the last padded to its widest cell, the last left as it is."""
+    n = len(rows[0]) - 1
+    widths = [max(len(r[i]) for r in rows) for i in range(n)]
+    for r in rows:
+        print("  ".join(r[i].ljust(widths[i]) for i in range(n)) + "  " + r[n])
 
 
 def valid_name(name):
@@ -230,18 +252,29 @@ def coerce_int(value, default):
         return default
 
 
+def first_line(text, limit=None):
+    """The first non-blank line of text, stripped, cut to limit chars when
+    one is given; "" for blank text or a non-string."""
+    if not isinstance(text, str):
+        return ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line if limit is None else line[:limit]
+    return ""
+
+
+def clip(s, n):
+    """s when it fits in n chars, else cut to n with a closing "~"."""
+    return s if len(s) <= n else s[: n - 1] + "~"
+
+
 def title_text(value):
     """A session's free-text title as stored and shown: its first non-blank
     line, stripped, cut to TITLE_MAX; "" for blank text or a non-string
     (a title is for your eye, so the name rule does not apply to it).
     Not tab_title, which strips iTerm2's " (process)" off a tab title."""
-    if not isinstance(value, str):
-        return ""
-    for line in value.splitlines():
-        line = line.strip()
-        if line:
-            return line[:TITLE_MAX]
-    return ""
+    return first_line(value, TITLE_MAX)
 
 
 def normalize_record(rec, name):
@@ -255,11 +288,36 @@ def normalize_record(rec, name):
     for key in RECORD_FIELDS:
         rec.setdefault(key, "")
     rec["adopted"] = bool(rec.get("adopted"))
-    rec["priority"] = rec.get("priority") if rec.get("priority") in ("now", "later") else "active"
+    rec["priority"] = rec.get("priority") if rec.get("priority") in PRIORITIES else DEFAULT_PRIORITY
     rec["rank"] = coerce_int(rec.get("rank"), coerce_int(rec.get("created"), 0))
     rec["title"] = title_text(rec.get("title"))
     rec["name"] = name
     return rec
+
+
+def new_record(name, repo, worktree, branch, terminal, tab_id="", claude_pane="", shell_pane="",
+               prompt="", adopted=False, title=""):
+    """A fresh record as new and adopt write it: created, updated and rank
+    stamped now (a new session ranks by its creation time), the default
+    priority, the title through title_text."""
+    now = int(time.time())
+    return {
+        "name": name,
+        "repo": repo,
+        "worktree": worktree,
+        "branch": branch,
+        "created": now,
+        "updated": now,
+        "terminal": terminal,
+        "tab_id": tab_id,
+        "claude_pane": claude_pane,
+        "shell_pane": shell_pane,
+        "prompt": prompt,
+        "adopted": adopted,
+        "priority": DEFAULT_PRIORITY,
+        "rank": now,
+        "title": title_text(title),
+    }
 
 
 def load_record(name):
@@ -411,6 +469,12 @@ class Terminal:
         """Close the tab. -> bool found. panes: the tab's known pane ids."""
         raise NotImplementedError
 
+    def sessions(self):
+        """The terminal's panes, one dict each with at least "id" (plus
+        "tab_id", "window_id" and "title" where it knows them), in tab
+        order; raises UserError."""
+        raise NotImplementedError
+
     def live_ids(self):
         """The set of pane ids the terminal currently has; raises UserError."""
         raise NotImplementedError
@@ -439,8 +503,8 @@ class ITerm(Terminal):
             raise UserError("it2 timed out: iTerm2 is not responding, or its Python API is "
                             "off (iTerm2 > Settings > General > Magic > Enable Python API)")
         except OSError as e:
-            log_warn("it2 failed to start", it2=argv[0], error=e.strerror or str(e))
-            raise UserError(f"cannot run it2 ({argv[0]!r}): {e.strerror or e}")
+            log_warn("it2 failed to start", it2=argv[0], error=str(oserr(e)))
+            raise UserError(f"cannot run it2 ({argv[0]!r}): {oserr(e)}")
         ms = int((time.time() - t0) * 1000)
         # DEBUG for every call (what, how it ended, how long), VERBOSE for what
         # it printed: `session list` JSON is big, so only its head.
@@ -622,8 +686,8 @@ def run_git(args):
         log_warn("git not found")
         raise UserError("git not found on PATH")
     except OSError as e:
-        log_warn("git failed to start", error=e.strerror or str(e))
-        raise UserError(f"cannot run git: {e.strerror or e}")
+        log_warn("git failed to start", error=str(oserr(e)))
+        raise UserError(f"cannot run git: {oserr(e)}")
     log_debug("git", args=list(args), rc=p.returncode, ms=int((time.time() - t0) * 1000))
     if p.returncode != 0 and p.stderr:
         log_verbose("git stderr", args=list(args)[:3], stderr=p.stderr[:300])
@@ -727,19 +791,44 @@ def iterm_uuid(iterm_session_id):
     return s.split(":", 1)[1] if ":" in s else s
 
 
+def hook_pane(h):
+    """The iTerm2 pane id a hook session recorded, "" when it has none (or
+    the field is not a string)."""
+    iid = h.get("iterm_session_id")
+    return iterm_uuid(iid if isinstance(iid, str) else "")
+
+
+def hooks_in(worktree, hooks):
+    """The hook sessions running in this directory: realpath(project) is
+    realpath(worktree), the join rule. [] for no worktree (realpath("") is
+    the cwd, which would join by accident); a hook with no usable project
+    never matches. The mirror image, the records on a directory, is
+    session_here here and work_session_for in hooks/session-status.py
+    (a standalone copy on purpose: the hook imports nothing of ours)."""
+    if not worktree:
+        return []
+    target = os.path.realpath(worktree)
+    return [h for h in hooks
+            if isinstance(h.get("project"), str) and h["project"]
+            and os.path.realpath(h["project"]) == target]
+
+
+def claude_alive(rec, live):
+    """The record's Claude pane is one of the live pane ids."""
+    return bool(rec.get("claude_pane")) and rec["claude_pane"] in live
+
+
 def join_session(rec, hooks):
     worktree = rec.get("worktree") or ""
     if not worktree:
-        return None  # realpath("") is the cwd, which would join by accident
-    target = os.path.realpath(worktree)
-    matches = [h for h in hooks
-               if h.get("project") and os.path.realpath(h["project"]) == target]
+        return None
+    matches = hooks_in(worktree, hooks)
     name = rec.get("name", "")
     if not matches:
         log_debug("join", name=name, worktree=worktree, matches=0)
         return None
     for h in matches:
-        if rec.get("claude_pane") and iterm_uuid(h.get("iterm_session_id")) == rec["claude_pane"]:
+        if rec.get("claude_pane") and hook_pane(h) == rec["claude_pane"]:
             log_debug("join", name=name, session=h.get("session_id") or "", state=h.get("state") or "",
                       by="pane", matches=len(matches))
             return h
@@ -786,11 +875,7 @@ def read_status(name):
 
 def status_text(parts):
     """First non-blank line of the joined text args, cut to STATUS_TEXT_MAX."""
-    for line in " ".join(parts).splitlines():
-        line = line.strip()
-        if line:
-            return line[:STATUS_TEXT_MAX]
-    return ""
+    return first_line(" ".join(parts), STATUS_TEXT_MAX)
 
 
 def session_here():
@@ -821,10 +906,7 @@ def session_here():
 
 
 def claude_config_dir():
-    d = os.environ.get("CLAUDE_CONFIG_DIR")
-    if d:
-        return d
-    return os.path.join(os.path.expanduser("~"), ".claude")
+    return env_path("CLAUDE_CONFIG_DIR")
 
 
 def encode_project_dir(path):
@@ -899,8 +981,8 @@ def transcript_turns(path):
     try:
         f = open(path, encoding="utf-8", errors="replace")
     except OSError as e:
-        log_warn("transcript unreadable", path=path, error=e.strerror or str(e))
-        raise UserError(f"cannot read transcript {path}: {e.strerror or e}")
+        log_warn("transcript unreadable", path=path, error=str(oserr(e)))
+        raise UserError(f"cannot read transcript {path}: {oserr(e)}")
     with f:
         for line in f:
             lines += 1
@@ -982,14 +1064,11 @@ def template_text(name):
         with open(path, encoding="utf-8") as f:
             return f.read()
     except OSError as e:
-        raise UserError(f"template missing: {path} ({e.strerror or e})")
+        raise UserError(f"template missing: {path} ({oserr(e)})")
 
 
 def hub_file():
-    f = os.environ.get("SAVANNAH_HUB_FILE")
-    if f:
-        return f
-    return os.path.join(os.path.expanduser("~"), ".claude", "savannah", "hub.json")
+    return env_path("SAVANNAH_HUB_FILE", "savannah", "hub.json")
 
 
 def recorded_hub():
@@ -1010,24 +1089,46 @@ def remember_hub(d):
     return path
 
 
+def pick_hub_dir(arg):
+    """(dir, picked) for `repos` and `hub`: the directory given ("given"),
+    else the remembered hub ("remembered"), else the cwd ("cwd"). Raises
+    UserError when it is not a directory."""
+    if arg:
+        d, picked = os.path.abspath(arg), "given"
+    else:
+        d = recorded_hub()
+        picked = "remembered" if d else "cwd"
+        d = d or os.getcwd()
+    if not os.path.isdir(d):
+        raise UserError(f"not a directory: {d}")
+    return d, picked
+
+
+def load_json_object(path):
+    """(object, existed) of a JSON file about to be merged into and written
+    back: ({}, False) when there is no file; a file that is not JSON, not
+    readable or not an object is refused (UserError), never overwritten."""
+    if not os.path.exists(path):
+        return {}, False
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except ValueError as e:
+        raise UserError(f"refusing to rewrite malformed {path}: {e}")
+    except OSError as e:
+        raise UserError(f"cannot read {path}: {oserr(e)}")
+    if not isinstance(cfg, dict):
+        raise UserError(f"refusing to rewrite {path}: top level is not an object")
+    return cfg, True
+
+
 def write_hub_settings(path):
     """Merge the hub's permissions into DIR/.claude/settings.json: allow the
     work_* tools and `sleep`, and auto-approve the project's .mcp.json
     servers. Everything else in the file is kept. 'created', 'updated' or
     'unchanged'."""
-    cfg = {}
-    status = "created"
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except ValueError as e:
-            raise UserError(f"refusing to rewrite malformed {path}: {e}")
-        except OSError as e:
-            raise UserError(f"cannot read {path}: {e.strerror or e}")
-        if not isinstance(cfg, dict):
-            raise UserError(f"refusing to rewrite {path}: top level is not an object")
-        status = "updated"
+    cfg, existed = load_json_object(path)
+    status = "updated" if existed else "created"
     changed = False
     if cfg.get("enableAllProjectMcpServers") is not True:
         cfg["enableAllProjectMcpServers"] = True
@@ -1057,29 +1158,15 @@ def write_if_missing(path, text):
     """'created' or 'kept'; never overwrites."""
     if os.path.exists(path):
         return "kept"
-    tmp = path + ".tmp.%d" % os.getpid()
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    atomic_write_text(path, text, encoding="utf-8")
     return "created"
 
 
 def write_hub_mcp(path):
     """Merge the peer server into DIR/.mcp.json. Other servers are kept.
     Returns 'created', 'updated' or 'unchanged'."""
-    cfg = {}
-    status = "created"
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except ValueError as e:
-            raise UserError(f"refusing to rewrite malformed {path}: {e}")
-        except OSError as e:
-            raise UserError(f"cannot read {path}: {e.strerror or e}")
-        if not isinstance(cfg, dict):
-            raise UserError(f"refusing to rewrite {path}: top level is not an object")
-        status = "updated"
+    cfg, existed = load_json_object(path)
+    status = "updated" if existed else "created"
     servers = cfg.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
@@ -1149,7 +1236,7 @@ def copy_worktree_includes(repo, worktree):
                 else:
                     shutil.copy2(src, dst, follow_symlinks=False)
             except OSError as e:
-                raise UserError(f"{WORKTREE_INCLUDE}: cannot copy {rel}: {e.strerror or e}")
+                raise UserError(f"{WORKTREE_INCLUDE}: cannot copy {rel}: {oserr(e)}")
             copied.append(rel)
     return copied
 
@@ -1160,7 +1247,7 @@ def repos_in(d):
     try:
         names = sorted(os.listdir(d))
     except OSError as e:
-        raise UserError(f"cannot list {d}: {e.strerror or e}")
+        raise UserError(f"cannot list {d}: {oserr(e)}")
     return [n for n in names if not n.startswith(".")
             and os.path.exists(os.path.join(d, n, ".git"))]
 
@@ -1186,9 +1273,9 @@ def claim_record_dir(name):
             try:
                 shutil.rmtree(rdir)
             except OSError as e:
-                raise UserError(f"cannot reclaim stale {rdir}: {e.strerror or e}")
+                raise UserError(f"cannot reclaim stale {rdir}: {oserr(e)}")
         except OSError as e:
-            raise UserError(f"cannot create {rdir}: {e.strerror or e}")
+            raise UserError(f"cannot create {rdir}: {oserr(e)}")
     raise UserError(f"work session already exists: {name}")
 
 
@@ -1212,7 +1299,7 @@ def cmd_new(a):
     made_branch = False
     reattached = False
     copied = []
-    term = ITerm()
+    term = make_terminal("")
     ids = None
     try:
         if not a.no_worktree:
@@ -1222,7 +1309,7 @@ def cmd_new(a):
             try:
                 os.makedirs(base, exist_ok=True)
             except OSError as e:
-                raise UserError(f"cannot create {base}: {e.strerror}")
+                raise UserError(f"cannot create {base}: {oserr(e)}")
             if a.branch:
                 branch = a.branch
                 if not git_branch_exists(repo, branch):
@@ -1250,24 +1337,9 @@ def cmd_new(a):
         ids = term.create_split_tab(name, claude_command(worktree, name, prompt),
                                     f"cd {shlex.quote(worktree)}")
 
-        now = int(time.time())
-        rec = {
-            "name": name,
-            "repo": repo,
-            "worktree": worktree,
-            "branch": branch,
-            "created": now,
-            "updated": now,
-            "terminal": term.kind,
-            "tab_id": ids.get("tab_id", ""),
-            "claude_pane": ids.get("claude_pane", ""),
-            "shell_pane": ids.get("shell_pane", ""),
-            "prompt": prompt,
-            "adopted": False,
-            "priority": "active",
-            "rank": now,
-            "title": title_text(getattr(a, "title", "")),
-        }
+        rec = new_record(name, repo, worktree, branch, term.kind, tab_id=ids.get("tab_id", ""),
+                         claude_pane=ids.get("claude_pane", ""), shell_pane=ids.get("shell_pane", ""),
+                         prompt=prompt, title=getattr(a, "title", ""))
         atomic_write(record_path(name), rec)
         log_info("new", name=name, repo=repo, worktree=worktree, branch=branch, tab=rec["tab_id"],
                  claude_pane=rec["claude_pane"], shell_pane=rec["shell_pane"], reattached=reattached,
@@ -1300,12 +1372,9 @@ def cmd_new(a):
         print(f"new: reattached existing branch {branch}", file=sys.stderr)
     if copied:
         print(f"new: copied {len(copied)} from {WORKTREE_INCLUDE}: {', '.join(copied)}", file=sys.stderr)
-    if a.json:
-        print(json.dumps(rec))
-    else:
-        where = f"{worktree} on {branch}" if branch else worktree
-        tag = " (reattached)" if reattached else ""
-        print(f"{name}: {where}{tag} (tab {rec['tab_id']}, claude {rec['claude_pane']})")
+    where = f"{worktree} on {branch}" if branch else worktree
+    tag = " (reattached)" if reattached else ""
+    emit(a, rec, f"{name}: {where}{tag} (tab {rec['tab_id']}, claude {rec['claude_pane']})")
     return 0
 
 
@@ -1319,7 +1388,7 @@ def cmd_ls(a):
     except UserError:
         live = None
     for e in entries:
-        e["pane_alive"] = None if live is None else bool(e.get("claude_pane") and e["claude_pane"] in live)
+        e["pane_alive"] = None if live is None else claude_alive(e, live)
     log_debug("ls", records=len(entries), hooks=len(hooks),
               joined=sum(1 for e in entries if e["claude_session_id"]),
               live=("null" if live is None else len(live)))
@@ -1330,23 +1399,20 @@ def cmd_ls(a):
         print("(no work sessions)")
         return 0
 
-    def clip(s, n):
-        s = (s or "").splitlines()[0] if (s or "").strip() else ""
-        return s if len(s) <= n else s[: n - 1] + "~"
+    def cell(s, n):
+        return clip(first_line(s), n)
 
     def status_cell(st):
         if not st:
             return "-"
         count = f" ({st['count']})"
-        return clip(st["text"], 30 - len(count)) + count
+        return cell(st["text"], 30 - len(count)) + count
 
     rows = [("NAME", "TITLE", "BRANCH", "STATE", "STATUS", "LAST PROMPT", "LAST NOTE")]
     for e in entries:
-        rows.append((e["name"], clip(e["title"], 24) or "-", e["branch"] or "-", e["state"],
-                     status_cell(e["status"]), clip(e["last_prompt"], 40), clip(e["last_note"], 40)))
-    widths = [max(len(r[i]) for r in rows) for i in range(6)]
-    for r in rows:
-        print("  ".join(r[i].ljust(widths[i]) for i in range(6)) + "  " + r[6])
+        rows.append((e["name"], cell(e["title"], 24) or "-", e["branch"] or "-", e["state"],
+                     status_cell(e["status"]), cell(e["last_prompt"], 40), cell(e["last_note"], 40)))
+    print_table(rows)
     return 0
 
 
@@ -1359,11 +1425,8 @@ def cmd_note(a):
     path = append_note(a.name, text, now)
     save_record(rec)
     log_info("note", name=a.name, chars=len(text.rstrip("\n")), path=path)
-    if a.json:
-        print(json.dumps({"name": a.name, "notes_path": path,
-                          "time": note_stamp(now), "text": text.rstrip("\n")}))
-    else:
-        print(f"noted in {path}")
+    emit(a, {"name": a.name, "notes_path": path, "time": note_stamp(now), "text": text.rstrip("\n")},
+         f"noted in {path}")
     return 0
 
 
@@ -1386,20 +1449,16 @@ def reclaim_pane(rec, live, dry=False):
     tab id is dropped and so is a shell pane that is gone (the tab made by
     hand has none). -> True when the record was re-pointed (and saved);
     dry = only say whether it would be."""
-    if rec.get("claude_pane") and rec["claude_pane"] in live:
+    if claude_alive(rec, live):
         return False
     worktree = rec.get("worktree") or ""
     if not worktree:
         return False
-    target = os.path.realpath(worktree)
     taken = {r.get("claude_pane") for r in list_records() if r.get("name") != rec.get("name")}
     best, best_pane = None, ""
-    for h in load_hook_sessions():
-        iid = h.get("iterm_session_id")
-        pane = iterm_uuid(iid if isinstance(iid, str) else "")
+    for h in hooks_in(worktree, load_hook_sessions()):
+        pane = hook_pane(h)
         if not pane or pane not in live or pane in taken:
-            continue
-        if not isinstance(h.get("project"), str) or os.path.realpath(h["project"]) != target:
             continue
         if best is None or (h.get("updated") or 0) > (best.get("updated") or 0):
             best, best_pane = h, pane
@@ -1497,10 +1556,10 @@ def cmd_open(a):
     rec = load_record(a.name)
     term = make_terminal(rec.get("terminal", ""))
     live = term.live_ids()
-    claude_alive = bool(rec.get("claude_pane")) and rec["claude_pane"] in live
-    if not claude_alive:
-        claude_alive = reclaim_pane(rec, live)  # claude started again by hand in the worktree
-    if claude_alive:
+    alive = claude_alive(rec, live)
+    if not alive:
+        alive = reclaim_pane(rec, live)  # claude started again by hand in the worktree
+    if alive:
         pane = rec["claude_pane"]
         if a.shell and rec.get("shell_pane") in live:
             pane = rec["shell_pane"]
@@ -1510,11 +1569,9 @@ def cmd_open(a):
     else:
         how = remake_tab(rec, term, live)
         action = "reopened (claude --continue)" if how == "continue" else "reopened"
-    if a.json:
-        print(json.dumps({"name": a.name, "action": action.split(" ")[0], "tab_id": rec.get("tab_id", ""),
-                          "claude_pane": rec.get("claude_pane", ""), "shell_pane": rec.get("shell_pane", "")}))
-    else:
-        print(f"{a.name}: {action} (tab {rec.get('tab_id', '')}, claude {rec.get('claude_pane', '')})")
+    emit(a, {"name": a.name, "action": action.split(" ")[0], "tab_id": rec.get("tab_id", ""),
+             "claude_pane": rec.get("claude_pane", ""), "shell_pane": rec.get("shell_pane", "")},
+         f"{a.name}: {action} (tab {rec.get('tab_id', '')}, claude {rec.get('claude_pane', '')})")
     return 0
 
 
@@ -1556,7 +1613,7 @@ def adopt_session(name, h, session_id, title="", note=""):
         if not project or not os.path.isdir(project):
             raise UserError(f"session {session_id} runs in {project or 'an unknown directory'}, "
                             "which is not a directory here")
-        pane = iterm_uuid(h.get("iterm_session_id") if isinstance(h.get("iterm_session_id"), str) else "")
+        pane = hook_pane(h)
         if pane:
             for other in list_records():
                 if other.get("claude_pane") != pane:
@@ -1572,34 +1629,19 @@ def adopt_session(name, h, session_id, title="", note=""):
             repo = resolve_repo_root(project)
         except UserError:
             repo = project  # no git here; the directory is the whole story
+        term = make_terminal("")
         tab_id = ""
         if pane:
             # Best effort: the tab is for the board's eye only; nothing acts on it.
             try:
-                for s in ITerm().sessions():
+                for s in term.sessions():
                     if s.get("id") == pane:
                         tab_id = str(s.get("tab_id") or "")
                         break
             except UserError:
                 pass
-        now = int(time.time())
-        rec = {
-            "name": name,
-            "repo": repo,
-            "worktree": project,
-            "branch": current_branch(project),
-            "created": now,
-            "updated": now,
-            "terminal": ITerm.kind,
-            "tab_id": tab_id,
-            "claude_pane": pane,
-            "shell_pane": "",
-            "prompt": "",
-            "adopted": True,
-            "priority": "active",
-            "rank": now,
-            "title": title_text(title),
-        }
+        rec = new_record(name, repo, project, current_branch(project), term.kind, tab_id=tab_id,
+                         claude_pane=pane, adopted=True, title=title)
         atomic_write(record_path(name), rec)
         log_info("adopted", name=name, session=session_id, worktree=project, repo=repo,
                  claude_pane=pane, tab=tab_id, title=rec["title"])
@@ -1622,10 +1664,8 @@ def cmd_adopt(a):
         raise UserError(f"no live Claude session {a.session} (no hook file under {sessions_dir()}; "
                         "hooks/install.py not run, or the tab is closed)")
     rec = adopt_session(a.name, h, a.session, title=getattr(a, "title", ""), note=a.note)
-    if a.json:
-        print(json.dumps(rec))
-    else:
-        print(f"{a.name}: adopted {rec['worktree']} (tab {rec['tab_id'] or '-'}, claude {rec['claude_pane'] or '-'})")
+    emit(a, rec,
+         f"{a.name}: adopted {rec['worktree']} (tab {rec['tab_id'] or '-'}, claude {rec['claude_pane'] or '-'})")
     return 0
 
 
@@ -1738,17 +1778,13 @@ def clean_title(text):
     'Title:' and surrounding quotes or backticks dropped, trailing
     punctuation dropped, whitespace squeezed, cut to TITLE_MAX. '' when
     nothing remains."""
-    if not isinstance(text, str):
+    t = first_line(text)
+    if not t:
         return ""
-    for line in text.splitlines():
-        t = line.strip()
-        if not t:
-            continue
-        t = re.sub(r"^(title|name)\s*:\s*", "", t, flags=re.IGNORECASE)
-        t = t.strip().strip('"\'`*').strip()
-        t = t.rstrip(".!?:;,").strip()
-        return title_text(" ".join(t.split()))
-    return ""
+    t = re.sub(r"^(title|name)\s*:\s*", "", t, flags=re.IGNORECASE)
+    t = t.strip().strip('"\'`*').strip()
+    t = t.rstrip(".!?:;,").strip()
+    return title_text(" ".join(t.split()))
 
 
 def ask_title(excerpt):
@@ -1771,7 +1807,7 @@ def ask_title(excerpt):
         p = subprocess.run(argv, capture_output=True, text=True, timeout=NAME_TIMEOUT, env=env,
                            cwd=tempfile.gettempdir())
     except OSError as e:
-        raise UserError(f"cannot run {argv[0]}: {e.strerror or e} (set SAVANNAH_CLAUDE_BIN)")
+        raise UserError(f"cannot run {argv[0]}: {oserr(e)} (set SAVANNAH_CLAUDE_BIN)")
     except subprocess.TimeoutExpired:
         raise UserError(f"{argv[0]} took over {NAME_TIMEOUT}s")
     ms = int((time.time() - t0) * 1000)
@@ -1899,14 +1935,12 @@ def cmd_autoname(a):
 
     def title_for(job):
         if a.no_claude:
-            return squeeze(job["prompts"][0].splitlines()[0] if job["prompts"][0].strip() else "",
-                           NAME_FALLBACK_MAX), "prompt", ""
+            return squeeze(first_line(job["prompts"][0]), NAME_FALLBACK_MAX), "prompt", ""
         try:
             return ask_title(job["excerpt"]), "claude", ""
         except UserError as e:
             log_warn("autoname fallback", session=job["session_id"], error=str(e))
-            first = job["prompts"][0].strip().splitlines()[0]
-            return squeeze(first, NAME_FALLBACK_MAX), "prompt", str(e)
+            return squeeze(first_line(job["prompts"][0]), NAME_FALLBACK_MAX), "prompt", str(e)
 
     if jobs:
         with ThreadPoolExecutor(max_workers=min(NAME_WORKERS, len(jobs))) as pool:
@@ -1956,23 +1990,19 @@ def cmd_move(a):
     rows keep arriving in order). Nothing lands in NOW by itself: only this
     verb and the board's Ctrl-P put a row there. Storage only: the tab, the
     worktree and the branch are not touched."""
-    if not (a.now or a.active or a.later or a.rank is not None):
+    if not (any(getattr(a, p) for p in PRIORITIES) or a.rank is not None):
         return usage_error("move", "give --now, --active, --later or --rank N (or several)")
     rec = load_record(a.name)
-    if a.now:
-        rec["priority"] = "now"
-    elif a.active:
-        rec["priority"] = "active"
-    elif a.later:
-        rec["priority"] = "later"
+    for p in PRIORITIES:   # the flags are --now, --active, --later; at most one is set
+        if getattr(a, p):
+            rec["priority"] = p
+            break
     if a.rank is not None:
         rec["rank"] = a.rank
     save_record(rec)
     log_info("moved", name=rec["name"], priority=rec["priority"], rank=rec["rank"])
-    if a.json:
-        print(json.dumps({"name": rec["name"], "priority": rec["priority"], "rank": rec["rank"]}))
-    else:
-        print(f"moved {rec['name']}: {rec['priority']}, rank {rec['rank']}")
+    emit(a, {"name": rec["name"], "priority": rec["priority"], "rank": rec["rank"]},
+         f"moved {rec['name']}: {rec['priority']}, rank {rec['rank']}")
     return 0
 
 
@@ -2025,10 +2055,8 @@ def cmd_rename(a):
         if restored:
             shutil.rmtree(new_dir, ignore_errors=True)
         raise
-    if a.json:
-        print(json.dumps({"name": new, "old": old, "worktree": rec["worktree"], "branch": rec["branch"]}))
-    else:
-        print(f"renamed {old} to {new} (worktree and branch keep their names)")
+    emit(a, {"name": new, "old": old, "worktree": rec["worktree"], "branch": rec["branch"]},
+         f"renamed {old} to {new} (worktree and branch keep their names)")
     return 0
 
 
@@ -2059,30 +2087,23 @@ def cmd_status(a):
         except FileNotFoundError:
             pass
         log_info("status cleared", name=name)
-        if a.json:
-            print(json.dumps({"name": name, "status": None}))
-        else:
-            print(f"{name}: status cleared")
+        emit(a, {"name": name, "status": None}, f"{name}: status cleared")
         return 0
     if text:
         prev = read_status(name)
         st = {"text": text, "updated": int(time.time()), "count": (prev["count"] if prev else 0) + 1}
         atomic_write(path, st)
         log_info("status reported", name=name, count=st["count"], text=text)
-        if a.json:
-            print(json.dumps(dict(st, name=name)))
-        else:
-            print(f"{name}: poll {st['count']}: {text}")
+        emit(a, dict(st, name=name), f"{name}: poll {st['count']}: {text}")
         return 0
     st = read_status(name)
     log_debug("status read", name=name, found=st is not None)
-    if a.json:
-        print(json.dumps({"name": name, "status": st}))
-    elif st is None:
-        print(f"{name}: (no status)")
+    if st is None:
+        line = f"{name}: (no status)"
     else:
         age = max(0, int(time.time()) - st["updated"])
-        print(f"{name}: {st['text']} ({st['count']} polls, last {age}s ago)")
+        line = f"{name}: {st['text']} ({st['count']} polls, last {age}s ago)"
+    emit(a, {"name": name, "status": st}, line)
     return 0
 
 
@@ -2103,16 +2124,12 @@ def cmd_title(a):
         rec["title"] = text
         save_record(rec)
         log_info("title cleared" if a.clear else "title set", name=name, title=text)
-        if a.json:
-            print(json.dumps({"name": name, "title": text}))
-        else:
-            print(f"{name}: title cleared" if a.clear else f"{name}: title set: {text}")
+        emit(a, {"name": name, "title": text},
+             f"{name}: title cleared" if a.clear else f"{name}: title set: {text}")
         return 0
     log_debug("title read", name=name, title=rec["title"])
-    if a.json:
-        print(json.dumps({"name": name, "title": rec["title"]}))
-    else:
-        print(f"{name}: {rec['title']}" if rec["title"] else f"{name}: (no title)")
+    emit(a, {"name": name, "title": rec["title"]},
+         f"{name}: {rec['title']}" if rec["title"] else f"{name}: (no title)")
     return 0
 
 
@@ -2207,16 +2224,9 @@ def cmd_repos(a):
     """The folder of repos the board offers for new tasks: `repos DIR`
     remembers DIR (the same memory `hub` uses), `repos` alone lists the
     remembered folder, else the cwd."""
-    if a.dir:
-        d = os.path.abspath(a.dir)
-        if not os.path.isdir(d):
-            raise UserError(f"not a directory: {d}")
+    d, picked = pick_hub_dir(a.dir)
+    if picked == "given":
         remember_hub(d)
-        picked = "given"
-    else:
-        d = recorded_hub()
-        picked = "remembered" if d else "cwd"
-        d = d or os.getcwd()
     repos = repos_in(d)
     scratch = os.path.join(d, SCRATCH_SUBDIR)
     scratch = scratch if os.path.isdir(scratch) else ""
@@ -2245,7 +2255,7 @@ def cmd_output(a):
     turns = transcript_turns(path)
     shown = turns[-a.last:] if turns else []
     log_verbose("output turns", name=a.name, source=source, total=len(turns), shown=len(shown),
-                prompts=" | ".join((t["prompt"].strip().splitlines() or [""])[0][:60] for t in shown))
+                prompts=" | ".join(first_line(t["prompt"], 60) for t in shown))
     if a.json:
         print(json.dumps({"name": a.name, "transcript_path": path, "source": source,
                           "turns_total": len(turns), "turns": shown}))
@@ -2256,9 +2266,7 @@ def cmd_output(a):
     for i, t in enumerate(shown):
         if i:
             print()
-        head = (t["prompt"].strip().splitlines() or [""])[0]
-        if len(head) > OUTPUT_PROMPT_CLIP:
-            head = head[: OUTPUT_PROMPT_CLIP - 1] + "~"
+        head = clip(first_line(t["prompt"]), OUTPUT_PROMPT_CLIP)
         when = local_stamp(t["answered"] or t["asked"])
         print(f"## {when}  you: {head}" if head else f"## {when}")
         print(t["text"] if t["text"] else "(no reply yet)")
@@ -2308,7 +2316,7 @@ def ask_skip_reason(h, mine):
         return "waiting for you (text typed there would answer its prompt)"
     if h.get("pid") in mine:
         return "the session asking"
-    if not iterm_uuid(h.get("iterm_session_id")):
+    if not hook_pane(h):
         return "no iTerm2 pane recorded"
     return ""
 
@@ -2331,7 +2339,7 @@ def ask_targets(names, all_tabs, hooks, records):
         if why:
             skipped.append(dict(entry, why=why))
             return
-        pane = (rec or {}).get("claude_pane") or iterm_uuid(h.get("iterm_session_id"))
+        pane = (rec or {}).get("claude_pane") or hook_pane(h)
         targets.append(dict(entry, pane=pane, h=h, rec=rec))
 
     for name in names:
@@ -2360,11 +2368,8 @@ def ask_answered(h, question):
 
 def first_prompt_line(text):
     """The hook's last_prompt of a typed text: its first non-blank line,
-    200 chars (hooks/session-status.py first_line)."""
-    for line in (text or "").splitlines():
-        if line.strip():
-            return line.strip()[:200]
-    return ""
+    LAST_PROMPT_MAX chars (hooks/session-status.py first_line)."""
+    return first_line(text, LAST_PROMPT_MAX)
 
 
 def ask_reply(h, question):
@@ -2483,15 +2488,7 @@ def cmd_ask(a):
 
 
 def cmd_hub(a):
-    if a.dir:
-        d = os.path.abspath(a.dir)
-        picked = "given"
-    else:
-        d = recorded_hub()
-        picked = "remembered" if d else "cwd"
-        d = d or os.getcwd()
-    if not os.path.isdir(d):
-        raise UserError(f"not a directory: {d}")
+    d, picked = pick_hub_dir(a.dir)
     mcp_path = os.path.join(d, ".mcp.json")
     mcp_status = write_hub_mcp(mcp_path)
     settings_path = os.path.join(d, ".claude", "settings.json")
@@ -2502,12 +2499,12 @@ def cmd_hub(a):
     try:
         os.makedirs(scratch, exist_ok=True)
     except OSError as e:
-        raise UserError(f"cannot create {scratch}: {e.strerror or e}")
+        raise UserError(f"cannot create {scratch}: {oserr(e)}")
     scratch_status = write_if_missing(os.path.join(scratch, "CLAUDE.md"),
                                       template_text(SCRATCH_TEMPLATE))
     remembered = remember_hub(d)
     launch = not a.no_launch
-    argv = shlex.split(os.environ.get("SAVANNAH_CLAUDE_BIN", "") or "claude")
+    argv = claude_argv()
     if a.json:
         print(json.dumps({"dir": d, "picked": picked, "mcp_json": mcp_path,
                           "mcp_status": mcp_status, "settings": settings_path,
@@ -2535,7 +2532,7 @@ def cmd_hub(a):
         os.chdir(d)
         os.execvp(argv[0], argv)
     except OSError as e:
-        raise UserError(f"cannot launch {argv[0]}: {e.strerror or e} (set SAVANNAH_CLAUDE_BIN)")
+        raise UserError(f"cannot launch {argv[0]}: {oserr(e)} (set SAVANNAH_CLAUDE_BIN)")
     return 0  # not reached: execvp replaces the process
 
 
@@ -2565,7 +2562,7 @@ def cmd_rm(a):
             try:
                 shutil.rmtree(rdir)
             except OSError as e:
-                raise UserError(f"cannot remove stale {rdir}: {e.strerror or e}")
+                raise UserError(f"cannot remove stale {rdir}: {oserr(e)}")
             log_info("removed stale", name=name, why=why)
             print(f"removed {name} (stale: {why}; check `git worktree list` for leftovers)")
             return 0
@@ -2598,7 +2595,7 @@ def cmd_rm(a):
             archived = archive_target(adir, name, created)
             shutil.copy2(np, archived)
         except OSError as e:
-            raise UserError(f"cannot archive notes to {archived or adir}: {e.strerror or e}")
+            raise UserError(f"cannot archive notes to {archived or adir}: {oserr(e)}")
 
     def withdraw_archive():
         if archived:
@@ -2635,7 +2632,7 @@ def cmd_rm(a):
     try:
         shutil.rmtree(rdir)
     except OSError as e:
-        raise UserError(f"cannot remove {rdir}: {e.strerror or e}"
+        raise UserError(f"cannot remove {rdir}: {oserr(e)}"
                         + (f" (notes already archived to {archived})" if archived else ""))
     log_info("removed", name=name, worktree=worktree, worktree_removed=removing_worktree, adopted=adopted,
              tab_closed=closed, archived=archived)
@@ -2731,7 +2728,7 @@ def take_snapshot(note, now=None):
         entry = {"name": rec["name"], "title": rec.get("title", "") or "",
                  "worktree": rec.get("worktree", ""), "repo": rec.get("repo", ""),
                  "branch": rec.get("branch", ""), "adopted": bool(rec.get("adopted")),
-                 "priority": rec.get("priority", "active"), "rank": rec.get("rank", 0),
+                 "priority": rec.get("priority", DEFAULT_PRIORITY), "rank": rec.get("rank", 0),
                  "tab_id": rec.get("tab_id", ""), "claude_pane": pane,
                  "shell_pane": rec.get("shell_pane", ""), "tab_title": titles.get(pane, ""),
                  "pane_alive": (pane in order) if it2_ok else None, "live": h is not None}
@@ -2742,8 +2739,7 @@ def take_snapshot(note, now=None):
         project = h.get("project", "")
         if id(h) in claimed or not isinstance(project, str) or not project:
             continue
-        iid = h.get("iterm_session_id")
-        pane = iterm_uuid(iid if isinstance(iid, str) else "")
+        pane = hook_pane(h)
         entry = {"project": project, "pane": pane, "tab_id": tabs.get(pane, ""),
                  "title": titles.get(pane, ""), "pane_alive": (pane in order) if it2_ok else None}
         entry.update(hook_fields(h))
@@ -2875,13 +2871,11 @@ def cmd_snapshot(a):
     live = sum(1 for e in snap["sessions"] if e["live"])
     log_info("snapshot written", path=path, work=len(snap["sessions"]), live=live,
              plain=len(snap["plain"]), it2=snap["it2"])
-    if a.json:
-        print(json.dumps({"path": path, "stamp": snap["stamp"], "work": len(snap["sessions"]),
-                          "live": live, "plain": len(snap["plain"]), "it2": snap["it2"]}))
-        return 0
     tail = "" if snap["it2"] else " (it2 unavailable: no tab order, titles or pane liveness)"
-    print(f"snapshot {path}: {len(snap['sessions'])} work sessions ({live} live), "
-          f"{len(snap['plain'])} plain tabs{tail}")
+    emit(a, {"path": path, "stamp": snap["stamp"], "work": len(snap["sessions"]),
+             "live": live, "plain": len(snap["plain"]), "it2": snap["it2"]},
+         f"snapshot {path}: {len(snap['sessions'])} work sessions ({live} live), "
+         f"{len(snap['plain'])} plain tabs{tail}")
     return 0
 
 
@@ -2895,12 +2889,9 @@ def cmd_snapshots(a):
         return 0
     table = [("STAMP", "TAKEN", "WORK", "LIVE", "PLAIN", "NOTE")]
     for r in rows:
-        note = r["note"].splitlines()[0] if r["note"].strip() else ""
         table.append((r["stamp"], r["taken_local"] or "-", str(r["work"]), str(r["live"]),
-                      str(r["plain"]), note))
-    widths = [max(len(row[i]) for row in table) for i in range(5)]
-    for row in table:
-        print("  ".join(row[i].ljust(widths[i]) for i in range(5)) + "  " + row[5])
+                      str(r["plain"]), first_line(r["note"])))
+    print_table(table)
     return 0
 
 
@@ -2947,8 +2938,7 @@ def cmd_restore(a):
         except UserError:
             skip("name", name, "no record")
             continue
-        if (rec.get("claude_pane") and rec["claude_pane"] in live) or \
-                reclaim_pane(rec, live, dry=a.dry_run):
+        if claude_alive(rec, live) or reclaim_pane(rec, live, dry=a.dry_run):
             skip("name", name, "alive")
             continue
         worktree = rec.get("worktree") or ""
@@ -2984,11 +2974,9 @@ def cmd_restore(a):
                 skip("project", project, "not open when the snapshot was taken")
                 continue
             h = hook_session_by_id(session_id) if session_id else None
-            if h is not None:
-                iid = h.get("iterm_session_id")
-                if iterm_uuid(iid if isinstance(iid, str) else "") in live:
-                    skip("project", project, "alive")
-                    continue
+            if h is not None and hook_pane(h) in live:
+                skip("project", project, "alive")
+                continue
             if not os.path.isdir(project):
                 skip("project", project, "project gone")
                 continue

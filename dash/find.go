@@ -22,7 +22,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 )
 
@@ -78,18 +77,10 @@ func (m model) pressFind() model {
 // applyFilter takes the prompt line as the filter and rebuilds the rows,
 // the cursor following the row it was on when that row still shows.
 func (m *model) applyFilter(text string) {
-	before, had := m.currentRow()
 	m.filter = strings.TrimSpace(text)
-	m.rebuildRows()
-	if had {
-		for i, r := range m.rows {
-			if r.kind == before.kind && r.s.ID == before.s.ID && r.node == before.node && r.t.ID == before.t.ID {
-				m.cursor = i
-				return
-			}
-		}
+	if !m.rebuildKeepingCursor() {
+		m.cursor = 0
 	}
-	m.cursor = 0
 }
 
 // acceptFind is Enter (or Ctrl-K again) while finding: the filter stays,
@@ -101,12 +92,12 @@ func (m model) acceptFind() model {
 		m.status = "no filter"
 		return m
 	}
-	slog.Info("action", "do", "find", "filter", m.filter, "rows", len(m.rows))
 	verb := "match"
 	if len(m.rows) == 1 {
 		verb = "matches"
 	}
-	m.status = fmt.Sprintf("%d row%s %s %q (Esc clears the filter, Ctrl-K edits it)", len(m.rows), plural(len(m.rows)), verb, m.filter)
+	m.act("find", fmt.Sprintf("%d row%s %s %q (Esc clears the filter, Ctrl-K edits it)", len(m.rows), plural(len(m.rows)), verb, m.filter),
+		"filter", m.filter, "rows", len(m.rows))
 	return m
 }
 

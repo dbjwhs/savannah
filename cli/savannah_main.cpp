@@ -50,15 +50,31 @@
 #include <vector>
 
 #include "savannah.hpp"
-#include "../src/config.hpp"    // load_hmac_key
-#include "../src/json.hpp"      // --json output
-#include "../src/wire_ids.hpp"  // stream service id + mesh mDNS type
+#include "agent_process.hpp"  // to_cargv
+#include "config.hpp"         // load_hmac_key, kDefaultAgentTimeoutMs
+#include "json.hpp"           // --json output
+#include "stream_json.hpp"    // ChunkKind, result_ok
+#include "wire_ids.hpp"       // mesh mDNS type
 
+// No `using namespace song`: the project namespace is `savannah` and the
+// generated wire namespace is `song::savannah` (same rule as savannahd.cpp).
 namespace sw = song::savannah;
-
-using namespace song;
+using song::ServiceConnection;
+using song::u16;
+using song::u32;
 
 namespace {
+
+// How long `savannah ls` browses the mesh when --timeout-ms is not given.
+constexpr u32 kBrowseTimeoutMs = 2000;
+// How long resolving one node name over mDNS may take.
+constexpr std::chrono::milliseconds kResolveTimeout{3000};
+// TCP connect to a resolved or --addr node.
+constexpr int kConnectTimeoutMs = 5000;
+// Added to the agent's own timeout to make the client's per-chunk budget:
+// savannahd guarantees a RESULT trailer within the agent timeout, the margin
+// covers the wire and the daemon's teardown.
+constexpr u32 kStreamMarginMs = 30000;
 
 int usage() {
     std::cerr <<
@@ -115,6 +131,21 @@ std::string work_module() {
 #define SAVANNAH_DASH_BIN ""
 #endif
 
+// Replace this process with argv (argv[0] looked up on PATH). Returns only
+// when the exec failed, with errno set.
+void exec_argv(const std::vector<std::string>& argv) {
+    std::vector<char*> cargv = savannah::to_cargv(argv);
+    execvp(cargv[0], cargv.data());
+}
+
+// argv[from..] as strings: the arguments handed on to the dash or the work
+// module untouched.
+std::vector<std::string> tail(int argc, char** argv, int from) {
+    std::vector<std::string> rest;
+    for (int i = from; i < argc; ++i) rest.emplace_back(argv[i]);
+    return rest;
+}
+
 // Replace this process with the dash. Returns only on failure (exit 1 with
 // the build hint on stderr). SAVANNAH_BIN tells the dash where this binary
 // is, so `savannah work ...` from the board works even off PATH.
@@ -131,11 +162,7 @@ int exec_dash(const char* self, const std::vector<std::string>& args) {
     }
     std::vector<std::string> full = {bin};
     full.insert(full.end(), args.begin(), args.end());
-    std::vector<char*> cargv;
-    cargv.reserve(full.size() + 1);
-    for (auto& a : full) cargv.push_back(a.data());
-    cargv.push_back(nullptr);
-    execvp(cargv[0], cargv.data());
+    exec_argv(full);
     std::cerr << "savannah: cannot run the dash (" << bin << ": " << std::strerror(errno)
               << "); build it with `cd dash && go build -o savannah-dash .` "
                  "(or `cmake --build build --target dash`), or set SAVANNAH_DASH_BIN\n";
@@ -153,11 +180,7 @@ int exec_work(const std::vector<std::string>& args) {
     }
     std::vector<std::string> full = {"python3", mod};
     full.insert(full.end(), args.begin(), args.end());
-    std::vector<char*> cargv;
-    cargv.reserve(full.size() + 1);
-    for (auto& a : full) cargv.push_back(a.data());
-    cargv.push_back(nullptr);
-    execvp(cargv[0], cargv.data());
+    exec_argv(full);
     std::cerr << "savannah: cannot exec python3: " << std::strerror(errno) << "\n";
     return 1;
 }
@@ -248,13 +271,14 @@ bool parse_cli(int argc, char** argv, Cli& c) {
 }
 
 int run_ls(const Cli& cli) {
-    auto discovery = create_discovery();
+    auto discovery = song::create_discovery();
     if (!discovery || !discovery->is_available()) {
         std::cerr << "savannah: mDNS not available on this machine\n";
         return 1;
     }
     auto timeout =
-        std::chrono::milliseconds(cli.timeout_ms ? cli.timeout_ms : 2000);
+        std::chrono::milliseconds(cli.timeout_ms ? cli.timeout_ms
+                                                 : kBrowseTimeoutMs);
     auto found =
         discovery->discover(savannah_wire::kMeshServiceType, timeout);
     if (found.empty()) {
@@ -287,14 +311,13 @@ ServiceConnection connect_remote(const Cli& cli) {
         }
         port = static_cast<u16>(n);
     } else {
-        auto discovery = create_discovery();
+        auto discovery = song::create_discovery();
         if (!discovery || !discovery->is_available()) {
             throw std::runtime_error(
                 "mDNS not available; use --addr HOST:PORT");
         }
         auto s = discovery->discover_one(
-            cli.node, savannah_wire::kMeshServiceType,
-            std::chrono::milliseconds(3000));
+            cli.node, savannah_wire::kMeshServiceType, kResolveTimeout);
         if (!s) {
             throw std::runtime_error("node \"" + cli.node +
                                      "\" not found on the mesh");
@@ -303,13 +326,13 @@ ServiceConnection connect_remote(const Cli& cli) {
         port = s->port;
     }
 
-    auto tcp = std::make_unique<TcpTransport>();
-    tcp->connect(host, port, 5000);
-    std::unique_ptr<Transport> transport = std::move(tcp);
+    auto tcp = std::make_unique<song::TcpTransport>();
+    tcp->connect(host, port, kConnectTimeoutMs);
+    std::unique_ptr<song::Transport> transport = std::move(tcp);
     if (!cli.key_file.empty()) {
-        transport = std::make_unique<SecureTransport>(
+        transport = std::make_unique<song::SecureTransport>(
             std::move(transport),
-            SecurityConfig(::savannah::load_hmac_key(cli.key_file)));
+            song::SecurityConfig(savannah::load_hmac_key(cli.key_file)));
     }
     ServiceConnection conn(std::move(transport));
     conn.init_handshake();
@@ -319,22 +342,52 @@ ServiceConnection connect_remote(const Cli& cli) {
 // Shared chunk sink for ask and task tail (same stream contract): TEXT ->
 // stdout verbatim, TOOL_EVENT/RESULT -> stderr. Sets ok from the RESULT trailer.
 void print_chunk(const sw::AgentChunk& c, bool& ok) {
-    switch (c.kind) {
-        case 0:  // TEXT
+    // The kind travels as its integer value (the IDL pins 0/1/2).
+    switch (static_cast<savannah::ChunkKind>(c.kind)) {
+        case savannah::ChunkKind::Text:
             std::cout << c.payload;
             std::cout.flush();
             break;
-        case 1:  // TOOL_EVENT
+        case savannah::ChunkKind::ToolEvent:
             std::cerr << "[tool] " << c.payload << "\n";
             break;
-        case 2:  // RESULT
+        case savannah::ChunkKind::Result:
             std::cerr << "\n[result] " << c.payload << "\n";
-            ok = c.payload.find("\"is_error\":false") != std::string::npos;
+            ok = savannah::ChunkMapper::result_ok(c.payload);
             break;
         default:
             std::cerr << "[?] unknown chunk kind " << c.kind << "\n";
             break;
     }
+}
+
+// The per-chunk receive budget for a stream (ask, task tail). Sized to the
+// AGENT, not the wire: between chunks a thinking agent can legitimately be
+// silent for its whole timeout, and savannahd guarantees a RESULT trailer
+// within it, so client budget = agent timeout + margin.
+int stream_budget_ms(const Cli& cli) {
+    const u32 agent_budget =
+        cli.timeout_ms ? cli.timeout_ms
+                       : static_cast<u32>(savannah::kDefaultAgentTimeoutMs);
+    return static_cast<int>(agent_budget + kStreamMarginMs);
+}
+
+// Run one chunk stream to its end, printing as it goes. `start` is handed
+// the chunk sink and the budget and makes the streaming call. Exit code 0
+// iff the RESULT trailer reported a clean finish.
+template <typename Start>
+int run_stream(const Cli& cli, Start&& start) {
+    bool ok = false;
+    start([&ok](sw::AgentChunk& c) { print_chunk(c, ok); },
+          stream_budget_ms(cli));
+    std::cout.flush();
+    return ok ? 0 : 1;
+}
+
+// The one-line outcome of a yes/no task verb, on stderr; exit code 0 or 1.
+int report(bool ok, const char* yes, const char* no) {
+    std::cerr << (ok ? yes : no);
+    return ok ? 0 : 1;
 }
 
 void print_task(const sw::TaskInfo& t) {
@@ -362,7 +415,7 @@ std::string pad(std::string s, std::size_t w) {
 // The machine-readable seam: a JSON array of tasks. Any UI (a Go TUI, a React
 // dashboard) can consume this instead of speaking song's wire protocol.
 std::string tasks_to_json(const sw::TaskList& list) {
-    namespace j = ::savannah::json;
+    namespace j = savannah::json;
     j::Array arr;
     for (const auto& t : list.tasks) {
         j::Object o;
@@ -473,42 +526,30 @@ int run_task(ServiceConnection& conn, const Cli& cli) {
         return 0;
     }
     if (sub == "send") {
-        bool ok = proxy.task_send(cli.task_id, cli.prompt);
-        std::cerr << (ok ? "sent\n" : "not sent (task busy or gone)\n");
-        return ok ? 0 : 1;
+        return report(proxy.task_send(cli.task_id, cli.prompt), "sent\n",
+                      "not sent (task busy or gone)\n");
     }
     if (sub == "cancel") {
-        bool ok = proxy.task_cancel(cli.task_id);
-        std::cerr << (ok ? "cancelled\n" : "no such task\n");
-        return ok ? 0 : 1;
+        return report(proxy.task_cancel(cli.task_id), "cancelled\n",
+                      "no such task\n");
     }
     if (sub == "rm") {
-        bool ok = proxy.task_rm(cli.task_id);
-        std::cerr << (ok ? "removed\n"
-                         : "no such task (a running task needs cancel first)\n");
-        return ok ? 0 : 1;
+        return report(proxy.task_rm(cli.task_id), "removed\n",
+                      "no such task (a running task needs cancel first)\n");
     }
     // tail: replay the transcript, then follow the live turn to its RESULT.
-    constexpr u32 kDefaultAgentTimeoutMs = 300000;
-    constexpr u32 kMarginMs = 30000;
-    u32 budget = cli.timeout_ms ? cli.timeout_ms : kDefaultAgentTimeoutMs;
-    bool ok = false;
-    proxy.task_output(
-        cli.task_id,
-        [&ok](sw::AgentChunk& c) { print_chunk(c, ok); },
-        static_cast<int>(budget + kMarginMs));
-    std::cout.flush();
-    return ok ? 0 : 1;
+    return run_stream(cli, [&](const auto& sink, int budget_ms) {
+        proxy.task_output(cli.task_id, sink, budget_ms);
+    });
 }
 
 int run_command(ServiceConnection& conn, const Cli& cli) {
     if (cli.cmd == "task") return run_task(conn, cli);
 
+    sw::AgentNodeProxy proxy(conn);
+
     if (cli.cmd == "info") {
-        Buffer req;
-        Buffer resp = conn.call(sw::kService_AgentNode,
-                                 sw::kMethod_AgentNode_info, req);
-        auto info = sw::decode_AgentInfo(resp);
+        auto info = proxy.info();
         std::cout << "name:      " << info.name << "\n"
                   << "model:     " << info.model << "\n"
                   << "workspace: " << info.workspace << "\n"
@@ -521,38 +562,21 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
     }
 
     if (cli.cmd == "status") {
-        Buffer req;
-        Buffer resp = conn.call(sw::kService_AgentNode,
-                                 sw::kMethod_AgentNode_status, req);
-        std::cout << decode_string(resp) << "\n";
+        std::cout << proxy.status() << "\n";
         return 0;
     }
 
     // ask, streamed live: chunks print as they arrive (song's incremental
-    // call_streaming). The chunk timeout is sized to the AGENT, not the
-    // wire: between chunks a thinking agent can legitimately be silent for
-    // its whole timeout budget, and savannahd guarantees a RESULT trailer
-    // within it, so client budget = agent timeout + margin.
+    // call_streaming). The generated streaming proxy (song finding 6) encodes
+    // the args, calls over kService_AgentNode_Stream, and hands each chunk
+    // back already decoded.
     sw::AskOptions opts;
     opts.timeout_ms = cli.timeout_ms;
     opts.fresh_context = true;
     opts.system_hint = "";
-
-    constexpr u32 kDefaultAgentTimeoutMs = 300000;  // savannahd's default
-    constexpr u32 kMarginMs = 30000;
-    u32 agent_budget =
-        cli.timeout_ms ? cli.timeout_ms : kDefaultAgentTimeoutMs;
-
-    // The generated streaming proxy (song finding 6) encodes the args, calls
-    // over kService_AgentNode_Stream, and hands each chunk back already decoded.
-    bool ok = false;
-    sw::AgentNodeProxy proxy(conn);
-    proxy.ask(
-        cli.prompt, opts,
-        [&ok](sw::AgentChunk& c) { print_chunk(c, ok); },
-        static_cast<int>(agent_budget + kMarginMs));
-    std::cout.flush();
-    return ok ? 0 : 1;
+    return run_stream(cli, [&](const auto& sink, int budget_ms) {
+        proxy.ask(cli.prompt, opts, sink, budget_ms);
+    });
 }
 
 }  // namespace
@@ -561,19 +585,16 @@ int main(int argc, char** argv) {
     if (argc == 1) return exec_dash(argv[0], {});
     if (std::strncmp(argv[1], "--", 2) == 0 && std::strcmp(argv[1], "--help") != 0) {
         // Flags before any verb are the board's (`savannah --group`).
-        std::vector<std::string> rest;
-        for (int i = 1; i < argc; ++i) rest.emplace_back(argv[i]);
-        return exec_dash(argv[0], rest);
+        return exec_dash(argv[0], tail(argc, argv, 1));
     }
     if (std::strcmp(argv[1], "mesh") == 0) {
-        std::vector<std::string> rest = {"--mesh"};
-        for (int i = 2; i < argc; ++i) rest.emplace_back(argv[i]);
+        std::vector<std::string> rest = tail(argc, argv, 2);
+        rest.insert(rest.begin(), "--mesh");
         return exec_dash(argv[0], rest);
     }
     if (std::strcmp(argv[1], "hub") == 0 || std::strcmp(argv[1], "work") == 0) {
-        std::vector<std::string> rest;
-        if (std::strcmp(argv[1], "hub") == 0) rest.emplace_back("hub");
-        for (int i = 2; i < argc; ++i) rest.emplace_back(argv[i]);
+        std::vector<std::string> rest = tail(argc, argv, 2);
+        if (std::strcmp(argv[1], "hub") == 0) rest.insert(rest.begin(), "hub");
         return exec_work(rest);
     }
 
@@ -587,7 +608,7 @@ int main(int argc, char** argv) {
             if (!cli.config.empty()) {
                 setenv("SAVANNAHD_CONFIG", cli.config.c_str(), 1);
             }
-            ServiceManager mgr;
+            song::ServiceManager mgr;
             mgr.register_service("agent", "./savannahd", 1);
             ServiceConnection conn = mgr.connect("agent");
             return run_command(conn, cli);

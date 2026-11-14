@@ -22,7 +22,6 @@
 package main
 
 import (
-	"log/slog"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,11 +49,7 @@ type clickState struct {
 // hitAt is what the line y of the board holds, from the same lines the
 // view draws.
 func (m model) hitAt(y int) lineHit {
-	width := m.width
-	if width <= 0 {
-		width = 100
-	}
-	_, hits := m.topLines(width, "")
+	_, hits := m.topLines(m.boardWidth(), "")
 	if y < 0 || y >= len(hits) {
 		return noHit
 	}
@@ -71,15 +66,13 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case msg.Button == tea.MouseButtonWheelUp && msg.Action == tea.MouseActionPress:
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		return m, m.refreshPanel()
+		m.moveCursor(-1)
+		cmd := m.refreshPanel()
+		return m, cmd
 	case msg.Button == tea.MouseButtonWheelDown && msg.Action == tea.MouseActionPress:
-		if m.cursor < len(m.rows)-1 {
-			m.cursor++
-		}
-		return m, m.refreshPanel()
+		m.moveCursor(1)
+		cmd := m.refreshPanel()
+		return m, cmd
 	case msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress:
 		return m, nil
 	}
@@ -91,12 +84,13 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if twice {
 			m.click = clickState{row: -1}
 			m.cursor = hit.row
-			slog.Info("action", "do", "double click", "row", hit.row)
+			action("double click", "row", hit.row)
 			return m.activateRow(m.rows[hit.row])
 		}
 		m.pendingRm = ""
 		m.cursor = hit.row
-		return m, m.refreshPanel()
+		cmd := m.refreshPanel()
+		return m, cmd
 	case hit.section == secHistory:
 		m.click = clickState{row: -1}
 		return m.toggleHistory(), nil
@@ -110,14 +104,14 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // tab is jumped to, a worker's full-screen view opens.
 func (m model) activateRow(r row) (tea.Model, tea.Cmd) {
 	switch {
-	case isWorkRowOf(r):
+	case r.isWork():
 		name := r.s.Work
-		slog.Info("action", "do", "open", "name", name, "state", r.s.State)
-		m.status = "opening " + name + "..."
+		m.act("open", "opening "+name+"...", "name", name, "state", r.s.State)
 		return m, m.workOpenCmd(name)
 	case r.kind == rowSession:
-		slog.Info("action", "do", "jump", "id", r.s.ID)
+		action("jump", "id", r.s.ID)
 		return m, jumpSessionCmd(r.s)
 	}
-	return m, m.enterView(r.node, r.t.ID)
+	cmd := m.enterView(r.node, r.t.ID)
+	return m, cmd
 }

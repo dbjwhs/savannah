@@ -29,7 +29,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,26 +44,33 @@ const (
 	secHistory // closed (offline) work sessions, at the bottom (history.go)
 )
 
+// A record's priority, as `work move --now|--active|--later` writes it.
+const (
+	prioNow    = "now"
+	prioActive = "active"
+	prioLater  = "later"
+)
+
 // priorityName is the record value a section is written as (`work move
 // --now|--active|--later`); HISTORY has none.
 func priorityName(sec int) string {
 	switch sec {
 	case secNow:
-		return "now"
+		return prioNow
 	case secLater:
-		return "later"
+		return prioLater
 	}
-	return "active"
+	return prioActive
 }
 
 // priorityOf is a record's priority as the board reads it: an unknown or
 // missing one is active.
 func priorityOf(r workRecord) string {
 	switch r.Priority {
-	case "now", "later":
+	case prioNow, prioLater:
 		return r.Priority
 	}
-	return "active"
+	return prioActive
 }
 
 const (
@@ -88,7 +94,7 @@ func sectionName(sec int) string {
 // session, else its record's priority (an unknown or missing priority is
 // active), LATER for an unnamed tab.
 func sectionOf(s session, recs map[string]workRecord) int {
-	if s.State == "offline" {
+	if s.closed() {
 		return secHistory
 	}
 	if s.Work == "" {
@@ -96,27 +102,32 @@ func sectionOf(s session, recs map[string]workRecord) int {
 	}
 	if r, ok := recs[s.Work]; ok {
 		switch priorityOf(r) {
-		case "now":
+		case prioNow:
 			return secNow
-		case "later":
+		case prioLater:
 			return secLater
 		}
 	}
 	return secActive
 }
 
-// rankOf is a named session's position key: the record's rank, else its
-// creation time, so records written before ranks existed keep their
-// creation order.
+// effectiveRank is a record's position key: its rank, else its creation
+// time, so records written before ranks existed keep their creation order.
+func effectiveRank(r workRecord) int64 {
+	if r.Rank != 0 {
+		return r.Rank
+	}
+	return r.Created
+}
+
+// rankOf is a named session's position key (effectiveRank of its record),
+// 0 for a session with no record.
 func rankOf(s session, recs map[string]workRecord) int64 {
 	r, ok := recs[s.Work]
 	if !ok {
 		return 0
 	}
-	if r.Rank != 0 {
-		return r.Rank
-	}
-	return r.Created
+	return effectiveRank(r)
 }
 
 func recordMap(work []workRecord) map[string]workRecord {
@@ -244,14 +255,7 @@ func renumber(names []string, priority string, recs map[string]workRecord) []mov
 	for i, n := range names {
 		want := int64((i + 1) * rankStep)
 		r, ok := recs[n]
-		cur := int64(0)
-		if ok {
-			cur = r.Rank
-			if cur == 0 {
-				cur = r.Created
-			}
-		}
-		if !ok || priorityOf(r) != priority || cur != want {
+		if !ok || priorityOf(r) != priority || effectiveRank(r) != want {
 			out = append(out, moveChange{name: n, priority: priority, rank: want})
 		}
 	}
@@ -287,11 +291,7 @@ func (m *model) applyMoves(changes []moveChange, name string) {
 		}
 	}
 	m.rebuildRows()
-	for i, row := range m.rows {
-		if row.kind == rowSession && row.s.Work == name {
-			m.cursor = i
-		}
-	}
+	m.cursorTo(func(r row) bool { return r.kind == rowSession && r.s.Work == name })
 }
 
 // adoptForMove names an unnamed tab so it can take a place in the order:
@@ -319,11 +319,8 @@ func (m *model) adoptForMove(s session, priority string) (name string, cmd tea.C
 			m.sessions[i].Work, m.sessions[i].WorkTitle = name, title
 		}
 	}
-	if m.nameTried == nil {
-		m.nameTried = map[string]bool{}
-	}
 	m.nameTried[s.ID] = true
-	slog.Info("action", "do", "adopt for move", "name", name, "title", title, "session", s.ID)
+	action("adopt for move", "name", name, "title", title, "session", s.ID)
 	return name, m.workAdoptCmd(name, s.ID, title)
 }
 
@@ -345,7 +342,7 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 	if !ok || r.kind != rowSession {
 		return m, nil
 	}
-	if r.s.State == "offline" {
+	if r.s.closed() {
 		m.status = warnStyle.Render("a closed session sits in HISTORY and has no place in the order; Enter reopens it")
 		return m, nil
 	}
@@ -353,7 +350,7 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 		// An unnamed tab has no record to hold a rank: it gets one, named
 		// from its tab title, and lands at the bottom of LATER's named rows
 		// (above the unnamed ones), from where the next drag goes on.
-		name, adopt := m.adoptForMove(r.s, "later")
+		name, adopt := m.adoptForMove(r.s, prioLater)
 		secs := m.sectionNames()
 		changes := renumberAll(secs, recordMap(m.work))
 		m.applyMoves(changes, name)
@@ -388,7 +385,7 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 	if len(changes) == 0 {
 		return m, nil
 	}
-	slog.Info("action", "do", "move", "name", name, "delta", delta, "writes", len(changes))
+	action("move", "name", name, "delta", delta, "writes", len(changes))
 	return m, m.workMoveCmd(changes)
 }
 
@@ -416,31 +413,10 @@ func (m model) workMoveCmd(changes []moveChange) tea.Cmd {
 
 // ---- naming (Ctrl-R) ----------------------------------------------------------
 
-type workTitledMsg struct{ name, title, err string }
-
-// titleArgs is the argv that sets a work session's title, or clears it when
-// the text is empty. The name is untouched: `savannah work rename OLD NEW`
-// is the CLI's own verb for that.
-func titleArgs(name, text string) []string {
-	if text == "" {
-		return workArgs("title", name, "--clear")
-	}
-	return workArgs("title", name, "--", text)
-}
-
-func (m model) workTitleCmd(name, text string) tea.Cmd {
-	bin, args := m.bin, titleArgs(name, text)
-	return func() tea.Msg {
-		if _, err := run(bin, args...); err != nil {
-			return workTitledMsg{name: name, title: text, err: cliError(err)}
-		}
-		return workTitledMsg{name: name, title: text}
-	}
-}
-
 // startNaming is Ctrl-R: a plain tab gets a name (adopt, with no note after
 // it; words become a title and a derived name), a work session gets its
-// title edited. The prompt line takes the text; Enter commits, Esc cancels.
+// title edited. The prompt line takes the text; Enter commits (the title
+// through `work title`, work.go's workVerbCmd), Esc cancels.
 func (m model) startNaming(r row, hasRow bool) (tea.Model, tea.Cmd) {
 	if !hasRow || r.kind != rowSession {
 		m.status = warnStyle.Render("Ctrl-R names a session; select one")
@@ -477,10 +453,8 @@ func titleTickCmd() tea.Cmd {
 // Without it2 (another terminal, a test) the result is an error the board
 // ignores: titles are a nicety, never required.
 func titlesCmd() tea.Cmd {
-	argv := it2Argv()
 	return func() tea.Msg {
-		args := append(append([]string{}, argv[1:]...), "session", "list", "--json")
-		out, err := poll(argv[0], args...)
+		out, err := it2Poll("session", "list", "--json")
 		if err != nil {
 			return titlesMsg{err: cliError(err)}
 		}
@@ -536,30 +510,13 @@ func cleanTitle(t string) string {
 	return strings.TrimSpace(t)
 }
 
-// updateOrder folds the results of moves, renames and title reads into the
+// updateOrder folds the results of moves and tab title reads into the
 // model.
 func (m model) updateOrder(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case workMovedMsg:
 		if msg.err != "" {
 			m.status = warnStyle.Render("move " + clip(msg.err))
-		}
-		return m, readSessionsCmd()
-	case workTitledMsg:
-		if msg.err != "" {
-			// The text stays in the box so a refused one is a one-edit fix.
-			slog.Warn("title failed", "name", msg.name, "err", msg.err)
-			m.status = warnStyle.Render("title " + msg.name + ": " + clip(msg.err))
-			return m, nil
-		}
-		m.titleFor = ""
-		m.input.SetValue("")
-		if msg.title == "" {
-			slog.Info("title cleared", "name", msg.name)
-			m.status = okStyle.Render("cleared the title of " + msg.name)
-		} else {
-			slog.Info("titled", "name", msg.name, "title", msg.title)
-			m.status = okStyle.Render("titled " + msg.name + ": " + msg.title)
 		}
 		return m, readSessionsCmd()
 	case titleTick:

@@ -48,10 +48,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -71,9 +69,6 @@ const (
 // Results of the work commands. err is "" on success, else the CLI's
 // stderr (or the exec error) ready for the status line.
 type workOpenMsg struct{ name, action, err string }
-type workSaidMsg struct{ name, err string }
-type workNotedMsg struct{ name, err string }
-type workRmMsg struct{ name, err string }
 type workNewMsg struct{ name, err string }
 type workAdoptMsg struct{ name, title, err string }
 type reposMsg struct {
@@ -116,76 +111,94 @@ func errText(err error) string {
 	return cliError(err)
 }
 
-// clip keeps a CLI error to one status line: first line, capped.
-func clip(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	r := []rune(s)
-	if len(r) > statusClip {
-		return string(r[:statusClip-1]) + "~"
-	}
-	return s
-}
-
 func (m model) workOpenCmd(name string) tea.Cmd {
 	bin, args := m.bin, workArgs("open", name, "--json")
 	return func() tea.Msg {
-		out, err := run(bin, args...)
-		if err != nil {
-			return workOpenMsg{name: name, err: cliError(err)}
-		}
-		var r struct {
+		// Output that does not parse is still an open: the exit said so.
+		r, errText := runJSON[struct {
 			Action string `json:"action"`
+		}](run, bin, args, "")
+		if errText != "" {
+			return workOpenMsg{name: name, err: errText}
 		}
-		if json.Unmarshal(out, &r) != nil || r.Action == "" {
+		if r.Action == "" {
 			r.Action = "opened"
 		}
 		return workOpenMsg{name: name, action: r.Action}
 	}
 }
 
-func (m model) workSayCmd(name, text string) tea.Cmd {
-	bin, args := m.bin, workArgs("say", name, "--", text)
+// The work verbs whose whole result is "it worked" or the CLI's refusal:
+// the CLI's own subcommand names.
+const (
+	verbSay   = "say"
+	verbNote  = "note"
+	verbRm    = "rm"
+	verbTitle = "title"
+)
+
+// workDoneMsg is the result of one of those verbs. text is what was said,
+// noted or set as the title ("" for rm, and for a title cleared).
+type workDoneMsg struct{ verb, name, text, err string }
+
+// workVerbs is what the board says about a finished verb: the status
+// line's words before the name on a refusal, the INFO record and the
+// status line's words before the name on a success, and whether the
+// records changed (the sessions are then read again at once). A title's
+// success has its own words (updateWork).
+var workVerbs = map[string]struct {
+	refused, done, ok string
+	reread            bool
+}{
+	verbSay:   {"say to ", "said", "said to ", false},
+	verbNote:  {"note ", "noted", "noted ", false},
+	verbRm:    {"rm ", "removed", "removed ", true},
+	verbTitle: {"title ", "titled", "titled ", true},
+}
+
+// titleArgs is the argv that sets a work session's title, or clears it when
+// the text is empty. The name is untouched: `savannah work rename OLD NEW`
+// is the CLI's own verb for that.
+func titleArgs(name, text string) []string {
+	if text == "" {
+		return workArgs(verbTitle, name, "--clear")
+	}
+	return workArgs(verbTitle, name, "--", text)
+}
+
+// workVerbArgs is the exact argv of a verb: text travels after `--`.
+func workVerbArgs(verb, name, text string) []string {
+	switch verb {
+	case verbRm:
+		return workArgs(verbRm, name)
+	case verbTitle:
+		return titleArgs(name, text)
+	}
+	return workArgs(verb, name, "--", text)
+}
+
+// workVerbCmd runs a verb as the CLI has it. A refusal is the CLI's to
+// word (rm refuses a dirty worktree with its --force hint), and that
+// refusal is exactly what the status line shows.
+func (m model) workVerbCmd(verb, name, text string) tea.Cmd {
+	bin, args := m.bin, workVerbArgs(verb, name, text)
 	return func() tea.Msg {
 		_, err := run(bin, args...)
-		return workSaidMsg{name: name, err: errText(err)}
+		return workDoneMsg{verb: verb, name: name, text: text, err: errText(err)}
 	}
 }
 
-func (m model) workNoteCmd(name, text string) tea.Cmd {
-	bin, args := m.bin, workArgs("note", name, "--", text)
-	return func() tea.Msg {
-		_, err := run(bin, args...)
-		return workNotedMsg{name: name, err: errText(err)}
-	}
-}
-
-// workRmCmd runs the CLI's rm as is: a dirty worktree is refused there with
-// the --force hint, and that refusal is exactly what the status line shows.
-func (m model) workRmCmd(name string) tea.Cmd {
-	bin, args := m.bin, workArgs("rm", name)
-	return func() tea.Msg {
-		_, err := run(bin, args...)
-		return workRmMsg{name: name, err: errText(err)}
-	}
+// namedRecord is the record `work new` and `work adopt` print, as far as
+// the board reads it: that it parses is the proof the session exists.
+type namedRecord struct {
+	Name string `json:"name"`
 }
 
 func (m model) workNewCmd(name string, args []string) tea.Cmd {
 	bin := m.bin
 	return func() tea.Msg {
-		out, err := run(bin, args...)
-		if err != nil {
-			return workNewMsg{name: name, err: cliError(err)}
-		}
-		var rec struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(out, &rec) != nil {
-			return workNewMsg{name: name, err: "work new printed no record"}
-		}
-		return workNewMsg{name: name}
+		_, errText := runJSON[namedRecord](run, bin, args, "work new printed no record")
+		return workNewMsg{name: name, err: errText}
 	}
 }
 
@@ -205,32 +218,16 @@ func adoptArgs(name, sessionID, title string) []string {
 func (m model) workAdoptCmd(name, sessionID, title string) tea.Cmd {
 	bin, args := m.bin, adoptArgs(name, sessionID, title)
 	return func() tea.Msg {
-		out, err := run(bin, args...)
-		if err != nil {
-			return workAdoptMsg{name: name, title: title, err: cliError(err)}
-		}
-		var rec struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(out, &rec) != nil {
-			return workAdoptMsg{name: name, title: title, err: "work adopt printed no record"}
-		}
-		return workAdoptMsg{name: name, title: title}
+		_, errText := runJSON[namedRecord](run, bin, args, "work adopt printed no record")
+		return workAdoptMsg{name: name, title: title, err: errText}
 	}
 }
 
 func (m model) reposCmd() tea.Cmd {
 	bin, args := m.bin, workArgs("repos", "", "--json")
 	return func() tea.Msg {
-		out, err := run(bin, args...)
-		if err != nil {
-			return reposMsg{err: cliError(err)}
-		}
-		var info reposInfo
-		if json.Unmarshal(out, &info) != nil {
-			return reposMsg{err: "work repos printed no list"}
-		}
-		return reposMsg{info: info}
+		info, errText := runJSON[reposInfo](run, bin, args, "work repos printed no list")
+		return reposMsg{info: info, err: errText}
 	}
 }
 
@@ -256,8 +253,7 @@ func (m model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case workOpenMsg:
 		if msg.err != "" {
-			slog.Warn("open failed", "name", msg.name, "err", msg.err)
-			m.status = warnStyle.Render("open " + msg.name + ": " + clip(msg.err))
+			m.fail("open failed", "open "+msg.name, msg.err, "name", msg.name)
 			return m, nil
 		}
 		slog.Info("open done", "name", msg.name, "action", msg.action)
@@ -266,43 +262,42 @@ func (m model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, readSessionsCmd()
 		}
 		return m, nil
-	case workSaidMsg:
+	case workDoneMsg:
+		v := workVerbs[msg.verb]
 		if msg.err != "" {
-			slog.Warn("say failed", "name", msg.name, "err", msg.err)
-			m.status = warnStyle.Render("say to " + msg.name + ": " + clip(msg.err))
-		} else {
-			slog.Info("said", "name", msg.name)
-			m.status = okStyle.Render("said to " + msg.name)
-		}
-		return m, nil
-	case workNotedMsg:
-		if msg.err != "" {
-			slog.Warn("note failed", "name", msg.name, "err", msg.err)
-			m.status = warnStyle.Render("note " + msg.name + ": " + clip(msg.err))
-		} else {
-			slog.Info("noted", "name", msg.name)
-			m.status = okStyle.Render("noted " + msg.name)
-		}
-		return m, nil
-	case workRmMsg:
-		if msg.err != "" {
-			slog.Warn("rm failed", "name", msg.name, "err", msg.err)
-			m.status = warnStyle.Render("rm " + msg.name + ": " + clip(msg.err))
+			// A title's text stays in the box so a refused one is a one-edit fix.
+			m.fail(msg.verb+" failed", v.refused+msg.name, msg.err, "name", msg.name)
 			return m, nil
 		}
-		slog.Info("removed", "name", msg.name)
-		m.status = okStyle.Render("removed " + msg.name)
-		return m, readSessionsCmd()
+		switch {
+		case msg.verb != verbTitle:
+			slog.Info(v.done, "name", msg.name)
+			m.status = okStyle.Render(v.ok + msg.name)
+		case msg.text == "":
+			slog.Info("title cleared", "name", msg.name)
+			m.status = okStyle.Render("cleared the title of " + msg.name)
+		default:
+			slog.Info(v.done, "name", msg.name, "title", msg.text)
+			m.status = okStyle.Render(v.ok + msg.name + ": " + msg.text)
+		}
+		if msg.verb == verbTitle {
+			m.titleFor = ""
+			m.input.SetValue("")
+		}
+		if v.reread {
+			return m, readSessionsCmd()
+		}
+		return m, nil
 	case workNewMsg:
 		if msg.err != "" {
-			slog.Warn("new failed", "name", msg.name, "err", msg.err)
 			if m.mode == modeNew {
 				// Keep what was typed so a typo is a one-field fix.
+				slog.Warn("new failed", "name", msg.name, "err", msg.err)
 				m.nd.busy = false
 				m.nd.err = clip(msg.err)
 				return m, nil
 			}
-			m.status = warnStyle.Render("new " + msg.name + ": " + clip(msg.err))
+			m.fail("new failed", "new "+msg.name, msg.err, "name", msg.name)
 			return m, nil
 		}
 		if m.mode == modeNew {
@@ -315,8 +310,7 @@ func (m model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case workAdoptMsg:
 		if msg.err != "" {
 			// The name stays in the box so a refused one is a one-edit fix.
-			slog.Warn("adopt failed", "name", msg.name, "err", msg.err)
-			m.status = warnStyle.Render("name " + msg.name + ": " + clip(msg.err))
+			m.fail("adopt failed", "name "+msg.name, msg.err, "name", msg.name)
 			return m, nil
 		}
 		slog.Info("adopted", "name", msg.name, "title", msg.title)
@@ -365,7 +359,7 @@ type outputState struct {
 func (m *model) enterOutput(name string) tea.Cmd {
 	m.mode = modeOutput
 	m.out = outputState{name: name, seq: m.out.seq + 1, follow: true, text: "fetching..."}
-	m.vp = viewport.New(m.width, m.outHeight())
+	m.vp = viewport.New(m.width, m.bodyHeight(outputChrome))
 	m.refreshOutput()
 	m.status = ""
 	return tea.Batch(m.workOutputCmd(m.out.seq, name), outputTickCmd(m.out.seq))
@@ -376,18 +370,10 @@ func (m *model) leaveOutput() {
 	m.out.seq++
 }
 
-func (m model) outHeight() int {
-	h := m.height - outputChrome
-	if h < 3 {
-		h = 3
-	}
-	return h
-}
-
 func (m *model) refreshOutput() {
 	m.vp.Width = m.width
-	m.vp.Height = m.outHeight()
-	m.vp.SetContent(wrapTo(strings.ReplaceAll(m.out.text, "\r", ""), m.width))
+	m.vp.Height = m.bodyHeight(outputChrome)
+	m.vp.SetContent(wrapTo(stripCR(m.out.text), m.width))
 	if m.out.follow {
 		m.vp.GotoBottom()
 	}
@@ -400,29 +386,8 @@ func (m model) updateOutputKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc, tea.KeyTab:
 		m.leaveOutput()
 		return m, nil
-	case tea.KeyUp:
-		m.out.follow = false
-		m.vp.ScrollUp(1)
-	case tea.KeyDown:
-		m.vp.ScrollDown(1)
-		if m.vp.AtBottom() {
-			m.out.follow = true
-		}
-	case tea.KeyPgUp:
-		m.out.follow = false
-		m.vp.PageUp()
-	case tea.KeyPgDown:
-		m.vp.PageDown()
-		if m.vp.AtBottom() {
-			m.out.follow = true
-		}
-	case tea.KeyHome:
-		m.out.follow = false
-		m.vp.GotoTop()
-	case tea.KeyEnd:
-		m.out.follow = true
-		m.vp.GotoBottom()
 	}
+	scrollKey(&m.vp, &m.out.follow, k.Type)
 	return m, nil
 }
 
@@ -430,7 +395,7 @@ func (m model) viewOutput() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s   last %s turns, refreshed every %ds   %s\n",
 		headerStyle.Render("savannah  output "+m.out.name), outputTurns,
-		int(outputRefresh/time.Second), time.Now().Format("15:04:05"))
+		int(outputRefresh/time.Second), clock())
 	b.WriteString(m.vp.View() + "\n")
 	b.WriteString(helpStyle.Render("Up/Down scroll   End follow   Esc back   Ctrl-C quit"))
 	return b.String()
@@ -454,7 +419,6 @@ type newDialog struct {
 	busy               bool   // `work new` is running; Enter waits, Esc leaves
 	repos              reposInfo
 	reposErr           string
-	home               string // for ~ in the Repo field and in hints
 }
 
 func (m *model) enterNew() tea.Cmd {
@@ -473,7 +437,6 @@ func (m *model) enterNew() tea.Cmd {
 		prompt:   mk("what that Claude should do first (optional)", 4000),
 		worktree: true,
 	}
-	m.nd.home, _ = os.UserHomeDir()
 	m.nd.setFocus(fieldName)
 	return m.reposCmd()
 }
@@ -554,8 +517,8 @@ func (m model) submitNew() (tea.Model, tea.Cmd) {
 		d.setFocus(fieldRepo)
 		return m, nil
 	}
-	args := workNewArgs(name, title, repo, strings.TrimSpace(d.prompt.Value()), d.worktree, d.repos, d.home)
-	slog.Info("action", "do", "new", "name", name, "title", title, "args", args)
+	args := workNewArgs(name, title, repo, strings.TrimSpace(d.prompt.Value()), d.worktree, d.repos, m.home)
+	action("new", "name", name, "title", title, "args", args)
 	d.busy, d.err = true, ""
 	return m, m.workNewCmd(name, args)
 }
@@ -632,20 +595,11 @@ func repoMatches(text string, repos reposInfo, max int) []string {
 	return out
 }
 
-// fit truncates to w runes when a width is known; before the first
-// WindowSizeMsg (w <= 0) it leaves the text alone.
-func fit(s string, w int) string {
-	if w <= 0 {
-		return s
-	}
-	return trunc(s, w)
-}
-
 func (m model) viewNew() string {
 	d := m.nd
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s   %s\n\n", headerStyle.Render("savannah  new work session"),
-		time.Now().Format("15:04:05"))
+		clock())
 	label := func(i int, text string) string {
 		s := pad(text, 10)
 		if d.focus == i {
@@ -664,7 +618,7 @@ func (m model) viewNew() string {
 		hint = "no folder of repos remembered (savannah work repos DIR sets one); type a path"
 	default:
 		ms := repoMatches(d.repo.Value(), d.repos, 8)
-		where := tilde(d.repos.Dir, d.home)
+		where := tilde(d.repos.Dir, m.home)
 		if d.repos.Picked == "cwd" {
 			where += " (the cwd; savannah work repos DIR remembers a folder)"
 		}

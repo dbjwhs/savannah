@@ -136,7 +136,7 @@ func (m *model) enterLog() tea.Cmd {
 	m.mode = modeLog
 	m.lg.seq++
 	m.lg.follow, m.lg.err = true, ""
-	m.vp = viewport.New(m.width, m.logHeight())
+	m.vp = viewport.New(m.width, m.bodyHeight(logChrome))
 	m.refreshLog()
 	m.status = ""
 	slog.Debug("log view opened", "level", logChoiceNames[m.lg.choice])
@@ -148,19 +148,11 @@ func (m *model) leaveLog() {
 	m.lg.seq++
 }
 
-func (m model) logHeight() int {
-	h := m.height - logChrome
-	if h < 3 {
-		h = 3
-	}
-	return h
-}
-
 // refreshLog re-renders the tail at the chosen level.
 func (m *model) refreshLog() {
 	lines := filterLog(m.lg.all, logChoiceLevels[m.lg.choice])
 	m.lg.shown = len(lines)
-	m.vp.Width, m.vp.Height = m.width, m.logHeight()
+	m.vp.Width, m.vp.Height = m.width, m.bodyHeight(logChrome)
 	text := strings.Join(lines, "\n")
 	switch {
 	case m.lg.err != "":
@@ -209,28 +201,6 @@ func (m model) updateLogKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRight:
 		m.setLogChoice(m.lg.choice + 1)
 		return m, nil
-	case tea.KeyUp:
-		m.lg.follow = false
-		m.vp.ScrollUp(1)
-	case tea.KeyDown:
-		m.vp.ScrollDown(1)
-		if m.vp.AtBottom() {
-			m.lg.follow = true
-		}
-	case tea.KeyPgUp:
-		m.lg.follow = false
-		m.vp.PageUp()
-	case tea.KeyPgDown:
-		m.vp.PageDown()
-		if m.vp.AtBottom() {
-			m.lg.follow = true
-		}
-	case tea.KeyHome:
-		m.lg.follow = false
-		m.vp.GotoTop()
-	case tea.KeyEnd:
-		m.lg.follow = true
-		m.vp.GotoBottom()
 	case tea.KeyRunes:
 		switch k.String() {
 		case "n", "1":
@@ -241,6 +211,7 @@ func (m model) updateLogKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setLogChoice(logVerbose)
 		}
 	}
+	scrollKey(&m.vp, &m.lg.follow, k.Type)
 	return m, nil
 }
 
@@ -250,7 +221,7 @@ func (m model) viewLog() string {
 	// come first, the path takes what is left.
 	title := "savannah  log"
 	rest := fmt.Sprintf("   level %s   %d of %d lines   %s   %s", logChoiceNames[m.lg.choice],
-		m.lg.shown, len(m.lg.all), time.Now().Format("15:04:05"), tilde(logPath(), m.home))
+		m.lg.shown, len(m.lg.all), clock(), tilde(logPath(), m.home))
 	b.WriteString(headerStyle.Render(title) + fit(rest, m.width-len(title)) + "\n")
 	b.WriteString(m.vp.View() + "\n")
 	b.WriteString(helpStyle.Render(trunc(

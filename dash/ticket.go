@@ -42,11 +42,9 @@
 package main
 
 import (
-	"fmt"
-	"log/slog"
-	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -107,11 +105,7 @@ func ticketsIn(text string, slug bool) []string {
 	}
 	// In text order, whichever pattern found them; "PR-3141" matches both
 	// patterns at one offset and the set keeps it once.
-	for i := 1; i < len(hits); i++ {
-		for j := i; j > 0 && hits[j].at < hits[j-1].at; j-- {
-			hits[j], hits[j-1] = hits[j-1], hits[j]
-		}
-	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].at < hits[j].at })
 	for _, h := range hits {
 		if !seen[h.id] && len(out) < maxTickets {
 			seen[h.id] = true
@@ -223,7 +217,7 @@ var repoWebCache = struct {
 }{m: map[string]string{}}
 
 var gitRemote = func(dir string) string {
-	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	out, err := run("git", "-C", dir, "remote", "get-url", "origin")
 	if err != nil {
 		return ""
 	}
@@ -331,12 +325,10 @@ func (m model) pressOpen(s session) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	slog.Info("action", "do", "open", "ids", strings.Join(ids, " "), "urls", strings.Join(urls, " "))
-	m.status = "opening " + strings.Join(ids, " and ") + "..."
+	m.act("open", "opening "+strings.Join(ids, " and ")+"...", "ids", strings.Join(ids, " "), "urls", strings.Join(urls, " "))
 	return m, func() tea.Msg {
 		for i, u := range urls {
-			argv := append(append([]string{}, openerArgv()...), u)
-			if _, err := run(argv[0], argv[1:]...); err != nil {
+			if _, err := runArgv(run, openerArgv(), u); err != nil {
 				return openMsg{what: ids[i], err: cliError(err)}
 			}
 		}
@@ -346,8 +338,7 @@ func (m model) pressOpen(s session) (tea.Model, tea.Cmd) {
 
 func (m model) updateOpen(msg openMsg) (tea.Model, tea.Cmd) {
 	if msg.err != "" {
-		slog.Warn("open failed", "what", msg.what, "error", msg.err)
-		m.status = warnStyle.Render(fmt.Sprintf("could not open %s: %s", msg.what, clip(msg.err)))
+		m.fail("open failed", "could not open "+msg.what, msg.err, "what", msg.what)
 		return m, nil
 	}
 	m.status = okStyle.Render("opened " + msg.what + " in the browser")

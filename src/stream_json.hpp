@@ -13,12 +13,18 @@
 
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
 namespace savannah {
 
 enum class ChunkKind : int { Text = 0, ToolEvent = 1, Result = 2 };
+
+/// The largest payload one chunk carries on the wire. song's encode_string
+/// refuses anything over kMaxStringSize (1 MB), so savannahd splits a bigger
+/// TEXT payload across chunks of this size (song finding 8).
+inline constexpr std::size_t kMaxChunkPayload = 512 * 1024;
 
 struct Chunk {
     ChunkKind kind;
@@ -56,6 +62,11 @@ public:
 
     /// Max length of a TOOL_EVENT summary payload.
     static constexpr std::size_t kToolSummaryMax = 120;
+
+    /// True when a RESULT trailer (the mapper's or a synthetic one) reports
+    /// a clean finish: a JSON object whose is_error is the boolean false.
+    /// Anything else, unparseable text included, is not ok.
+    static bool result_ok(const std::string& trailer);
 
 private:
     Sink sink_;

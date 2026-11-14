@@ -25,8 +25,6 @@
 package main
 
 import (
-	"log/slog"
-
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -39,7 +37,7 @@ func (m model) pressNow() (tea.Model, tea.Cmd) {
 		m.status = warnStyle.Render("Ctrl-P moves a session to NOW; select one")
 		return m, nil
 	}
-	if r.s.State == "offline" {
+	if r.s.closed() {
 		m.status = warnStyle.Render("a closed session sits in HISTORY; Enter reopens it, then Ctrl-P")
 		return m, nil
 	}
@@ -48,7 +46,7 @@ func (m model) pressNow() (tea.Model, tea.Cmd) {
 	if name == "" {
 		// An unnamed tab is named from its tab title first (order.go), then
 		// pushed like any other.
-		name, adopt = m.adoptForMove(r.s, "active")
+		name, adopt = m.adoptForMove(r.s, prioActive)
 	}
 	secs := m.sectionNames()
 	var into int
@@ -69,7 +67,7 @@ func (m model) pressNow() (tea.Model, tea.Cmd) {
 	} else {
 		m.status = name + " is back at the top of ACTIVE"
 	}
-	slog.Info("action", "do", "now", "name", name, "section", sectionName(into), "writes", len(changes))
+	action("now", "name", name, "section", sectionName(into), "writes", len(changes))
 	if adopt != nil {
 		m.status = "naming it " + name + " and moving it to NOW..."
 		return m, tea.Sequence(adopt, m.workMoveCmd(changes))

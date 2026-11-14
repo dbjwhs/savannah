@@ -42,28 +42,47 @@ type snapshotRow struct {
 
 // restoreResult mirrors `work restore --json` (and its --dry-run plan).
 type restoreResult struct {
-	Stamp    string `json:"stamp"`
-	DryRun   bool   `json:"dry_run"`
-	Restored []struct {
-		Name  string `json:"name"`
-		How   string `json:"how"`
-		TabID string `json:"tab_id"`
-	} `json:"restored"`
-	Plain []struct {
-		Project string `json:"project"`
-		How     string `json:"how"`
-		TabID   string `json:"tab_id"`
-	} `json:"plain"`
-	Skipped []struct {
-		Name    string `json:"name"`
-		Project string `json:"project"`
-		Why     string `json:"why"`
-	} `json:"skipped"`
-	Failed []struct {
-		Name    string `json:"name"`
-		Project string `json:"project"`
-		Error   string `json:"error"`
-	} `json:"failed"`
+	Stamp    string           `json:"stamp"`
+	DryRun   bool             `json:"dry_run"`
+	Restored []restoredTab    `json:"restored"`
+	Plain    []restoredPlain  `json:"plain"`
+	Skipped  []restoreSkipped `json:"skipped"`
+	Failed   []restoreFailed  `json:"failed"`
+}
+
+// One item of a restore: a work session's tab remade, a plain tab remade,
+// one left alone (why) or one that could not be remade (error).
+type restoredTab struct {
+	Name  string `json:"name"`
+	How   string `json:"how"`
+	TabID string `json:"tab_id"`
+}
+type restoredPlain struct {
+	Project string `json:"project"`
+	How     string `json:"how"`
+	TabID   string `json:"tab_id"`
+}
+type restoreSkipped struct {
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	Why     string `json:"why"`
+}
+type restoreFailed struct {
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	Error   string `json:"error"`
+}
+
+func (s restoreSkipped) who(home string) string { return whoOf(s.Name, s.Project, home) }
+func (f restoreFailed) who(home string) string  { return whoOf(f.Name, f.Project, home) }
+
+// tabSuffix is ", tab 14" for a result line, "" when the tab has no id (a
+// dry run makes none).
+func tabSuffix(id string) string {
+	if id == "" {
+		return ""
+	}
+	return ", tab " + id
 }
 
 type snapshotsMsg struct {
@@ -104,35 +123,21 @@ func restoreArgs(dry bool) []string {
 func (m model) snapshotsCmd() tea.Cmd {
 	bin := m.bin
 	return func() tea.Msg {
-		out, err := run(bin, snapshotsArgs()...)
-		if err != nil {
-			return snapshotsMsg{err: cliError(err)}
-		}
-		var rows []snapshotRow
-		if json.Unmarshal(out, &rows) != nil {
-			return snapshotsMsg{err: "work snapshots printed no list"}
-		}
-		return snapshotsMsg{rows: rows}
+		rows, errText := runJSON[[]snapshotRow](run, bin, snapshotsArgs(), "work snapshots printed no list")
+		return snapshotsMsg{rows: rows, err: errText}
 	}
 }
 
 func (m model) snapshotCmd() tea.Cmd {
 	bin := m.bin
 	return func() tea.Msg {
-		out, err := run(bin, snapshotArgs()...)
-		if err != nil {
-			return snapshotDoneMsg{err: cliError(err)}
-		}
-		var r struct {
+		r, errText := runJSON[struct {
 			Path  string `json:"path"`
 			Work  int    `json:"work"`
 			Live  int    `json:"live"`
 			Plain int    `json:"plain"`
-		}
-		if json.Unmarshal(out, &r) != nil {
-			return snapshotDoneMsg{err: "work snapshot printed no result"}
-		}
-		return snapshotDoneMsg{path: r.Path, work: r.Work, live: r.Live, plain: r.Plain}
+		}](run, bin, snapshotArgs(), "work snapshot printed no result")
+		return snapshotDoneMsg{path: r.Path, work: r.Work, live: r.Live, plain: r.Plain, err: errText}
 	}
 }
 
@@ -191,7 +196,7 @@ func (m model) openNow() (named, live, plain int) {
 			plain++
 		default:
 			named++
-			if s.State != "offline" {
+			if !s.closed() {
 				live++
 			}
 		}
@@ -207,32 +212,16 @@ func restoreLines(res restoreResult, home string) []string {
 		verb = "would restore"
 	}
 	for _, r := range res.Restored {
-		tab := ""
-		if r.TabID != "" {
-			tab = ", tab " + r.TabID
-		}
-		out = append(out, fmt.Sprintf("%s %s (%s%s)", verb, r.Name, r.How, tab))
+		out = append(out, fmt.Sprintf("%s %s (%s%s)", verb, r.Name, r.How, tabSuffix(r.TabID)))
 	}
 	for _, p := range res.Plain {
-		tab := ""
-		if p.TabID != "" {
-			tab = ", tab " + p.TabID
-		}
-		out = append(out, fmt.Sprintf("%s plain tab %s (%s%s)", verb, tilde(p.Project, home), p.How, tab))
+		out = append(out, fmt.Sprintf("%s plain tab %s (%s%s)", verb, tilde(p.Project, home), p.How, tabSuffix(p.TabID)))
 	}
 	for _, s := range res.Skipped {
-		who := s.Name
-		if who == "" {
-			who = tilde(s.Project, home)
-		}
-		out = append(out, "skipped "+who+": "+s.Why)
+		out = append(out, "skipped "+s.who(home)+": "+s.Why)
 	}
 	for _, f := range res.Failed {
-		who := f.Name
-		if who == "" {
-			who = tilde(f.Project, home)
-		}
-		out = append(out, warnStyle.Render("failed "+who+": "+f.Error))
+		out = append(out, warnStyle.Render("failed "+f.who(home)+": "+f.Error))
 	}
 	if len(out) == 0 {
 		out = append(out, "nothing to do: every session in the snapshot is open")
@@ -291,11 +280,11 @@ func (m model) updateSnapshotKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch k.String() {
 		case "s":
-			slog.Info("action", "do", "snapshot")
+			action("snapshot")
 			m.snap.busy, m.snap.lines = "saving...", nil
 			return m, m.snapshotCmd()
 		case "d":
-			slog.Info("action", "do", "restore", "dry", true)
+			action("restore", "dry", true)
 			m.snap.busy, m.snap.lines = "planning...", nil
 			return m, m.restoreCmd(true)
 		case "r":
@@ -303,7 +292,7 @@ func (m model) updateSnapshotKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.snap.lines = []string{warnStyle.Render("no snapshot yet: s saves one")}
 				return m, nil
 			}
-			slog.Info("action", "do", "restore", "stamp", m.snap.rows[0].Stamp)
+			action("restore", "stamp", m.snap.rows[0].Stamp)
 			m.snap.busy, m.snap.lines = "restoring (about two seconds per tab)...", nil
 			return m, m.restoreCmd(false)
 		}
@@ -313,7 +302,7 @@ func (m model) updateSnapshotKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) viewSnapshot() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s   %s\n\n", headerStyle.Render("savannah  snapshot"), time.Now().Format("15:04:05"))
+	fmt.Fprintf(&b, "%s   %s\n\n", headerStyle.Render("savannah  snapshot"), clock())
 	named, live, plain := m.openNow()
 	line := func(s string) { b.WriteString(fit(s, m.width) + "\n") } // one row each, whatever the width
 	line(fmt.Sprintf("  Open now: %d work session%s (%d live, %d offline), %d plain tab%s",

@@ -23,9 +23,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 
@@ -70,7 +68,7 @@ func (m model) pendingAutoname() []string {
 	}
 	var ids []string
 	for _, s := range m.sessions {
-		if s.Work != "" || isWorkRow(s) || s.LastPrompt == "" || m.nameTried[s.ID] {
+		if s.Work != "" || isOfflineRow(s) || s.LastPrompt == "" || m.nameTried[s.ID] {
 			continue
 		}
 		ids = append(ids, s.ID)
@@ -86,15 +84,12 @@ func (m *model) startAutoname() tea.Cmd {
 	if len(ids) == 0 {
 		return nil
 	}
-	if m.nameTried == nil {
-		m.nameTried = map[string]bool{}
-	}
 	for _, id := range ids {
 		m.nameTried[id] = true
 	}
 	m.naming = true
-	m.status = fmt.Sprintf("naming %d tab%s from what they are doing...", len(ids), plural(len(ids)))
-	slog.Info("action", "do", "autoname", "tabs", len(ids))
+	m.act("autoname", fmt.Sprintf("naming %d tab%s from what they are doing...", len(ids), plural(len(ids))),
+		"tabs", len(ids))
 	return autonameCmd(m.bin, ids)
 }
 
@@ -107,15 +102,8 @@ func autonameArgs(ids []string) []string {
 func autonameCmd(bin string, ids []string) tea.Cmd {
 	args := autonameArgs(ids)
 	return func() tea.Msg {
-		out, err := run(bin, args...)
-		if err != nil {
-			return autonameMsg{ids: ids, err: cliError(err)}
-		}
-		var res autonameOut
-		if json.Unmarshal(out, &res) != nil {
-			return autonameMsg{ids: ids, err: "work autoname printed no JSON"}
-		}
-		return autonameMsg{ids: ids, out: res}
+		res, errText := runJSON[autonameOut](run, bin, args, "work autoname printed no JSON")
+		return autonameMsg{ids: ids, out: res, err: errText}
 	}
 }
 

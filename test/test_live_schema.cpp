@@ -17,9 +17,10 @@
 #include <string>
 #include <vector>
 
-#include "../src/agent_process.hpp"
-#include "../src/json.hpp"
-#include "../src/stream_json.hpp"
+#include "agent_process.hpp"
+#include "config.hpp"
+#include "json.hpp"
+#include "stream_json.hpp"
 #include "test_support.hpp"
 
 int main() {
@@ -30,10 +31,12 @@ int main() {
         return 77;  // ctest SKIP_RETURN_CODE
     }
 
-    // Same argv shape savannahd builds, minimal turn budget.
-    std::vector<std::string> argv = {
-        "claude", "-p", "Reply with exactly the word OK and nothing else.",
-        "--output-format", "stream-json", "--verbose", "--max-turns", "1"};
+    // The argv savannahd builds, from the real builder: the default config
+    // (the `claude` on PATH, no extra args, no tool list), minimal turn budget.
+    savannah::NodeConfig config;
+    config.max_turns = 1;
+    const std::vector<std::string> argv = savannah::base_agent_argv(
+        config, "Reply with exactly the word OK and nothing else.");
 
     std::string text;
     std::vector<std::string> results;

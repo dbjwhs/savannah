@@ -23,7 +23,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -35,29 +34,47 @@ import (
 
 // askOut mirrors `work ask --json`.
 type askOut struct {
-	Question string  `json:"question"`
-	Timeout  float64 `json:"timeout"`
-	Waited   float64 `json:"waited"`
-	Asked    []struct {
-		Session string `json:"session_id"`
-		Name    string `json:"name"`
-		Project string `json:"project"`
-		How     string `json:"how"` // answered | timeout | sent
-		Reply   string `json:"reply"`
-	} `json:"asked"`
-	Skipped []struct {
-		Session string `json:"session_id"`
-		Name    string `json:"name"`
-		Project string `json:"project"`
-		Why     string `json:"why"`
-	} `json:"skipped"`
-	Failed []struct {
-		Session string `json:"session_id"`
-		Name    string `json:"name"`
-		Project string `json:"project"`
-		Error   string `json:"error"`
-	} `json:"failed"`
+	Question string       `json:"question"`
+	Timeout  float64      `json:"timeout"`
+	Waited   float64      `json:"waited"`
+	Asked    []askAsked   `json:"asked"`
+	Skipped  []askSkipped `json:"skipped"`
+	Failed   []askFailed  `json:"failed"`
 }
+
+// One tab of a `work ask` result: asked, skipped (why) or failed (error).
+type askAsked struct {
+	Session string `json:"session_id"`
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	How     string `json:"how"` // answered | timeout | sent
+	Reply   string `json:"reply"`
+}
+type askSkipped struct {
+	Session string `json:"session_id"`
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	Why     string `json:"why"`
+}
+type askFailed struct {
+	Session string `json:"session_id"`
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	Error   string `json:"error"`
+}
+
+// whoOf is what a result line calls a tab: its work session's name, or
+// for a plain tab its directory (with ~).
+func whoOf(name, project, home string) string {
+	if name == "" {
+		return tilde(project, home)
+	}
+	return name
+}
+
+func (a askAsked) who(home string) string   { return whoOf(a.Name, a.Project, home) }
+func (s askSkipped) who(home string) string { return whoOf(s.Name, s.Project, home) }
+func (f askFailed) who(home string) string  { return whoOf(f.Name, f.Project, home) }
 
 type askMsg struct {
 	out askOut
@@ -76,15 +93,8 @@ func askArgs() []string { return []string{"work", "ask", "--all", "--json"} }
 
 func askCmd(bin string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := run(bin, askArgs()...)
-		if err != nil {
-			return askMsg{err: cliError(err)}
-		}
-		var res askOut
-		if json.Unmarshal(out, &res) != nil {
-			return askMsg{err: "work ask printed no JSON"}
-		}
-		return askMsg{out: res}
+		res, errText := runJSON[askOut](run, bin, askArgs(), "work ask printed no JSON")
+		return askMsg{out: res, err: errText}
 	}
 }
 
@@ -93,7 +103,7 @@ func askCmd(bin string) tea.Cmd {
 func (m model) askable() int {
 	n := 0
 	for _, s := range m.sessions {
-		if (s.State == "idle" || s.State == "done") && s.ITerm != "" {
+		if (s.State == stateIdle || s.State == stateDone) && s.ITerm != "" {
 			n++
 		}
 	}
@@ -131,8 +141,8 @@ func (m model) startAsk() (tea.Model, tea.Cmd) {
 	m.ask.busy = true
 	m.ask.started = time.Now()
 	m.mode = modeBoard
-	m.status = "asking every idle tab what it is doing (up to two minutes; the rows show who has answered)..."
-	slog.Info("action", "do", "ask", "tabs", m.askable())
+	m.act("ask", "asking every idle tab what it is doing (up to two minutes; the rows show who has answered)...",
+		"tabs", m.askable())
 	return m, askCmd(m.bin)
 }
 
@@ -141,11 +151,7 @@ func askLines(o askOut, home string) []string {
 	var out []string
 	out = append(out, helpStyle.Render("asked: "+o.Question), "")
 	for _, a := range o.Asked {
-		who := a.Name
-		if who == "" {
-			who = tilde(a.Project, home)
-		}
-		head := headerStyle.Render(who) + helpStyle.Render("   "+tilde(a.Project, home))
+		head := headerStyle.Render(a.who(home)) + helpStyle.Render("   "+tilde(a.Project, home))
 		switch a.How {
 		case "answered":
 			out = append(out, head)
@@ -162,18 +168,10 @@ func askLines(o askOut, home string) []string {
 		out = append(out, "")
 	}
 	for _, s := range o.Skipped {
-		who := s.Name
-		if who == "" {
-			who = tilde(s.Project, home)
-		}
-		out = append(out, helpStyle.Render("skipped "+who+": "+s.Why))
+		out = append(out, helpStyle.Render("skipped "+s.who(home)+": "+s.Why))
 	}
 	for _, f := range o.Failed {
-		who := f.Name
-		if who == "" {
-			who = tilde(f.Project, home)
-		}
-		out = append(out, warnStyle.Render("failed "+who+": "+f.Error))
+		out = append(out, warnStyle.Render("failed "+f.who(home)+": "+f.Error))
 	}
 	if len(o.Asked) == 0 {
 		out = append(out, "no tab asked")
@@ -206,8 +204,7 @@ func askStatus(o askOut) string {
 func (m model) updateAsk(msg askMsg) (tea.Model, tea.Cmd) {
 	m.ask.busy = false
 	if msg.err != "" {
-		slog.Warn("ask failed", "error", msg.err)
-		m.status = warnStyle.Render("ask: " + clip(msg.err))
+		m.fail("ask failed", "ask", msg.err)
 		return m, readSessionsCmd()
 	}
 	o := msg.out
@@ -223,7 +220,7 @@ func (m model) updateAsk(msg askMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) enterAsk() {
 	m.mode = modeAsk
-	m.vp = viewport.New(m.width, m.askHeight())
+	m.vp = viewport.New(m.width, m.bodyHeight(askChrome))
 	m.refreshAsk()
 }
 
@@ -231,17 +228,9 @@ func (m *model) leaveAsk() { m.mode = modeBoard }
 
 const askChrome = 4 // header, blank, blank, help
 
-func (m model) askHeight() int {
-	h := m.height - askChrome
-	if h < 3 {
-		h = 3
-	}
-	return h
-}
-
 func (m *model) refreshAsk() {
 	m.vp.Width = m.width
-	m.vp.Height = m.askHeight()
+	m.vp.Height = m.bodyHeight(askChrome)
 	m.vp.SetContent(wrapTo(m.ask.text, m.width))
 }
 
@@ -252,29 +241,18 @@ func (m model) updateAskKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc, tea.KeyTab, tea.KeyCtrlA:
 		m.leaveAsk()
 		return m, nil
-	case tea.KeyUp:
-		m.vp.ScrollUp(1)
-	case tea.KeyDown:
-		m.vp.ScrollDown(1)
-	case tea.KeyPgUp:
-		m.vp.PageUp()
-	case tea.KeyPgDown:
-		m.vp.PageDown()
-	case tea.KeyHome:
-		m.vp.GotoTop()
-	case tea.KeyEnd:
-		m.vp.GotoBottom()
 	case tea.KeyRunes:
 		if k.String() == "a" && !m.ask.busy {
 			return m.startAsk()
 		}
 	}
+	scrollKey(&m.vp, nil, k.Type) // the replies do not grow: nothing to follow
 	return m, nil
 }
 
 func (m model) viewAsk() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s   %s\n\n", headerStyle.Render("savannah  replies"), time.Now().Format("15:04:05"))
+	fmt.Fprintf(&b, "%s   %s\n\n", headerStyle.Render("savannah  replies"), clock())
 	b.WriteString(m.vp.View())
 	b.WriteString("\n" + helpStyle.Render("a ask again (one turn per tab)   Up/Down PgUp/PgDn scroll   Esc back   Ctrl-C quit"))
 	return b.String()

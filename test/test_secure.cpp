@@ -18,7 +18,7 @@
 
 #include "savannah.hpp"
 #include "test_support.hpp"
-#include "../src/config.hpp"
+#include "config.hpp"
 
 namespace sw = song::savannah;
 namespace st = savannah::test;
@@ -34,7 +34,7 @@ ServiceConnection connect(song::u16 port, const std::string& key) {
 // One ask that must finish clean; returns its text.
 std::string ask_text(ServiceConnection& conn, const std::string& prompt) {
     auto r = st::ask(conn, prompt);
-    CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+    CHECK(r.ok());
     return r.text;
 }
 

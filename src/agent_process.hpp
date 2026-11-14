@@ -10,12 +10,15 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "stream_json.hpp"
 
 namespace savannah {
+
+struct NodeConfig;
 
 struct AgentOutcome {
     bool spawned = false;      // exec happened
@@ -26,6 +29,27 @@ struct AgentOutcome {
     int exit_code = -1;
     int malformed_lines = 0;
 };
+
+/// Why a run ended without a RESULT chunk: the `reason` of the synthetic
+/// error trailer. Precedence: spawn failed, timeout, cancelled, died.
+const char* failure_reason(const AgentOutcome& outcome);
+
+/// The argv every agent invocation starts with: the configured command and
+/// its extra args, then -p PROMPT, stream-json output, the turn cap and the
+/// allowed tools when any are configured. Callers append their own flags.
+std::vector<std::string> base_agent_argv(const NodeConfig& config,
+                                         const std::string& prompt);
+
+/// A NULL-terminated char* view of `argv` for the exec family. The pointers
+/// borrow from `argv`, which must outlive the returned vector; exec never
+/// writes through them, which is what makes the const_cast sound.
+inline std::vector<char*> to_cargv(const std::vector<std::string>& argv) {
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    cargv.push_back(nullptr);
+    return cargv;
+}
 
 class AgentProcess {
 public:

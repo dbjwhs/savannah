@@ -32,7 +32,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -80,13 +79,11 @@ type tasksMsg struct {
 	tasks []task
 	err   string
 }
-type sentMsg struct {
-	node, id string
-	ok       bool
-}
-type rmMsg struct {
-	node, id string
-	ok       bool
+
+// taskDoneMsg is the result of a `task send` or `task rm` on a mesh worker.
+type taskDoneMsg struct {
+	verb, node, id string // verb: "send" | "rm" (taskVerbs)
+	ok             bool
 }
 type fetchTick time.Time
 type discoverTick time.Time
@@ -210,35 +207,29 @@ func (m model) fetchCmd(node string) tea.Cmd {
 	bin := m.bin
 	args := m.taskArgs("ls", node, "--json")
 	return func() tea.Msg {
-		out, err := poll(bin, args...)
-		if err != nil {
-			return tasksMsg{node: node, err: cliError(err)}
-		}
-		var ts []task
-		if e := json.Unmarshal(out, &ts); e != nil {
-			return tasksMsg{node: node, err: "bad json: " + e.Error()}
-		}
-		return tasksMsg{node: node, tasks: ts}
+		ts, errText := runJSON[[]task](poll, bin, args, "bad json")
+		return tasksMsg{node: node, tasks: ts, err: errText}
 	}
 }
 
-func (m model) sendCmd(node, id, text string) tea.Cmd {
-	bin := m.bin
-	args := m.taskArgs("send", node, id, text)
-	return func() tea.Msg {
-		_, err := run(bin, args...)
-		return sentMsg{node: node, id: id, ok: err == nil}
-	}
+// taskVerbs is what the board says about a finished `task send` or `task
+// rm`: the INFO record and status line of a success, the WARN record and
+// status line of a refusal (the CLI's exit is all the board is told, so
+// why is the likely reason).
+var taskVerbs = map[string]struct{ done, ok, failed, not, why string }{
+	"send": {"sent", "sent to ", "send failed", "not sent to ", " (busy or gone)"},
+	"rm":   {"task removed", "removed ", "task rm failed", "not removed ", " (running? cancel first)"},
 }
 
-// rmCmd forgets a finished worker (`task rm`); the server refuses a running
-// one, so a mistimed Ctrl-X is safe.
-func (m model) rmCmd(node, id string) tea.Cmd {
+// taskCmd runs one verb on a mesh worker: `task send <node> <id> <text>`,
+// or `task rm <node> <id>`, which forgets a finished worker (the server
+// refuses a running one, so a mistimed Ctrl-X is safe).
+func (m model) taskCmd(verb, node, id string, rest ...string) tea.Cmd {
 	bin := m.bin
-	args := m.taskArgs("rm", node, id)
+	args := m.taskArgs(verb, node, append([]string{id}, rest...)...)
 	return func() tea.Msg {
 		_, err := run(bin, args...)
-		return rmMsg{node: node, id: id, ok: err == nil}
+		return taskDoneMsg{verb: verb, node: node, id: id, ok: err == nil}
 	}
 }
 
@@ -269,7 +260,7 @@ func (m *model) rebuildRows() {
 	words := filterWords(m.filter)
 	recs := recordMap(m.work)
 	for _, s := range ordered {
-		if s.State == "offline" && !m.history && len(words) == 0 {
+		if s.closed() && !m.history && len(words) == 0 {
 			continue // HISTORY closed: its rows are not on the board (history.go); a filter looks there too
 		}
 		if r := (row{kind: rowSession, s: s}); m.rowMatches(r, words, recs) {
@@ -284,12 +275,72 @@ func (m *model) rebuildRows() {
 		}
 	}
 	m.rows = rows
-	if m.cursor >= len(rows) {
-		m.cursor = len(rows) - 1
+	m.cursor = max(min(m.cursor, len(rows)-1), 0)
+}
+
+// sameRow reports whether two rows are the same session or the same mesh
+// worker, whatever else about them changed between two builds of the rows.
+func sameRow(a, b row) bool {
+	return a.kind == b.kind && a.s.ID == b.s.ID && a.node == b.node && a.t.ID == b.t.ID
+}
+
+// cursorTo puts the cursor on the first row that matches; false, and the
+// cursor where it was, when none does.
+func (m *model) cursorTo(match func(row) bool) bool {
+	for i, r := range m.rows {
+		if match(r) {
+			m.cursor = i
+			return true
+		}
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
+	return false
+}
+
+// rebuildKeepingCursor rebuilds the rows with the cursor following the row
+// it was on. It reports whether that row is still shown; when it is not
+// (or there was none) the cursor is where rebuildRows left it.
+func (m *model) rebuildKeepingCursor() bool {
+	before, had := m.currentRow()
+	m.rebuildRows()
+	return had && m.cursorTo(func(r row) bool { return sameRow(r, before) })
+}
+
+// moveCursor moves the highlight d rows, stopping at either end.
+func (m *model) moveCursor(d int) {
+	if c := m.cursor + d; c >= 0 && c < len(m.rows) {
+		m.cursor = c
 	}
+}
+
+// defaultWidth is the width the board is laid out for before the terminal
+// has said its own (the first WindowSizeMsg).
+const defaultWidth = 100
+
+// boardWidth is the terminal's width, or defaultWidth while it is unknown.
+func (m model) boardWidth() int {
+	if m.width <= 0 {
+		return defaultWidth
+	}
+	return m.width
+}
+
+// action logs one thing the owner did (a key, a click) at INFO.
+func action(do string, kv ...any) {
+	slog.Info("action", append([]any{"do", do}, kv...)...)
+}
+
+// act is an action with its status line: the INFO record, then what the
+// board says while the command behind it runs.
+func (m *model) act(do, status string, kv ...any) {
+	action(do, kv...)
+	m.status = status
+}
+
+// fail is a refused or failed command: a WARN record carrying the error,
+// and "<what>: <the error's first line>" on the status line.
+func (m *model) fail(logMsg, what, err string, kv ...any) {
+	slog.Warn(logMsg, append(kv, "err", err)...)
+	m.status = warnStyle.Render(what + ": " + clip(err))
 }
 
 // applySessions folds one tick's hook sessions and work records into the
@@ -339,28 +390,14 @@ func rowSignature(rows []row) string {
 // to the board file for the next run (a failure to write is a status line,
 // not a refusal: the toggle still holds for this run).
 func (m model) toggleGroup() model {
-	before, had := m.currentRow()
 	m.group = !m.group
-	m.rebuildRows()
-	if had {
-		for i, r := range m.rows {
-			if r.kind == before.kind && r.s.ID == before.s.ID && r.node == before.node && r.t.ID == before.t.ID {
-				m.cursor = i
-				break
-			}
-		}
-	}
-	slog.Info("action", "do", "group", "on", m.group)
-	m.status = "rows in your order (Ctrl-G groups them by repository)"
+	m.rebuildKeepingCursor()
+	status := "rows in your order (Ctrl-G groups them by repository)"
 	if m.group {
-		m.status = "rows grouped by repository (Ctrl-G returns to your order)"
+		status = "rows grouped by repository (Ctrl-G returns to your order)"
 	}
-	prefs := loadBoardPrefs(boardFile())
-	prefs.Group = groupPref(m.group)
-	if err := saveBoardPrefs(boardFile(), prefs); err != nil {
-		slog.Warn("board file", "err", err.Error())
-		m.status += warnStyle.Render("; not remembered: " + err.Error())
-	}
+	m.act("group", status, "on", m.group)
+	m.remember(func(p *boardPrefs) { p.Group = groupPref(m.group) })
 	return m
 }
 
@@ -372,11 +409,10 @@ func (m model) currentRow() (row, bool) {
 	return m.rows[m.cursor], true
 }
 
-// isWorkRow reports whether a row is a work session's (live, tagged by the
+// isWork reports whether a row is a work session's (live, tagged by the
 // join, or an offline record row): the rows the work keys act on.
-func isWorkRowOf(r row) bool { return r.kind == rowSession && r.s.Work != "" }
+func (r row) isWork() bool { return r.kind == rowSession && r.s.Work != "" }
 
-// sectionCounts counts each kind for the section headers.
 // sectionCounts is the header's numbers: open sessions (a closed one is
 // counted apart, shown or not) and mesh tasks.
 func (m model) sectionCounts() (sessions, tasks int) {
@@ -384,7 +420,7 @@ func (m model) sectionCounts() (sessions, tasks int) {
 		switch {
 		case r.kind != rowSession:
 			tasks++
-		case r.s.State != "offline":
+		case !r.s.closed():
 			sessions++
 		}
 	}
@@ -407,10 +443,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tailStartedMsg, tailDataMsg, tailExitMsg, tailRespawnMsg:
 		return m.updateTail(msg)
-	case workOpenMsg, workSaidMsg, workNotedMsg, workRmMsg, workNewMsg, workAdoptMsg, reposMsg,
+	case workOpenMsg, workDoneMsg, workNewMsg, workAdoptMsg, reposMsg,
 		workOutputMsg, outputTick:
 		return m.updateWork(msg)
-	case workMovedMsg, workTitledMsg, titlesMsg, titleTick:
+	case workMovedMsg, titlesMsg, titleTick:
 		return m.updateOrder(msg)
 	case logReadMsg, logTick:
 		return m.updateLog(msg)
@@ -451,7 +487,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		m.applySessions(msg)
 		m.snapshotHint()
-		return m, tea.Batch(m.refreshPanel(), m.startAutoname())
+		panel, naming := m.refreshPanel(), m.startAutoname()
+		return m, tea.Batch(panel, naming)
 	case autonameMsg:
 		m.naming = false
 		if msg.err != "" {
@@ -515,24 +552,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 		}
 		return m, nil
-	case sentMsg:
-		if msg.ok {
-			slog.Info("sent", "node", msg.node, "task", msg.id)
-			m.status = okStyle.Render("sent to " + msg.node + "/" + msg.id)
-		} else {
-			slog.Warn("send failed", "node", msg.node, "task", msg.id)
-			m.status = warnStyle.Render("not sent to " + msg.node + "/" + msg.id + " (busy or gone)")
+	case taskDoneMsg:
+		v, who := taskVerbs[msg.verb], msg.node+"/"+msg.id
+		if !msg.ok {
+			slog.Warn(v.failed, "node", msg.node, "task", msg.id)
+			m.status = warnStyle.Render(v.not + who + v.why)
+			return m, nil
 		}
-		return m, nil
-	case rmMsg:
-		if msg.ok {
-			slog.Info("task removed", "node", msg.node, "task", msg.id)
-			m.status = okStyle.Render("removed " + msg.node + "/" + msg.id)
+		slog.Info(v.done, "node", msg.node, "task", msg.id)
+		m.status = okStyle.Render(v.ok + who)
+		if msg.verb == "rm" {
 			// Drop the row now instead of waiting out the poll tick.
 			return m, m.fetchCmd(msg.node)
 		}
-		m.status = warnStyle.Render("not removed " + msg.node + "/" + msg.id +
-			" (running? cancel first)")
 		return m, nil
 	case tea.MouseMsg:
 		return m.updateMouse(msg)
@@ -568,7 +600,7 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	pending := m.pendingRm
 	m.pendingRm = ""
 	r, hasRow := m.currentRow()
-	isWork := hasRow && isWorkRowOf(r)
+	isWork := hasRow && r.isWork()
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
@@ -599,9 +631,11 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd := m.enterNew()
 		return m, cmd
 	case tea.KeyCtrlL:
-		return m, m.enterLog()
+		cmd := m.enterLog()
+		return m, cmd
 	case tea.KeyCtrlS:
-		return m, m.enterSnapshot()
+		cmd := m.enterSnapshot()
+		return m, cmd
 	case tea.KeyCtrlF:
 		return m.toggleFade(), nil
 	case tea.KeyCtrlE:
@@ -621,18 +655,16 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Alt { // Option-Up: a third spelling of the drag (see Shift-Up)
 			return m.dragRow(-1)
 		}
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		return m, m.refreshPanel()
+		m.moveCursor(-1)
+		cmd := m.refreshPanel()
+		return m, cmd
 	case tea.KeyDown:
 		if msg.Alt {
 			return m.dragRow(1)
 		}
-		if m.cursor < len(m.rows)-1 {
-			m.cursor++
-		}
-		return m, m.refreshPanel()
+		m.moveCursor(1)
+		cmd := m.refreshPanel()
+		return m, cmd
 	// The drag has three spellings, since a terminal or the OS may take one:
 	// Shift-arrows (the one the help names), Ctrl-arrows (macOS Mission
 	// Control takes these by default) and Option-arrows (KeyUp/Down + Alt).
@@ -655,7 +687,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r.kind == rowSession {
 			return m, jumpSessionCmd(r.s)
 		}
-		return m, m.enterView(r.node, r.t.ID)
+		cmd := m.enterView(r.node, r.t.ID)
+		return m, cmd
 	case tea.KeyCtrlO:
 		if !isWork {
 			m.status = warnStyle.Render("Ctrl-O shows a work session's last replies; select one")
@@ -690,9 +723,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if isWork {
 			name := r.s.Work
 			if pending == name {
-				slog.Info("action", "do", "rm", "name", name)
-				m.status = "removing " + name + "..."
-				return m, m.workRmCmd(name)
+				m.act("rm", "removing "+name+"...", "name", name)
+				return m, m.workVerbCmd(verbRm, name, "")
 			}
 			m.pendingRm = name
 			m.status = warnStyle.Render("Ctrl-X again to remove " + name +
@@ -700,8 +732,7 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if r.kind == rowSession {
-			slog.Info("action", "do", "dismiss", "id", r.s.ID)
-			m.status = "dismissing session " + r.s.ID + "..."
+			m.act("dismiss", "dismissing session "+r.s.ID+"...", "id", r.s.ID)
 			return m, dismissSessionCmd(r.s)
 		}
 		if r.t.State == "running" {
@@ -709,9 +740,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				" is running (cancel first)")
 			return m, nil
 		}
-		slog.Info("action", "do", "task rm", "node", r.node, "task", r.t.ID)
-		m.status = "removing " + r.node + "/" + r.t.ID + "..."
-		return m, m.rmCmd(r.node, r.t.ID)
+		m.act("task rm", "removing "+r.node+"/"+r.t.ID+"...", "node", r.node, "task", r.t.ID)
+		return m, m.taskCmd("rm", r.node, r.t.ID)
 	case tea.KeyEnter:
 		if m.finding {
 			return m.acceptFind(), nil
@@ -725,8 +755,7 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = warnStyle.Render(nerr)
 				return m, nil
 			}
-			slog.Info("action", "do", "adopt", "name", name, "title", title, "session", m.adoptFor)
-			m.status = "naming it " + name + "..."
+			m.act("adopt", "naming it "+name+"...", "name", name, "title", title, "session", m.adoptFor)
 			return m, m.workAdoptCmd(name, m.adoptFor, title)
 		}
 		if m.titleFor != "" {
@@ -740,13 +769,11 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.input.SetValue("")
 				m.status = "title unchanged"
 			case text == "":
-				slog.Info("action", "do", "title clear", "name", name)
-				m.status = "clearing the title of " + name + "..."
-				return m, m.workTitleCmd(name, "")
+				m.act("title clear", "clearing the title of "+name+"...", "name", name)
+				return m, m.workVerbCmd(verbTitle, name, "")
 			default:
-				slog.Info("action", "do", "title", "name", name, "title", text)
-				m.status = "titling " + name + "..."
-				return m, m.workTitleCmd(name, text)
+				m.act("title", "titling "+name+"...", "name", name, "title", text)
+				return m, m.workVerbCmd(verbTitle, name, text)
 			}
 			return m, nil
 		}
@@ -758,9 +785,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.input.SetValue("")
 			m.noteFor = ""
-			slog.Info("action", "do", "note", "name", name, "chars", len(text))
-			m.status = "noting " + name + "..."
-			return m, m.workNoteCmd(name, text)
+			m.act("note", "noting "+name+"...", "name", name, "chars", len(text))
+			return m, m.workVerbCmd(verbNote, name, text)
 		}
 		if !hasRow {
 			return m, nil
@@ -768,10 +794,9 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if isWork && text != "" {
 			name := r.s.Work
 			m.input.SetValue("")
-			slog.Info("action", "do", "say", "name", name, "chars", len(text))
+			m.act("say", "saying to "+labelOf(r.s)+"...", "name", name, "chars", len(text))
 			slog.Debug("say text", "name", name, "head", head([]byte(text), 200))
-			m.status = "saying to " + labelOf(r.s) + "..."
-			return m, m.workSayCmd(name, text)
+			return m, m.workVerbCmd(verbSay, name, text)
 		}
 		if isWork || r.kind == rowSession || text == "" {
 			if r.kind == rowSession && !isWork && text != "" {
@@ -782,9 +807,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.activateRow(r)
 		}
 		m.input.SetValue("")
-		slog.Info("action", "do", "task send", "node", r.node, "task", r.t.ID, "chars", len(text))
-		m.status = "sending to " + r.node + "/" + r.t.ID + "..."
-		return m, m.sendCmd(r.node, r.t.ID, text)
+		m.act("task send", "sending to "+r.node+"/"+r.t.ID+"...", "node", r.node, "task", r.t.ID, "chars", len(text))
+		return m, m.taskCmd("send", r.node, r.t.ID, text)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -792,31 +816,6 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applyFilter(m.input.Value())
 	}
 	return m, cmd
-}
-
-func flatten(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
-			return ' '
-		}
-		return r
-	}, s)
-}
-
-func pad(s string, w int) string {
-	r := []rune(flatten(s))
-	if len(r) > w {
-		r = r[:w]
-	}
-	return string(r) + strings.Repeat(" ", w-len(r)) + "  "
-}
-
-func trunc(s string, w int) string {
-	r := []rune(flatten(s))
-	if len(r) > w {
-		return string(r[:w])
-	}
-	return string(r)
 }
 
 // inputView renders the prompt line's text box with a placeholder that says
@@ -849,10 +848,7 @@ func (m model) View() string {
 // lines so the panel can take exactly what the terminal has left; the whole
 // thing is never taller than the terminal.
 func (m model) viewBoard() string {
-	width := m.width
-	if width <= 0 {
-		width = 100
-	}
+	width := m.boardWidth()
 	nSess, nTask := m.sectionCounts()
 
 	scope := "work"
@@ -890,7 +886,7 @@ func (m model) viewBoard() string {
 	}
 	top, _ := m.topLines(width, fmt.Sprintf("%s   %s   %s%s",
 		headerStyle.Render("savannah  "+scope), counts,
-		time.Now().Format("15:04:05"), deco))
+		clock(), deco))
 
 	bottom := m.promptLines(width)
 	panelH := 0
@@ -937,10 +933,7 @@ func (m model) topLines(width int, header string) ([]string, []lineHit) {
 
 	// ---- MESH WORKERS (savannah tasks) ----
 	if m.mesh {
-		avail := width - 64 // the fixed cells
-		if avail < 12 {
-			avail = 12
-		}
+		avail := max(width-64, 12) // what the fixed cells leave
 		top = append(top, headerStyle.Render("MESH WORKERS"))
 		hits = append(hits, noHit)
 		if m.lsErr != "" {
@@ -993,10 +986,7 @@ func (m model) topLines(width int, header string) ([]string, []lineHit) {
 // line, the status line (a CLI error can be long) and the key help.
 func (m model) promptLines(width int) []string {
 	r, ok := m.currentRow()
-	room := width - 70
-	if room < 8 {
-		room = 8
-	}
+	room := max(width-70, 8)
 	var prompt string
 	switch {
 	case m.finding:
@@ -1021,9 +1011,9 @@ func (m model) promptLines(width int) []string {
 			hint = "no rows yet: Ctrl-N opens a work session; workers appear as nodes are found"
 		}
 		prompt = helpStyle.Render(hint)
-	case isWorkRowOf(r):
+	case r.isWork():
 		placeholder := "text for its Claude; empty Enter opens the tab"
-		if r.s.State == "offline" {
+		if r.s.closed() {
 			placeholder = "empty Enter reopens the tab (claude --continue); text needs a live tab"
 		}
 		prompt = headerStyle.Render(trunc("say to "+labelOf(r.s), room)) + ":  " + m.inputView(placeholder)
@@ -1048,16 +1038,6 @@ func (m model) promptLines(width int) []string {
 		parts[indexOf(parts, "^G group")] = "^G ungroup"
 	}
 	return []string{"", prompt, "", m.status, helpStyle.Render(fitHelp(parts, width))}
-}
-
-// fitHelp joins the hints with two spaces, dropping hints from the end
-// while the line is wider than the terminal; the first hint always stays
-// (cut if even that does not fit).
-func fitHelp(parts []string, width int) string {
-	for len(parts) > 1 && len([]rune(strings.Join(parts, "  "))) > width {
-		parts = parts[:len(parts)-1]
-	}
-	return trunc(strings.Join(parts, "  "), width)
 }
 
 // labelOf is what the board calls a work session in prompts: its title when
@@ -1182,7 +1162,7 @@ func newModel(o opts, bin string) model {
 	m := model{
 		key: o.key, bin: bin, pin: o.pin, addr: o.addr, mesh: o.mesh, group: o.group > 0,
 		autoname: o.autoname >= 0, fade: fade, history: o.history,
-		tasks: map[string][]task{}, errs: map[string]string{},
+		tasks: map[string][]task{}, errs: map[string]string{}, nameTried: map[string]bool{},
 		input: ti, home: home,
 	}
 	if o.pin != "" {
@@ -1206,7 +1186,7 @@ func main() {
 	if bin == "" {
 		bin = "savannah"
 	}
-	prefs := loadBoardPrefs(boardFile()) // the remembered choices (group.go)
+	prefs := loadBoardPrefs(boardFile()) // the remembered choices (prefs.go)
 	if o.group == 0 && prefs.Group == "repo" {
 		o.group = 1
 	}
@@ -1224,11 +1204,13 @@ func main() {
 	// remembered (there is no key on the board to set it); "off" is
 	// remembered as off, "default" goes back to the built-in pattern.
 	if o.ticketURL != "" {
-		prefs.TicketURL = o.ticketURL
-		if o.ticketURL == "default" {
-			prefs.TicketURL = ""
-		}
-		if err := saveBoardPrefs(boardFile(), prefs); err != nil {
+		prefs, err = updateBoardPrefs(func(p *boardPrefs) {
+			p.TicketURL = o.ticketURL
+			if o.ticketURL == "default" {
+				p.TicketURL = ""
+			}
+		})
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "savannah-dash: --ticket-url not remembered:", err)
 		}
 	}
@@ -1247,17 +1229,4 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("board exit")
-}
-
-// fitLabel truncates a footer label so label + 3 spaces + hint fits the
-// terminal width (a 64-char work name would otherwise soft-wrap at 80 cols).
-func fitLabel(label string, width int, hint string) string {
-	if width <= 0 {
-		return label
-	}
-	room := width - 3 - len([]rune(hint))
-	if room < 8 {
-		room = 8
-	}
-	return trunc(label, room)
 }

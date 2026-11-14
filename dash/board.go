@@ -52,42 +52,32 @@ type sessCols struct {
 // never the full path (the group header carries that).
 func sessionColumns(width int, rows []session, home string, titles map[string]string, grouped bool) sessCols {
 	if width <= 0 {
-		width = 100
+		width = defaultWidth
 	}
 	c := sessCols{work: 12, project: 22, age: 5}
 	for _, s := range rows {
-		if n := len([]rune(s.Ticket)); n > c.ticket {
-			c.ticket = n
-		}
+		c.ticket = max(c.ticket, runeLen(s.Ticket))
 	}
 	if c.ticket > 0 {
-		c.ticket = clampInt(c.ticket, 6, 24)
+		c.ticket = min(max(c.ticket, 6), 24)
 	}
 	if width < wideWidth {
 		c.what = width - 60
 		if c.ticket > 0 {
 			c.what -= c.ticket + 2
 		}
-		if c.what < 12 {
-			c.what = 12
-		}
+		c.what = max(c.what, 12)
 		return c
 	}
 	c.wide = true
 	c.tab = 3
 	longestName, longestPath, longestLabel := 4, 7, 7
 	for _, s := range rows {
-		if n := len([]rune(workCell(s, titles))); n > longestName {
-			longestName = n
-		}
-		if n := len([]rune(tilde(s.Project, home))); n > longestPath {
-			longestPath = n
-		}
-		if n := len([]rune(projectCell(s, home, grouped))); n > longestLabel {
-			longestLabel = n
-		}
+		longestName = max(longestName, runeLen(workCell(s, titles)))
+		longestPath = max(longestPath, runeLen(tilde(s.Project, home)))
+		longestLabel = max(longestLabel, runeLen(projectCell(s, home, grouped)))
 	}
-	c.work = clampInt(longestName, 4, maxWorkCol)
+	c.work = min(max(longestName, 4), maxWorkCol)
 	rest := width - (2 + 2) - (9 + 2) - (c.work + 2) - (c.tab + 2) - (c.age + 2)
 	if c.ticket > 0 {
 		rest -= c.ticket + 2
@@ -96,25 +86,12 @@ func sessionColumns(width int, rows []session, home string, titles map[string]st
 		c.paths = true
 		c.project = longestPath
 	} else {
-		c.project = clampInt(longestLabel, 7, 40)
+		c.project = min(max(longestLabel, 7), 40)
 	}
 	rest -= c.project + 2
-	c.note = clampInt(rest*45/100, 8, maxNoteCol)
-	c.what = rest - c.note - 2
-	if c.what < 12 {
-		c.what = 12
-	}
+	c.note = min(max(rest*45/100, 8), maxNoteCol)
+	c.what = max(rest-c.note-2, 12)
 	return c
-}
-
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // recordOf finds the work record behind a WORK name, for the cells only the
@@ -228,11 +205,11 @@ func (m model) sessionLines(c sessCols, now int64) ([]string, []lineHit) {
 			proj = tilde(s.Project, m.home)
 		}
 		cell := workCell(s, m.titles)
-		if c.work > 2 && len([]rune(cell)) > c.work {
+		if c.work > 2 && runeLen(cell) > c.work {
 			if s.Work == "" {
-				cell = string([]rune(cell)[:c.work-2]) + "~)" // a cut tab title keeps its shape
+				cell = cutTilde(cell, c.work-1) + ")" // a cut tab title keeps its shape
 			} else {
-				cell = string([]rune(cell)[:c.work-1]) + "~"
+				cell = cutTilde(cell, c.work)
 			}
 		}
 		line := pad(glyph, 2) + pad(state, 9) + pad(cell, c.work)
@@ -254,7 +231,7 @@ func (m model) sessionLines(c sessCols, now int64) ([]string, []lineHit) {
 				note = rec.lastNote
 			}
 			line += pad(note, c.note)
-			if s.State == "offline" {
+			if s.closed() {
 				// The note has its own column now; WHAT says what to do.
 				what = "offline, no live tab (Enter reopens it)"
 			}
@@ -349,11 +326,11 @@ func noteLines(entries []noteEntry, w int, today string) []string {
 		stamp := shortStamp(e.stamp, today)
 		indent := ""
 		if stamp != "" {
-			indent = strings.Repeat(" ", len([]rune(stamp))+2)
+			indent = strings.Repeat(" ", runeLen(stamp)+2)
 		}
 		first := true
 		for _, ln := range strings.Split(e.body, "\n") {
-			for _, piece := range wrapWords(ln, w-len([]rune(indent))) {
+			for _, piece := range wrapWords(ln, w-runeLen(indent)) {
 				if first && stamp != "" {
 					out = append(out, helpStyle.Render(stamp)+"  "+piece)
 				} else {
@@ -372,9 +349,7 @@ func noteLines(entries []noteEntry, w int, today string) []string {
 // wrapWords word-wraps one line to w runes (a word longer than w is split).
 // An empty line stays one empty line.
 func wrapWords(line string, w int) []string {
-	if w < 1 {
-		w = 1
-	}
+	w = max(w, 1)
 	words := strings.Fields(line)
 	if len(words) == 0 {
 		return []string{""}
@@ -382,7 +357,7 @@ func wrapWords(line string, w int) []string {
 	var out []string
 	cur := ""
 	for _, word := range words {
-		for len([]rune(word)) > w {
+		for runeLen(word) > w {
 			if cur != "" {
 				out = append(out, cur)
 				cur = ""
@@ -394,7 +369,7 @@ func wrapWords(line string, w int) []string {
 		switch {
 		case cur == "":
 			cur = word
-		case len([]rune(cur))+1+len([]rune(word)) <= w:
+		case runeLen(cur)+1+runeLen(word) <= w:
 			cur += " " + word
 		default:
 			out = append(out, cur)
@@ -407,7 +382,7 @@ func wrapWords(line string, w int) []string {
 // wrapAll word-wraps every line of a text to w.
 func wrapAll(text string, w int) []string {
 	var out []string
-	for _, ln := range strings.Split(strings.TrimRight(strings.ReplaceAll(text, "\r", ""), "\n"), "\n") {
+	for _, ln := range strings.Split(strings.TrimRight(stripCR(text), "\n"), "\n") {
 		out = append(out, wrapWords(ln, w)...)
 	}
 	return out
@@ -448,7 +423,7 @@ func panelOutputCmd(bin string, seq int, name string) tea.Cmd {
 // replaces the reply instead of blanking it. Anything else clears the panel.
 func (m *model) refreshPanel() tea.Cmd {
 	r, ok := m.currentRow()
-	if !ok || !isWorkRowOf(r) {
+	if !ok || !r.isWork() {
 		m.panel = panelState{seq: m.panel.seq + 1}
 		return nil
 	}
@@ -470,7 +445,7 @@ func (m model) replyText(name string) string {
 	if m.panel.name != name || (!m.panel.have && m.panel.text == "") {
 		return "fetching..."
 	}
-	text := strings.TrimRight(strings.ReplaceAll(m.panel.text, "\r", ""), "\n")
+	text := strings.TrimRight(stripCR(m.panel.text), "\n")
 	if strings.HasPrefix(text, "## ") {
 		text = text[3:]
 	}
@@ -506,7 +481,7 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 			}
 			return append(lines, "", "Enter (empty) or Tab opens the live view")
 		}
-	case isWorkRowOf(r):
+	case r.isWork():
 		s := r.s
 		rec, hasRec := m.recordOf(s.Work)
 		name = s.Work
@@ -529,7 +504,7 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 			if rec.Adopted {
 				head += "   adopted"
 			}
-			if rec.Priority == "later" {
+			if rec.Priority == prioLater {
 				head += "   later"
 			}
 		}
@@ -587,7 +562,7 @@ func (m model) panelLines(w, h int, now time.Time) []string {
 	}
 
 	out := []string{
-		headerStyle.Render(trunc(name, w)) + trunc(head, w-len([]rune(trunc(name, w)))),
+		headerStyle.Render(trunc(name, w)) + trunc(head, w-runeLen(trunc(name, w))),
 		trunc(prompt, w),
 	}
 	if status != "" {
@@ -640,48 +615,13 @@ func tailFit(lines []string, n, w int) []string {
 	return out
 }
 
-// visibleLen counts runes outside ANSI escape sequences.
-func visibleLen(s string) int {
-	n, in := 0, false
-	for _, r := range s {
-		switch {
-		case in:
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				in = false
-			}
-		case r == '\x1b':
-			in = true
-		default:
-			n++
-		}
-	}
-	return n
-}
-
-// padTo pads (or truncates) a line to exactly w visible runes. A styled
-// line (note stamps, titles) is only padded, never cut: its builders keep
-// it within w themselves, since cutting would tear the escape codes.
-func padTo(s string, w int) string {
-	if strings.Contains(s, "\x1b") {
-		if n := visibleLen(s); n < w {
-			return s + strings.Repeat(" ", w-n)
-		}
-		return s
-	}
-	r := []rune(s)
-	if len(r) > w {
-		return string(r[:w])
-	}
-	return string(r) + strings.Repeat(" ", w-len(r))
-}
-
 // inputWidth sizes the prompt box to the terminal: the label before it is
 // at most about 30 columns.
 func inputWidth(width int) int {
 	if width <= 0 {
 		return 64
 	}
-	return clampInt(width-32, 20, 400)
+	return min(max(width-32, 20), 400)
 }
 
 // suggestName proposes a work session name for a plain tab: from its iTerm2

@@ -21,6 +21,11 @@
 
 namespace savannah {
 
+/// How long one agent invocation may run when neither the node config nor
+/// the caller says otherwise. The CLI sizes its stream budget from the same
+/// number, so the two cannot drift.
+inline constexpr std::int64_t kDefaultAgentTimeoutMs = 300000;
+
 class ConfigError : public std::runtime_error {
 public:
     ConfigError(const std::string& msg, int line)
@@ -56,6 +61,10 @@ public:
     std::size_t size() const { return values_.size(); }
 
 private:
+    /// The value at `key` when it is present and holds a T, else nullopt.
+    template <typename T>
+    std::optional<T> get_as(const std::string& key) const;
+
     std::map<std::string, Value> values_;
 };
 
@@ -71,7 +80,7 @@ struct NodeConfig {
     std::vector<std::string> agent_args;  // extra args, prepended before ours
     std::vector<std::string> allowed_tools;
     std::int64_t max_turns = 25;
-    std::int64_t timeout_ms = 300000;
+    std::int64_t timeout_ms = kDefaultAgentTimeoutMs;
 
     // [mesh]
     std::string hmac_key_file;            // optional in Phase 1 (pipes)

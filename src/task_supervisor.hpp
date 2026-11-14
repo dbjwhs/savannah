@@ -111,8 +111,18 @@ private:
         std::thread worker;       // the active/last turn
     };
 
+    /// One table lookup: mu_ held for as long as the Found lives, and the
+    /// task, or null when the id is unknown.
+    struct Found {
+        std::unique_lock<std::mutex> lock;
+        std::shared_ptr<Task> task;
+    };
+    Found find(const std::string& id);
+
     void drive_turn(Task* t, const std::string& prompt);
     TaskView snapshot(Task& t);  // caller holds t.m
+    /// Remove the task's git worktree and branch, once. Caller holds mu_.
+    void prune_worktree(Task& t);
 
     const NodeConfig& config_;
     std::mutex mu_;                                    // guards tasks_ + next_

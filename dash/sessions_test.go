@@ -287,8 +287,8 @@ func TestJoinWorkTagsAndSynthesizes(t *testing.T) {
 		off.ITerm != "UUID-G" || off.Message != "left off at the parser" || off.Updated != 20 {
 		t.Errorf("offline row fields: %+v", off)
 	}
-	if !isWorkRow(off) || isWorkRow(byID["s1"]) {
-		t.Error("isWorkRow should flag only the synthesized row")
+	if !isOfflineRow(off) || isOfflineRow(byID["s1"]) {
+		t.Error("isOfflineRow should flag only the synthesized row")
 	}
 	// Offline sorts after everything live, so the tabs you have open come first.
 	if got[len(got)-1].ID != "work:gone" {
@@ -462,7 +462,7 @@ func TestSessionsMsgErrorKeepsLiveRows(t *testing.T) {
 		t.Errorf("rows = %d, want 2", len(m.rows))
 	}
 	for _, s := range m.sessions {
-		if s.Work != "" || isWorkRow(s) {
+		if s.Work != "" || isOfflineRow(s) {
 			t.Errorf("tag should clear when the record vanishes: %+v", s)
 		}
 	}
@@ -619,7 +619,7 @@ func TestCtrlXOnOfflineWorkRowKeepsRecord(t *testing.T) {
 	m := newModel(opts{history: true}, "savannah")
 	m.sessions = joinWork(nil, recs)
 	m.rebuildRows()
-	if len(m.rows) != 1 || !isWorkRow(m.rows[0].s) {
+	if len(m.rows) != 1 || !isOfflineRow(m.rows[0].s) {
 		t.Fatalf("rows = %+v", m.rows)
 	}
 	// The first Ctrl-X only asks: nothing runs and the record is untouched.

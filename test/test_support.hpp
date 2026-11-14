@@ -30,7 +30,8 @@
 #include <vector>
 
 #include "savannah.hpp"
-#include "../src/stream_json.hpp"
+#include "agent_process.hpp"
+#include "stream_json.hpp"
 
 namespace savannah::test {
 
@@ -42,6 +43,9 @@ inline int finish(const char* name, const char* ok = "all passed") {
     if (g_failures == 0) std::printf("%s: %s\n", name, ok);
     return g_failures == 0 ? 0 : 1;
 }
+
+/// TCP connect budget for a test client, in milliseconds.
+inline constexpr int kConnectTimeoutMs = 5000;
 
 /// The line savannahd --tcp prints on stdout once it is listening.
 inline constexpr std::string_view kPortMarker = "SAVANNAHD_TCP_PORT=";
@@ -88,9 +92,7 @@ public:
         // argv is built before the fork: the child only execs.
         std::vector<std::string> args = {"savannahd", "--tcp", "0"};
         args.insert(args.end(), extra_args.begin(), extra_args.end());
-        std::vector<char*> argv;
-        for (auto& a : args) argv.push_back(a.data());
-        argv.push_back(nullptr);
+        std::vector<char*> argv = to_cargv(args);
 
         int fds[2];
         if (pipe(fds) != 0) return d;
@@ -132,7 +134,7 @@ inline song::ServiceConnection connect_tcp(const std::string& host,
                                            song::u16 port,
                                            const std::string& key = "") {
     auto tcp = std::make_unique<song::TcpTransport>();
-    tcp->connect(host, port, 5000);
+    tcp->connect(host, port, kConnectTimeoutMs);
     std::unique_ptr<song::Transport> transport = std::move(tcp);
     if (!key.empty()) {
         transport = std::make_unique<song::SecureTransport>(
@@ -155,6 +157,9 @@ struct Streamed {
     std::string result;              // the (last) RESULT trailer
     int chunk_count = 0;
     std::size_t max_payload = 0;
+
+    /// True when the RESULT trailer reports a clean finish.
+    bool ok() const { return ChunkMapper::result_ok(result); }
 
     void add(const song::savannah::AgentChunk& c) {
         ++chunk_count;

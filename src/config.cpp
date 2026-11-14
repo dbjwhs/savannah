@@ -168,35 +168,29 @@ Config Config::parse_file(const std::string& path) {
     return parse_string(ss.str());
 }
 
-std::optional<std::string> Config::get_string(const std::string& key) const {
+template <typename T>
+std::optional<T> Config::get_as(const std::string& key) const {
     auto it = values_.find(key);
     if (it == values_.end()) return std::nullopt;
-    if (const auto* p = std::get_if<std::string>(&it->second)) return *p;
+    if (const auto* p = std::get_if<T>(&it->second)) return *p;
     return std::nullopt;
+}
+
+std::optional<std::string> Config::get_string(const std::string& key) const {
+    return get_as<std::string>(key);
 }
 
 std::optional<std::int64_t> Config::get_int(const std::string& key) const {
-    auto it = values_.find(key);
-    if (it == values_.end()) return std::nullopt;
-    if (const auto* p = std::get_if<std::int64_t>(&it->second)) return *p;
-    return std::nullopt;
+    return get_as<std::int64_t>(key);
 }
 
 std::optional<bool> Config::get_bool(const std::string& key) const {
-    auto it = values_.find(key);
-    if (it == values_.end()) return std::nullopt;
-    if (const auto* p = std::get_if<bool>(&it->second)) return *p;
-    return std::nullopt;
+    return get_as<bool>(key);
 }
 
 std::optional<std::vector<std::string>> Config::get_string_array(
     const std::string& key) const {
-    auto it = values_.find(key);
-    if (it == values_.end()) return std::nullopt;
-    if (const auto* p = std::get_if<std::vector<std::string>>(&it->second)) {
-        return *p;
-    }
-    return std::nullopt;
+    return get_as<std::vector<std::string>>(key);
 }
 
 NodeConfig NodeConfig::from(const Config& cfg) {

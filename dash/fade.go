@@ -22,7 +22,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -72,7 +71,7 @@ func fadeLabel(d time.Duration) string {
 // needs you, a working one (polling included) and a row with no stamp are
 // never faded.
 func faded(s session, now int64, fade time.Duration) bool {
-	if fade <= 0 || s.Updated <= 0 || sessionAttention(s) || s.State == "working" {
+	if fade <= 0 || s.Updated <= 0 || sessionAttention(s) || s.State == stateWorking {
 		return false
 	}
 	return now-s.Updated > int64(fade/time.Second)
@@ -109,17 +108,11 @@ func nextFade(d time.Duration) time.Duration {
 // not a refusal).
 func (m model) toggleFade() model {
 	m.fade = nextFade(m.fade)
-	slog.Info("action", "do", "fade", "fade", fadeLabel(m.fade))
+	status := fmt.Sprintf("no row is dimmed for its age (Ctrl-F: %s)", fadeLabel(nextFade(m.fade)))
 	if m.fade > 0 {
-		m.status = fmt.Sprintf("rows untouched for over %s are dimmed (Ctrl-F: %s)", fadeLabel(m.fade), fadeLabel(nextFade(m.fade)))
-	} else {
-		m.status = fmt.Sprintf("no row is dimmed for its age (Ctrl-F: %s)", fadeLabel(nextFade(m.fade)))
+		status = fmt.Sprintf("rows untouched for over %s are dimmed (Ctrl-F: %s)", fadeLabel(m.fade), fadeLabel(nextFade(m.fade)))
 	}
-	prefs := loadBoardPrefs(boardFile())
-	prefs.Fade = fadeLabel(m.fade)
-	if err := saveBoardPrefs(boardFile(), prefs); err != nil {
-		slog.Warn("board file", "err", err.Error())
-		m.status += warnStyle.Render("; not remembered: " + err.Error())
-	}
+	m.act("fade", status, "fade", fadeLabel(m.fade))
+	m.remember(func(p *boardPrefs) { p.Fade = fadeLabel(m.fade) })
 	return m
 }

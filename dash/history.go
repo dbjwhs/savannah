@@ -18,45 +18,31 @@
 
 package main
 
-import (
-	"fmt"
-	"log/slog"
-)
+import "fmt"
 
 // toggleHistory is Ctrl-E: HISTORY opens or closes, the cursor stays on
 // the row it was on when that row is still shown, and the choice is
 // written to the board file.
 func (m model) toggleHistory() model {
-	before, had := m.currentRow()
 	m.history = !m.history
-	m.rebuildRows()
-	if had {
-		for i, r := range m.rows {
-			if r.kind == before.kind && r.s.ID == before.s.ID && r.node == before.node && r.t.ID == before.t.ID {
-				m.cursor = i
-				break
-			}
-		}
-	}
+	m.rebuildKeepingCursor()
 	n := m.countClosed()
-	slog.Info("action", "do", "history", "open", m.history, "closed", n)
+	var status string
 	switch {
 	case n == 0:
-		m.status = "no closed session (a work session whose tab is gone would sit in HISTORY)"
+		status = "no closed session (a work session whose tab is gone would sit in HISTORY)"
 	case m.history:
-		m.status = fmt.Sprintf("HISTORY open: %d closed session%s, newest first (Enter reopens one, Ctrl-X removes it; Ctrl-E hides them)", n, plural(n))
+		status = fmt.Sprintf("HISTORY open: %d closed session%s, newest first (Enter reopens one, Ctrl-X removes it; Ctrl-E hides them)", n, plural(n))
 	default:
-		m.status = fmt.Sprintf("HISTORY closed: %d closed session%s kept with their notes (Ctrl-E shows them)", n, plural(n))
+		status = fmt.Sprintf("HISTORY closed: %d closed session%s kept with their notes (Ctrl-E shows them)", n, plural(n))
 	}
-	prefs := loadBoardPrefs(boardFile())
-	prefs.History = ""
-	if m.history {
-		prefs.History = "open"
-	}
-	if err := saveBoardPrefs(boardFile(), prefs); err != nil {
-		slog.Warn("board file", "err", err.Error())
-		m.status += warnStyle.Render("; not remembered: " + err.Error())
-	}
+	m.act("history", status, "open", m.history, "closed", n)
+	m.remember(func(p *boardPrefs) {
+		p.History = ""
+		if m.history {
+			p.History = "open"
+		}
+	})
 	return m
 }
 
@@ -64,7 +50,7 @@ func (m model) toggleHistory() model {
 func (m model) countClosed() int {
 	n := 0
 	for _, s := range m.sessions {
-		if s.State == "offline" {
+		if s.closed() {
 			n++
 		}
 	}

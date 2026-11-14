@@ -15,8 +15,9 @@ add_compile_options(-Wall -Wextra -Werror)
 # song checked out and BUILT as a sibling by default; override with
 # -DSONG_ROOT=... Build song first:
 #   cmake -B build && cmake --build build --target song songc
-# (song's CMake is not add_subdirectory-friendly yet: its test/ dir assumes
-# top-level context. On the song wishlist: gate subdirs on PROJECT_IS_TOP_LEVEL.)
+# (song's CMake has gated its subdirs on top-level context since song main
+# 4e989ed, finding 3, so add_subdirectory would work now. savannah still
+# links the prebuilt libsong.a: one song build serves every consumer.)
 set(SONG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../song" CACHE PATH
     "Path to the song repository (must be built: libsong.a + songc)")
 set(SONG_LIB ${SONG_ROOT}/build/libsong.a)

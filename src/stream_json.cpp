@@ -106,4 +106,13 @@ std::string ChunkMapper::synthetic_error_result(const std::string& reason,
     return json::dump(json::Value(trailer));
 }
 
+bool ChunkMapper::result_ok(const std::string& trailer) {
+    try {
+        const json::Value doc = json::parse(trailer);
+        return doc.is_object() && !doc["is_error"].as_bool(true);
+    } catch (const json::ParseError&) {
+        return false;
+    }
+}
+
 }  // namespace savannah

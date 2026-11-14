@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,19 +42,10 @@ const (
 	LevelVerbose = slog.Level(-8) // below slog.LevelDebug
 	logMaxBytes  = 10 << 20
 	logKeep      = 3
-	logHeadBytes = 300 // of a subprocess's output, at VERBOSE
+	logHeadRunes = 300 // of a subprocess's output, at VERBOSE
 )
 
-func logDir() string {
-	if d := os.Getenv("SAVANNAH_LOG_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude", "savannah", "log")
-}
+func logDir() string { return savannahPath("SAVANNAH_LOG_DIR", "log") }
 
 func logPath() string {
 	if d := logDir(); d != "" {
@@ -196,15 +188,6 @@ func verbose(msg string, args ...any) {
 	slog.Log(context.Background(), LevelVerbose, msg, args...)
 }
 
-// head is the first n bytes of an output, flattened, for a VERBOSE record.
-func head(b []byte, n int) string {
-	s := flatten(strings.TrimSpace(string(b)))
-	if len(s) > n {
-		return s[:n] + "~"
-	}
-	return s
-}
-
 // run executes one subprocess for the board and logs it: DEBUG the argv,
 // exit and timing (WARN when it failed, with its stderr), VERBOSE the head
 // of its output. Every `savannah work ...` and `it2 ...` the board runs goes
@@ -230,7 +213,30 @@ func runAt(level slog.Level, bin string, args ...string) ([]byte, error) {
 		slog.Log(context.Background(), level, "command", "cmd", bin, "args", args, "ms", ms, "bytes", len(out))
 	}
 	if len(out) > 0 {
-		verbose("output", "cmd", filepath.Base(bin), "args", args, "head", head(out, logHeadBytes))
+		verbose("output", "cmd", filepath.Base(bin), "args", args, "head", head(out, logHeadRunes))
 	}
 	return out, err
+}
+
+// runArgv is runner (run or poll) for a command that is itself several
+// words ($SAVANNAH_IT2, the system opener), the arguments after them.
+func runArgv(runner func(string, ...string) ([]byte, error), argv []string, args ...string) ([]byte, error) {
+	return runner(argv[0], append(append([]string{}, argv[1:]...), args...)...)
+}
+
+// runJSON runs one command through runner (run, or poll for a periodic
+// read) and decodes its stdout as JSON. errText is "" on success, the
+// CLI's own error when the command failed, and noJSON ("work new printed
+// no record") when its output did not parse; with noJSON "" an output that
+// does not parse is no error, and v is the zero value.
+func runJSON[T any](runner func(string, ...string) ([]byte, error), bin string, args []string, noJSON string) (v T, errText string) {
+	out, err := runner(bin, args...)
+	if err != nil {
+		return v, cliError(err)
+	}
+	if json.Unmarshal(out, &v) != nil {
+		var zero T
+		return zero, noJSON
+	}
+	return v, ""
 }

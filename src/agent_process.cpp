@@ -13,11 +13,20 @@
 #include <cerrno>
 #include <cstring>
 
+#include "config.hpp"
+
 namespace savannah {
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// The read loop wakes at least this often so cancel and timeout stay
+// responsive while the agent is silent.
+constexpr std::int64_t kPollTickMs = 100;
+
+// One read() from the agent's stdout pipe.
+constexpr std::size_t kReadBufferBytes = 4096;
 
 std::int64_t ms_since(Clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -26,6 +35,37 @@ std::int64_t ms_since(Clock::time_point start) {
 }
 
 }  // namespace
+
+const char* failure_reason(const AgentOutcome& outcome) {
+    if (!outcome.spawned) return "spawn failed";
+    if (outcome.timed_out) return "timeout";
+    if (outcome.killed) return "cancelled";
+    return "died before result";
+}
+
+std::vector<std::string> base_agent_argv(const NodeConfig& config,
+                                         const std::string& prompt) {
+    std::vector<std::string> argv;
+    argv.push_back(config.agent_cmd);
+    for (const auto& a : config.agent_args) argv.push_back(a);
+    argv.push_back("-p");
+    argv.push_back(prompt);
+    argv.push_back("--output-format");
+    argv.push_back("stream-json");
+    argv.push_back("--verbose");
+    argv.push_back("--max-turns");
+    argv.push_back(std::to_string(config.max_turns));
+    if (!config.allowed_tools.empty()) {
+        argv.push_back("--allowedTools");
+        std::string joined;
+        for (const auto& t : config.allowed_tools) {
+            if (!joined.empty()) joined += ",";
+            joined += t;
+        }
+        argv.push_back(joined);
+    }
+    return argv;
+}
 
 AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
                                std::int64_t timeout_ms,
@@ -68,12 +108,7 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
             _exit(126);  // worktree vanished; surfaces as spawn-ish failure
         }
-        std::vector<char*> cargv;
-        cargv.reserve(argv.size() + 1);
-        for (const auto& a : argv) {
-            cargv.push_back(const_cast<char*>(a.c_str()));
-        }
-        cargv.push_back(nullptr);
+        std::vector<char*> cargv = to_cargv(argv);
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
@@ -84,7 +119,7 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
 
     ChunkMapper mapper(std::move(sink));
     std::string carry;
-    char buf[4096];
+    char buf[kReadBufferBytes];
     const auto start = Clock::now();
     bool child_running = true;
 
@@ -112,9 +147,9 @@ AgentOutcome AgentProcess::run(const std::vector<std::string>& argv,
             struct pollfd pfd{};
             pfd.fd = fds[0];
             pfd.events = POLLIN;
-            // Wake at least every 100ms so cancel/timeout stay responsive.
             std::int64_t remaining = timeout_ms - elapsed;
-            int wait_ms = static_cast<int>(remaining < 100 ? remaining : 100);
+            int wait_ms = static_cast<int>(
+                remaining < kPollTickMs ? remaining : kPollTickMs);
             int rc = poll(&pfd, 1, wait_ms);
             if (rc < 0) {
                 if (errno == EINTR) continue;

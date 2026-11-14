@@ -23,7 +23,7 @@
 
 #include "savannah.hpp"
 #include "test_support.hpp"
-#include "../src/stream_json.hpp"
+#include "stream_json.hpp"
 
 namespace sw = song::savannah;
 namespace st = savannah::test;
@@ -56,7 +56,7 @@ int main() {
         auto conn = connect_with_config(mgr, "cfg_echo.toml", "echo");
         auto r = ask(conn, "hello savannah");
         CHECK(r.text == "hello savannah");
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
         CHECK(r.result.find("\"cost_usd\":0.00042") != std::string::npos);
         CHECK(r.tools.empty());
 
@@ -85,7 +85,7 @@ int main() {
         auto conn = connect_with_config(mgr, "cfg_slow.toml", "slow");
         auto r = ask(conn, "worth the wait");
         CHECK(r.text == "worth the wait");
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- tool storm: TOOL_EVENT chunks arrive typed ----
@@ -96,7 +96,7 @@ int main() {
         CHECK(r.tools.size() == 3);
         CHECK(r.tools[0].rfind("Bash: git status", 0) == 0);
         CHECK(r.text.find("storm complete") != std::string::npos);
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- bad json between valid lines: skipped, not fatal ----
@@ -106,7 +106,7 @@ int main() {
         auto r = ask(conn, "resilience");
         CHECK(r.text.find("valid before garbage") != std::string::npos);
         CHECK(r.text.find("valid after garbage") != std::string::npos);
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- giant chunk: a 4 MiB text block survives the line pump and the
@@ -114,7 +114,7 @@ int main() {
     //      split it: 8 TEXT chunks of 512 KiB, then the RESULT trailer. ----
     {
         constexpr std::size_t kGiant = 4194304;    // matches cfg_giant.toml
-        constexpr std::size_t kSplit = 512 * 1024; // savannahd kMaxChunkPayload
+        constexpr std::size_t kSplit = savannah::kMaxChunkPayload;
         ServiceManager mgr;
         auto conn = connect_with_config(mgr, "cfg_giant.toml", "giant");
         auto r = ask(conn, "big");
@@ -122,7 +122,7 @@ int main() {
         CHECK(r.text.find_first_not_of('x') == std::string::npos);
         CHECK(r.chunk_count == static_cast<int>(kGiant / kSplit) + 1);
         CHECK(r.max_payload <= kSplit);
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- slow drip: 6 chunks with 150ms gaps (past the 100ms poll tick).
@@ -135,7 +135,7 @@ int main() {
         auto r = ask(conn, prompt);
         CHECK(r.text == prompt);
         CHECK(r.chunk_count == 7);  // 6 TEXT + 1 RESULT
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- mid-UTF8 splits: a line split across pipe writes inside a 4-byte
@@ -149,7 +149,7 @@ int main() {
             "roar \xF0\x9F\xA6\x81 savanna \xC3\xA9l\xC3\xA9phant";
         CHECK(r.text == expected);
         CHECK(r.chunk_count == 4);  // 3 TEXT (1 whole + 1 split pair), 1 RESULT
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- stderr noise: 128 KiB blobs on stderr between valid lines must
@@ -172,7 +172,7 @@ int main() {
 
         CHECK(r.text == "still fine 0 still fine 1 ");
         CHECK(r.chunk_count == 3);  // 2 TEXT + 1 RESULT
-        CHECK(r.result.find("\"is_error\":false") != std::string::npos);
+        CHECK(r.ok());
     }
 
     // ---- agent dies before result: synthetic error trailer ----

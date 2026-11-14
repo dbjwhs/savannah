@@ -474,11 +474,11 @@ func TestWorkResultStatuses(t *testing.T) {
 		{workOpenMsg{name: "live", action: "focused"}, "focused live", false},
 		{workOpenMsg{name: "parked", action: "reopened"}, "reopened parked", true},
 		{workOpenMsg{name: "live", err: "no such work session: live\nx"}, "open live: no such work session: live", false},
-		{workSaidMsg{name: "live"}, "said to live", false},
-		{workSaidMsg{name: "live", err: "pane gone"}, "say to live: pane gone", false},
-		{workNotedMsg{name: "live"}, "noted live", false},
-		{workRmMsg{name: "parked"}, "removed parked", true},
-		{workRmMsg{name: "parked", err: "worktree has uncommitted changes"}, "rm parked: worktree has uncommitted changes", false},
+		{workDoneMsg{verb: verbSay, name: "live"}, "said to live", false},
+		{workDoneMsg{verb: verbSay, name: "live", err: "pane gone"}, "say to live: pane gone", false},
+		{workDoneMsg{verb: verbNote, name: "live"}, "noted live", false},
+		{workDoneMsg{verb: verbRm, name: "parked"}, "removed parked", true},
+		{workDoneMsg{verb: verbRm, name: "parked", err: "worktree has uncommitted changes"}, "rm parked: worktree has uncommitted changes", false},
 		{workNewMsg{name: "x", err: "boom"}, "new x: boom", false},
 	}
 	for _, c := range cases {

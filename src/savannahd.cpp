@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <source_location>
 #include <string>
 #include <vector>
 
@@ -69,25 +70,7 @@ std::atomic<bool> g_cancel{false};
 
 std::vector<std::string> build_agent_argv(const std::string& prompt,
                                           const sw::AskOptions& opts) {
-    std::vector<std::string> argv;
-    argv.push_back(g_config.agent_cmd);
-    for (const auto& a : g_config.agent_args) argv.push_back(a);
-    argv.push_back("-p");
-    argv.push_back(prompt);
-    argv.push_back("--output-format");
-    argv.push_back("stream-json");
-    argv.push_back("--verbose");
-    argv.push_back("--max-turns");
-    argv.push_back(std::to_string(g_config.max_turns));
-    if (!g_config.allowed_tools.empty()) {
-        argv.push_back("--allowedTools");
-        std::string joined;
-        for (const auto& t : g_config.allowed_tools) {
-            if (!joined.empty()) joined += ",";
-            joined += t;
-        }
-        argv.push_back(joined);
-    }
+    std::vector<std::string> argv = savannah::base_agent_argv(g_config, prompt);
     if (!opts.system_hint.empty()) {
         argv.push_back("--append-system-prompt");
         argv.push_back(opts.system_hint);
@@ -96,13 +79,50 @@ std::vector<std::string> build_agent_argv(const std::string& prompt,
 }
 
 // song's encode_string refuses anything over kMaxStringSize (1 MB), so a
-// giant agent text block must be split across multiple TEXT chunks; the
-// client concatenates TEXT payloads already (that is the stream contract).
+// giant agent text block must be split across multiple TEXT chunks of
+// kMaxChunkPayload (stream_json.hpp); the client concatenates TEXT payloads
+// already (that is the stream contract).
 // Split points may land mid-UTF8; concatenation restores the byte sequence.
 // Non-TEXT chunks are bounded by construction (RESULT is a compact trailer,
 // TOOL_EVENT is truncated at kToolSummaryMax); truncate defensively rather
 // than split so "exactly one RESULT chunk" always holds.
-constexpr std::size_t kMaxChunkPayload = 512 * 1024;
+using savannah::kMaxChunkPayload;
+
+// Pending-connection queue for the TCP listener.
+constexpr int kListenBacklog = 128;
+
+// Every method the node serves, for song's capability exchange. Streaming
+// methods sit on the generated stream service id (see CLAUDE.md, "Streaming
+// methods need their own service id").
+struct MethodEntry {
+    u16 service;
+    u16 method;
+    song::wire::MethodFlags flags;
+};
+constexpr auto kUnary = song::wire::MethodFlags::none;
+constexpr auto kStreaming = song::wire::MethodFlags::streaming;
+constexpr MethodEntry kMethods[] = {
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_info, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_cancel, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_status, kUnary},
+    {sw::kService_AgentNode_Stream, sw::kMethod_AgentNode_ask, kStreaming},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_task_new, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_task_list, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_task_send, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_task_status, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_task_cancel, kUnary},
+    {sw::kService_AgentNode, sw::kMethod_AgentNode_task_rm, kUnary},
+    {sw::kService_AgentNode_Stream, sw::kMethod_AgentNode_task_output,
+     kStreaming},
+};
+
+// Log a startup failure and hand back main's exit code. The location is the
+// caller's, so the log line still names the line that failed.
+int die(const std::string& what,
+        std::source_location loc = std::source_location::current()) {
+    song::Log::error("savannahd: " + what, loc);
+    return 2;
+}
 
 void write_chunk(StreamWriter& writer, savannah::ChunkKind kind,
                  const std::string& payload) {
@@ -178,13 +198,10 @@ public:
             });
 
         if (!outcome.saw_result) {
-            std::string reason = !outcome.spawned ? "spawn failed"
-                                 : outcome.timed_out ? "timeout"
-                                 : outcome.killed    ? "cancelled"
-                                                     : "died before result";
             write_chunk(writer, savannah::ChunkKind::Result,
                         savannah::ChunkMapper::synthetic_error_result(
-                            reason, outcome.exit_code));
+                            savannah::failure_reason(outcome),
+                            outcome.exit_code));
         }
     }
 
@@ -254,24 +271,21 @@ int main(int argc, char** argv) {
             char* end = nullptr;
             tcp_port = std::strtol(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0' || tcp_port < 0 || tcp_port > 65535) {
-                song::Log::error(std::string("savannahd: --tcp wants a port, 0 to 65535, not ") +
-                                 argv[i + 1]);
-                return 2;
+                return die(std::string("--tcp wants a port, 0 to 65535, not ") +
+                           argv[i + 1]);
             }
         }
         if (std::string(argv[i]) == "--mdns") mdns = true;
     }
     if (config_path.empty()) {
-        song::Log::error("savannahd: no config (set SAVANNAHD_CONFIG or --config)");
-        return 2;
+        return die("no config (set SAVANNAHD_CONFIG or --config)");
     }
 
     try {
         g_config = savannah::NodeConfig::from(
             savannah::Config::parse_file(config_path));
     } catch (const std::exception& e) {
-        song::Log::error(std::string("savannahd: ") + e.what());
-        return 2;
+        return die(e.what());
     }
 
     g_tasks = std::make_unique<savannah::TaskSupervisor>(g_config);
@@ -290,30 +304,9 @@ int main(int argc, char** argv) {
             sw::dispatch_AgentNode_stream(node, m, req, w);
         });
 
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_info);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_cancel);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_status);
-    runtime.register_method(sw::kService_AgentNode_Stream,
-                            sw::kMethod_AgentNode_ask,
-                            song::wire::MethodFlags::streaming);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_new);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_list);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_send);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_status);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_cancel);
-    runtime.register_method(sw::kService_AgentNode,
-                            sw::kMethod_AgentNode_task_rm);
-    runtime.register_method(sw::kService_AgentNode_Stream,
-                            sw::kMethod_AgentNode_task_output,
-                            song::wire::MethodFlags::streaming);
+    for (const MethodEntry& m : kMethods) {
+        runtime.register_method(m.service, m.method, m.flags);
+    }
     runtime.set_capability(song::wire::Capability::streaming);
 
     song::Log::debug("savannahd up: node=" + g_config.name +
@@ -328,15 +321,12 @@ int main(int argc, char** argv) {
             try {
                 key = savannah::load_hmac_key(g_config.hmac_key_file);
             } catch (const std::exception& e) {
-                song::Log::error(std::string("savannahd: ") + e.what());
-                return 2;
+                return die(e.what());
             }
         }
         if (mdns && key.empty()) {
-            song::Log::error(
-                "savannahd: --mdns requires mesh.hmac_key_file "
-                "(refusing unauthenticated LAN exposure)");
-            return 2;
+            return die("--mdns requires mesh.hmac_key_file "
+                       "(refusing unauthenticated LAN exposure)");
         }
         // With a key, every accepted client is wrapped in SecureTransport
         // via song's transport wrapper hook: a bad or missing HMAC tag
@@ -351,7 +341,7 @@ int main(int argc, char** argv) {
                 });
         }
         song::TcpListener listener;
-        listener.listen(static_cast<song::u16>(tcp_port), 128,
+        listener.listen(static_cast<song::u16>(tcp_port), kListenBacklog,
                         mdns ? "" : "127.0.0.1");
 
         std::unique_ptr<song::Discovery> discovery;
@@ -359,22 +349,21 @@ int main(int argc, char** argv) {
         if (mdns) {
             discovery = song::create_discovery();
             if (!discovery || !discovery->is_available()) {
-                song::Log::error("savannahd: mDNS not available");
-                return 2;
+                return die("mDNS not available");
             }
             registration = song::ServiceRegistration(
                 *discovery, g_config.name, savannah_wire::kMeshServiceType,
                 listener.bound_port());
             if (!registration.is_registered()) {
-                song::Log::error("savannahd: mDNS registration failed");
-                return 2;
+                return die("mDNS registration failed");
             }
         }
 
         std::printf("SAVANNAHD_TCP_PORT=%u\n",
                     static_cast<unsigned>(listener.bound_port()));
         std::fflush(stdout);
-        runtime.run_tcp_multi(listener);
+        runtime.run_tcp_multi(listener);  // [[noreturn]]
+    } else {
+        runtime.run();
     }
-    runtime.run();
 }

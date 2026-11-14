@@ -67,10 +67,13 @@ void emit_init() {
          R"("model":"fake-claude-1"})");
 }
 
-void emit_text(const std::string& text) {
-    emit(R"({"type":"assistant","message":{"content":[{"type":"text",)"
-         R"("text":")" + escape(text) + R"("}]}})");
+// One assistant event carrying a single text block, without the newline.
+std::string text_line(const std::string& text) {
+    return R"({"type":"assistant","message":{"content":[{"type":"text",)"
+           R"("text":")" + escape(text) + R"("}]}})";
 }
+
+void emit_text(const std::string& text) { emit(text_line(text)); }
 
 void emit_tool(const std::string& name, const std::string& command) {
     emit(R"({"type":"assistant","message":{"content":[{"type":"tool_use",)"
@@ -78,16 +81,10 @@ void emit_tool(const std::string& name, const std::string& command) {
          escape(command) + R"("}}]}})");
 }
 
-void emit_result(bool is_error) {
-    emit(R"({"type":"result","subtype":"success","total_cost_usd":0.00042,)"
-         R"("duration_ms":1234,"num_turns":1,"is_error":)" +
-         std::string(is_error ? "true" : "false") + "}");
-}
-
-// Emit a RESULT with an explicit subtype (e.g. "error_max_turns"), mirroring
-// the real CLI's result shape. is_error follows the subtype: only "success"
-// is not an error.
-void emit_result_subtype(const std::string& subtype) {
+// Emit a RESULT, mirroring the real CLI's result shape. The subtype defaults
+// to a clean finish; pass another (e.g. "error_max_turns") for a failure.
+// is_error follows the subtype: only "success" is not an error.
+void emit_result(const std::string& subtype = "success") {
     bool is_error = (subtype != "success");
     emit(R"({"type":"result","subtype":")" + subtype +
          R"(","total_cost_usd":0.00042,"duration_ms":1234,"num_turns":1,)"
@@ -172,13 +169,13 @@ int main(int argc, char** argv) {
         // (no marker), which finishes cleanly. Lets test_task_flight exercise
         // auto-continue deterministically and token-free.
         if (prompt.find("MAXTURNS") != std::string::npos) {
-            emit_result_subtype("error_max_turns");
+            emit_result("error_max_turns");
         } else {
-            emit_result(false);
+            emit_result();
         }
     } else if (scenario == "echo") {
         emit_text(prompt);
-        emit_result(false);
+        emit_result();
     } else if (scenario == "chunks") {
         if (chunks < 1) chunks = 1;
         std::size_t n = prompt.size();
@@ -188,7 +185,7 @@ int main(int argc, char** argv) {
             emit_text(prompt.substr(off, per));
             nap();
         }
-        emit_result(false);
+        emit_result();
     } else if (scenario == "tool_storm") {
         for (long i = 0; i < chunks; ++i) {
             emit_tool("Bash", "git status --porcelain # storm " +
@@ -196,10 +193,10 @@ int main(int argc, char** argv) {
             nap();
         }
         emit_text("storm complete: " + prompt);
-        emit_result(false);
+        emit_result();
     } else if (scenario == "giant_chunk") {
         emit_text(std::string(static_cast<std::size_t>(giant_bytes), 'x'));
-        emit_result(false);
+        emit_result();
     } else if (scenario == "die_before_result") {
         emit_text("about to die: " + prompt);
         return 3;
@@ -210,9 +207,7 @@ int main(int argc, char** argv) {
         // whose boundary lands inside the 4-byte lion. The reader must frame
         // on '\n', never on write boundaries.
         const std::string lion = "\xF0\x9F\xA6\x81";
-        const std::string line =
-            R"({"type":"assistant","message":{"content":[{"type":"text",)"
-            R"("text":"roar )" + lion + R"( savanna"}]}})";
+        const std::string line = text_line("roar " + lion + " savanna");
         std::size_t cut = line.find(lion) + 2;  // two bytes into the lion
         std::fwrite(line.data(), 1, cut, stdout);
         std::fflush(stdout);
@@ -227,7 +222,7 @@ int main(int argc, char** argv) {
         std::size_t mid = eleph.find('\xC3', 2) + 1;  // inside second e-acute
         emit_text(eleph.substr(0, mid));
         emit_text(eleph.substr(mid));
-        emit_result(false);
+        emit_result();
     } else if (scenario == "stderr_noise") {
         // Loud agent: stderr is a separate channel savannahd inherits
         // rather than pipes. Each blob exceeds pipe capacity (64 KiB), so
@@ -240,13 +235,13 @@ int main(int argc, char** argv) {
             emit_text("still fine " + std::to_string(i) + " ");
             nap();
         }
-        emit_result(false);
+        emit_result();
     } else if (scenario == "bad_json") {
         emit_text("valid before garbage");
         emit("this is not json {{{");
         emit(R"({"type":"unknown_future_thing","x":1})");
         emit_text("valid after garbage: " + prompt);
-        emit_result(false);
+        emit_result();
     } else {
         std::fprintf(stderr, "fake-claude: unknown scenario '%s'\n",
                      scenario.c_str());

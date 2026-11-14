@@ -35,7 +35,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -246,69 +245,4 @@ func groupHeader(root string, isRepo bool, n int, home string, wide bool) string
 		}
 	}
 	return line
-}
-
-// ---- the remembered choice ------------------------------------------------------
-
-// boardPrefs is $SAVANNAH_BOARD_FILE: what the board remembers between
-// runs: the grouping (written by Ctrl-G) and whether the tabs you open by
-// hand are named for you ("off" is written by hand, nothing on the board
-// sets it). A writer loads the file first so one key never wipes another.
-type boardPrefs struct {
-	Group     string `json:"group"`                // "repo" | ""
-	Autoname  string `json:"autoname,omitempty"`   // "off" | "" (autoname.go)
-	Fade      string `json:"fade,omitempty"`       // "3h" | "off" | "" = the default (fade.go)
-	TicketURL string `json:"ticket_url,omitempty"` // the tracker's page with {ticket} for the key; "off" = none; "" = the default (ticket.go)
-	History   string `json:"history,omitempty"`    // "open" = HISTORY shown at start (history.go)
-	Mouse     string `json:"mouse,omitempty"`      // "off" = no mouse reporting (mouse.go)
-}
-
-func boardFile() string {
-	if f := os.Getenv("SAVANNAH_BOARD_FILE"); f != "" {
-		return f
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude", "savannah", "board.json")
-}
-
-// loadBoardPrefs reads the file; a missing or unreadable file is the zero
-// value (nothing remembered), never an error the board needs to show.
-func loadBoardPrefs(path string) boardPrefs {
-	var p boardPrefs
-	if path == "" {
-		return p
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return p
-	}
-	_ = json.Unmarshal(b, &p)
-	return p
-}
-
-// saveBoardPrefs writes the file (creating its directory). The error is
-// the caller's to show: the toggle still applies to this run.
-func saveBoardPrefs(path string, p boardPrefs) error {
-	if path == "" {
-		return fmt.Errorf("no home directory for the board file")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.Marshal(p)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
-}
-
-// groupPref is the prefs value for a grouping flag.
-func groupPref(group bool) string {
-	if group {
-		return "repo"
-	}
-	return ""
 }

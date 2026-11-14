@@ -150,6 +150,8 @@ def savannah_command():
     return "python3 " + os.path.join(repo, "work", "savannah_work.py")
 
 
+# The same join as work/savannah_work.py (session_here, hooks_in): kept as a
+# standalone copy on purpose, change both together.
 def work_session_for(cwd, iterm_session_id):
     """Name of the work session (work/) whose worktree is cwd, or "". Reads
     the record files directly (the work module is not imported; this hook

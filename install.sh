@@ -62,34 +62,43 @@ run()  {
     printf '+ %s\n' "$*"
     [ "$dry" = 1 ] || "$@"
 }
-have() { command -v "$1" >/dev/null 2>&1; }
+# report_tool LABEL CANDIDATE...: print "  LABEL: PATH" for the first candidate
+# (a command name, or the full path of an executable) that exists. Returns 1,
+# printing nothing, when none does.
+report_tool() {
+    local label="$1" candidate path
+    shift
+    for candidate in "$@"; do
+        if path="$(command -v "$candidate" 2>/dev/null)"; then
+            echo "  $label: $path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# iTerm2 ships its own copy of it2; it is not on PATH by default.
+it2_bundled=/Applications/iTerm.app/Contents/Resources/utilities/it2
 
 # ---- 1. tools ---------------------------------------------------------------
 say "checking tools"
 missing=0
 for t in git cmake python3; do
-    if have "$t"; then echo "  $t: $(command -v "$t")"; else echo "  $t: MISSING"; missing=1; fi
+    report_tool "$t" "$t" || { echo "  $t: MISSING"; missing=1; }
 done
-if have c++ || have clang++ || have g++; then
-    echo "  c++: $(command -v c++ || command -v clang++ || command -v g++)"
-else
-    echo "  c++: MISSING (a C++20 compiler)"; missing=1
-fi
+report_tool c++ c++ clang++ g++ || { echo "  c++: MISSING (a C++20 compiler)"; missing=1; }
 if [ "$missing" = 1 ]; then
     echo "install the missing tools first (brew install git cmake python3 go; or apt)." >&2
     exit 1
 fi
 go_ok=0
-if have go; then echo "  go: $(command -v go)"; go_ok=1
+if report_tool go go; then go_ok=1
 else warn "go not found: the CLI builds, the board (bare savannah) will not"; fi
-if have claude; then echo "  claude: $(command -v claude)"
-else warn "claude not on PATH: the board names your tabs from their first prompt instead of asking Claude"; fi
+report_tool claude claude ||
+    warn "claude not on PATH: the board names your tabs from their first prompt instead of asking Claude"
 if [ "$(uname -s)" = Darwin ]; then
-    if have it2 || [ -x /Applications/iTerm.app/Contents/Resources/utilities/it2 ]; then
-        echo "  it2: $(command -v it2 || echo /Applications/iTerm.app/Contents/Resources/utilities/it2)"
-    else
+    report_tool it2 it2 "$it2_bundled" ||
         warn "iTerm2's it2 not found: work sessions and the board's tabs need iTerm2 3.5+"
-    fi
 else
     warn "not macOS: the mesh works here, the board's work sessions need iTerm2"
 fi

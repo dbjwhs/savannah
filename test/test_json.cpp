@@ -3,7 +3,7 @@
 //
 // Unit tests: minimal JSON parser.
 
-#include "../src/json.hpp"
+#include "json.hpp"
 #include "test_support.hpp"
 
 #include <cstdio>

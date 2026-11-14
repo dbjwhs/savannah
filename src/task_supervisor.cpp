@@ -33,8 +33,14 @@ std::string new_session_id() {
     return s;
 }
 
+// How often tail() looks for new chunks while a turn is running.
+constexpr std::chrono::milliseconds kTailPollInterval{50};
+
 // Run a git command silently; return its exit code (-1 on spawn failure).
 int run_git(const std::vector<std::string>& args) {
+    // argv is built before the fork: the child only execs.
+    std::vector<std::string> argv = {"git"};
+    argv.insert(argv.end(), args.begin(), args.end());
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
@@ -44,11 +50,8 @@ int run_git(const std::vector<std::string>& args) {
             dup2(devnull, STDERR_FILENO);
             dup2(devnull, STDIN_FILENO);
         }
-        std::vector<char*> cargv;
-        cargv.push_back(const_cast<char*>("git"));
-        for (const auto& a : args) cargv.push_back(const_cast<char*>(a.c_str()));
-        cargv.push_back(nullptr);
-        execvp("git", cargv.data());
+        std::vector<char*> cargv = to_cargv(argv);
+        execvp(cargv[0], cargv.data());
         _exit(127);
     }
     int status = 0;
@@ -64,6 +67,20 @@ TaskSupervisor::~TaskSupervisor() {
         t->cancel->store(true);
         if (t->worker.joinable()) t->worker.join();
     }
+}
+
+TaskSupervisor::Found TaskSupervisor::find(const std::string& id) {
+    Found found{std::unique_lock<std::mutex>(mu_), nullptr};
+    auto it = tasks_.find(id);
+    if (it != tasks_.end()) found.task = it->second;
+    return found;
+}
+
+void TaskSupervisor::prune_worktree(Task& t) {
+    if (t.branch.empty()) return;
+    run_git({"-C", t.workdir, "worktree", "remove", "--force", t.worktree});
+    run_git({"-C", t.workdir, "branch", "-D", t.branch});
+    t.branch.clear();  // pruned once; a later cancel/remove must not prune again
 }
 
 TaskView TaskSupervisor::snapshot(Task& t) {
@@ -115,25 +132,7 @@ void TaskSupervisor::drive_turn(Task* t, const std::string& prompt) {
             }
         }
 
-        std::vector<std::string> argv;
-        argv.push_back(config_.agent_cmd);
-        for (const auto& a : config_.agent_args) argv.push_back(a);
-        argv.push_back("-p");
-        argv.push_back(turn_prompt);
-        argv.push_back("--output-format");
-        argv.push_back("stream-json");
-        argv.push_back("--verbose");
-        argv.push_back("--max-turns");
-        argv.push_back(std::to_string(config_.max_turns));
-        if (!config_.allowed_tools.empty()) {
-            argv.push_back("--allowedTools");
-            std::string joined;
-            for (const auto& tool : config_.allowed_tools) {
-                if (!joined.empty()) joined += ",";
-                joined += tool;
-            }
-            argv.push_back(joined);
-        }
+        std::vector<std::string> argv = base_agent_argv(config_, turn_prompt);
         // Workers have no human to answer prompts; acceptEdits lets them work
         // in their worktree without blocking, while risky ops still fail and
         // report.
@@ -159,10 +158,11 @@ void TaskSupervisor::drive_turn(Task* t, const std::string& prompt) {
         {
             std::lock_guard<std::mutex> lock(t->m);
             if (!outcome.saw_result) {
-                std::string reason = t->cancel->load() ? "cancelled"
-                                     : outcome.timed_out ? "timeout"
-                                     : outcome.spawned   ? "died before result"
-                                                         : "spawn failed";
+                // An explicit cancel reports as cancelled whatever else the
+                // outcome says (a cancel that lands before the spawn included).
+                std::string reason = t->cancel->load()
+                                         ? "cancelled"
+                                         : failure_reason(outcome);
                 t->transcript.push_back(
                     {ChunkKind::Result,
                      ChunkMapper::synthetic_error_result(reason,
@@ -243,18 +243,16 @@ std::vector<TaskView> TaskSupervisor::list() {
 }
 
 TaskView TaskSupervisor::status(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = tasks_.find(id);
-    if (it == tasks_.end()) return {};
-    std::lock_guard<std::mutex> tlock(it->second->m);
-    return snapshot(*it->second);
+    Found found = find(id);
+    if (!found.task) return {};
+    std::lock_guard<std::mutex> tlock(found.task->m);
+    return snapshot(*found.task);
 }
 
 bool TaskSupervisor::send(const std::string& id, const std::string& prompt) {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = tasks_.find(id);
-    if (it == tasks_.end()) return false;
-    Task* t = it->second.get();
+    Found found = find(id);
+    if (!found.task) return false;
+    Task* t = found.task.get();
     {
         std::lock_guard<std::mutex> tlock(t->m);
         if (t->state == "running" || t->state == "cancelled") return false;
@@ -269,12 +267,8 @@ void TaskSupervisor::tail(const std::string& id,
                           const std::function<void(const Chunk&)>& emit) {
     // Hold a reference for the whole tail: remove() may drop the table entry
     // mid-replay, and this shared_ptr keeps the Task alive until we return.
-    std::shared_ptr<Task> t;
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        auto it = tasks_.find(id);
-        if (it != tasks_.end()) t = it->second;
-    }
+    // mu_ is released as soon as the lookup returns.
+    std::shared_ptr<Task> t = find(id).task;
     if (!t) {
         emit({ChunkKind::Result,
               ChunkMapper::synthetic_error_result("no such task", 0)});
@@ -292,34 +286,28 @@ void TaskSupervisor::tail(const std::string& id,
             running = (t->state == "running");
         }
         if (!running) return;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(kTailPollInterval);
     }
 }
 
 bool TaskSupervisor::cancel(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = tasks_.find(id);
-    if (it == tasks_.end()) return false;
-    Task* t = it->second.get();
+    Found found = find(id);
+    if (!found.task) return false;
+    Task* t = found.task.get();
     t->cancel->store(true);
     if (t->worker.joinable()) t->worker.join();
     {
         std::lock_guard<std::mutex> tlock(t->m);
         t->state = "cancelled";
     }
-    if (!t->branch.empty()) {
-        run_git({"-C", t->workdir, "worktree", "remove", "--force", t->worktree});
-        run_git({"-C", t->workdir, "branch", "-D", t->branch});
-        t->branch.clear();  // pruned once; remove() must not prune again
-    }
+    prune_worktree(*t);
     return true;
 }
 
 bool TaskSupervisor::remove(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = tasks_.find(id);
-    if (it == tasks_.end()) return false;
-    std::shared_ptr<Task> t = it->second;
+    Found found = find(id);
+    if (!found.task) return false;
+    std::shared_ptr<Task> t = found.task;
     {
         std::lock_guard<std::mutex> tlock(t->m);
         if (t->state == "running") return false;  // cancel first
@@ -328,13 +316,9 @@ bool TaskSupervisor::remove(const std::string& id) {
     // worker thread (if any) is at or past its final state store. Join it
     // before the table drops its reference.
     if (t->worker.joinable()) t->worker.join();
-    if (!t->branch.empty()) {
-        run_git({"-C", t->workdir, "worktree", "remove", "--force", t->worktree});
-        run_git({"-C", t->workdir, "branch", "-D", t->branch});
-        t->branch.clear();
-    }
+    prune_worktree(*t);
     // A concurrent tail keeps its own shared_ptr; the table just forgets.
-    tasks_.erase(it);
+    tasks_.erase(id);
     return true;
 }
 

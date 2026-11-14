@@ -60,7 +60,7 @@ func readStatus(path string) workStatus {
 // its Claude is working and the report is from this turn (see the file
 // comment for why `updated` marks the turn's start).
 func isPolling(s session, rec workRecord) bool {
-	return rec.status.have && s.State == "working" && rec.status.Updated >= s.Updated
+	return rec.status.have && s.State == stateWorking && rec.status.Updated >= s.Updated
 }
 
 func pollsWord(n int) string {

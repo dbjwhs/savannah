@@ -21,8 +21,8 @@
 
 #include "savannah.hpp"
 #include "test_support.hpp"
-#include "../src/config.hpp"
-#include "../src/wire_ids.hpp"
+#include "config.hpp"
+#include "wire_ids.hpp"
 
 namespace sw = song::savannah;
 namespace st = savannah::test;

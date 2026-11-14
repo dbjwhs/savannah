@@ -166,12 +166,47 @@ func (m model) bannerLines() int {
 	return 0
 }
 
-func (m model) vpHeight() int {
-	h := m.height - viewChrome - m.bannerLines()
-	if h < 3 {
-		h = 3
+func (m model) vpHeight() int { return m.bodyHeight(viewChrome + m.bannerLines()) }
+
+// bodyHeight is the room a full-screen view's viewport gets: the terminal's
+// height less the screen's own chrome lines, never under three.
+func (m model) bodyHeight(chrome int) int { return max(m.height-chrome, 3) }
+
+// scrollKey is the scroll keys every viewport screen shares: Up/Down a
+// line, PgUp/PgDn a page, Home and End. follow, when the screen has one,
+// is its stick-to-the-bottom flag: scrolling up lets go of the end,
+// reaching it again (or End) takes it back. It reports whether the key was
+// one of them.
+func scrollKey(vp *viewport.Model, follow *bool, t tea.KeyType) bool {
+	up := false
+	switch t {
+	case tea.KeyUp:
+		up = true
+		vp.ScrollUp(1)
+	case tea.KeyDown:
+		vp.ScrollDown(1)
+	case tea.KeyPgUp:
+		up = true
+		vp.PageUp()
+	case tea.KeyPgDown:
+		vp.PageDown()
+	case tea.KeyHome:
+		up = true
+		vp.GotoTop()
+	case tea.KeyEnd:
+		vp.GotoBottom()
+	default:
+		return false
 	}
-	return h
+	if follow != nil {
+		switch {
+		case up:
+			*follow = false
+		case t == tea.KeyEnd || vp.AtBottom():
+			*follow = true
+		}
+	}
+	return true
 }
 
 // displayBuf picks what to render: the current run once it has caught up
@@ -189,8 +224,7 @@ func (m *model) refreshViewport() {
 	buf := displayBuf(m.tailBuf, m.lastBuf)
 	m.vp.Width = m.width
 	m.vp.Height = m.vpHeight()
-	s := strings.ReplaceAll(string(buf), "\r", "")
-	m.vp.SetContent(wrapTo(s, m.width))
+	m.vp.SetContent(wrapTo(stripCR(string(buf)), m.width))
 	if m.follow {
 		m.vp.GotoBottom()
 	}
@@ -257,6 +291,9 @@ func (m model) updateTail(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if scrollKey(&m.vp, &m.follow, k.Type) {
+		return m, nil
+	}
 	switch k.Type {
 	case tea.KeyCtrlC:
 		m.killTail()
@@ -278,35 +315,8 @@ func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r.node == m.viewNode && r.t.ID == m.viewID {
 			return m, nil
 		}
-		return m, m.enterView(r.node, r.t.ID)
-	case tea.KeyUp:
-		m.follow = false
-		m.vp.ScrollUp(1)
-		return m, nil
-	case tea.KeyDown:
-		m.vp.ScrollDown(1)
-		if m.vp.AtBottom() {
-			m.follow = true
-		}
-		return m, nil
-	case tea.KeyPgUp:
-		m.follow = false
-		m.vp.PageUp()
-		return m, nil
-	case tea.KeyPgDown:
-		m.vp.PageDown()
-		if m.vp.AtBottom() {
-			m.follow = true
-		}
-		return m, nil
-	case tea.KeyHome:
-		m.follow = false
-		m.vp.GotoTop()
-		return m, nil
-	case tea.KeyEnd:
-		m.follow = true
-		m.vp.GotoBottom()
-		return m, nil
+		cmd := m.enterView(r.node, r.t.ID)
+		return m, cmd
 	case tea.KeyEnter:
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
@@ -314,7 +324,7 @@ func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		m.status = "sending to " + m.viewNode + "/" + m.viewID + "..."
-		return m, m.sendCmd(m.viewNode, m.viewID, text)
+		return m, m.taskCmd("send", m.viewNode, m.viewID, text)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
@@ -332,7 +342,7 @@ func (m model) viewView() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s   %s   turn %d   %s   %s\n",
 		headerStyle.Render("savannah-dash  "+target),
-		state, turns, trunc(title, 24), time.Now().Format("15:04:05"))
+		state, turns, trunc(title, 24), clock())
 	b.WriteString(m.vp.View() + "\n")
 	if d, pending := pendingDecision(vt); found && pending {
 		b.WriteString(warnStyle.Render(
@@ -367,9 +377,7 @@ func neighborTaskRow(rows []row, node, id string, delta int) (int, bool) {
 	if len(idx) == 0 {
 		return 0, false
 	}
-	if cur < 0 {
-		cur = 0
-	}
+	cur = max(cur, 0)
 	pos := ((cur+delta)%len(idx) + len(idx)) % len(idx)
 	return idx[pos], true
 }

@@ -258,11 +258,11 @@ func TestCtrlREditsTitle(t *testing.T) {
 	if cmd == nil || !strings.Contains(m.status, "titling live") {
 		t.Fatalf("Enter should run work title: cmd=%v status=%q", cmd != nil, m.status)
 	}
-	m, cmd = send(m, workTitledMsg{name: "live", title: "Live One", err: "title: no such session"})
+	m, cmd = send(m, workDoneMsg{verb: verbTitle, name: "live", text: "Live One", err: "title: no such session"})
 	if cmd != nil || m.titleFor != "live" || m.input.Value() != "Live One" || !strings.Contains(m.status, "title live: title: no such session") {
 		t.Errorf("refused title should keep the box: titleFor=%q input=%q status=%q", m.titleFor, m.input.Value(), m.status)
 	}
-	m, cmd = send(m, workTitledMsg{name: "live", title: "Live One"})
+	m, cmd = send(m, workDoneMsg{verb: verbTitle, name: "live", text: "Live One"})
 	if cmd == nil || m.titleFor != "" || m.input.Value() != "" || !strings.Contains(m.status, "titled live: Live One") {
 		t.Errorf("after title: titleFor=%q input=%q status=%q", m.titleFor, m.input.Value(), m.status)
 	}
@@ -289,7 +289,7 @@ func TestCtrlREditsTitle(t *testing.T) {
 	if cmd == nil || !strings.Contains(m.status, "clearing the title of live") {
 		t.Errorf("empty Enter should clear: cmd=%v status=%q", cmd != nil, m.status)
 	}
-	m, _ = send(m, workTitledMsg{name: "live", title: ""})
+	m, _ = send(m, workDoneMsg{verb: verbTitle, name: "live", text: ""})
 	if !strings.Contains(m.status, "cleared the title of live") {
 		t.Errorf("after clear: status=%q", m.status)
 	}
