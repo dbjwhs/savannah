@@ -31,7 +31,7 @@ import (
 // pressNow is Ctrl-P: the highlighted named session into NOW, or out of
 // it onto the top of ACTIVE; the records are renumbered 10, 20, 30 like a
 // drag and written through `work move`.
-func (m model) pressNow() (tea.Model, tea.Cmd) {
+func (m model) pressNow() (model, tea.Cmd) {
 	r, ok := m.currentRow()
 	if !ok || r.kind != rowSession {
 		m.status = warnStyle.Render("Ctrl-P moves a session to NOW; select one")

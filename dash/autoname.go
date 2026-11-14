@@ -24,6 +24,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -105,6 +106,20 @@ func autonameCmd(bin string, ids []string) tea.Cmd {
 		res, errText := runJSON[autonameOut](run, bin, args, "work autoname printed no JSON")
 		return autonameMsg{ids: ids, out: res, err: errText}
 	}
+}
+
+// updateAutoname takes a finished run: the status line says what was
+// named, and the sessions are read again so the names show.
+func (m model) updateAutoname(msg autonameMsg) (tea.Model, tea.Cmd) {
+	m.naming = false
+	if msg.err != "" {
+		slog.Warn("autoname failed", "tabs", len(msg.ids), "err", msg.err)
+	} else {
+		slog.Info("autonamed", "tabs", len(msg.ids), "named", len(msg.out.Named),
+			"skipped", len(msg.out.Skipped), "failed", len(msg.out.Failed))
+	}
+	m.status = autonameStatus(msg)
+	return m, readSessionsCmd()
 }
 
 // autonameStatus is the status line for a finished run: the titles and

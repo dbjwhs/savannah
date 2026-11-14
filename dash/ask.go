@@ -112,7 +112,7 @@ func (m model) askable() int {
 
 // pressAsk is Ctrl-A on the board: the last replies when there are some,
 // else arm, then ask (the screen's `a` asks again).
-func (m model) pressAsk() (tea.Model, tea.Cmd) {
+func (m model) pressAsk() (model, tea.Cmd) {
 	if m.ask.busy {
 		m.status = helpStyle.Render("still asking (the rows show who has answered)...")
 		return m, nil
@@ -136,7 +136,7 @@ func (m model) pressAsk() (tea.Model, tea.Cmd) {
 }
 
 // startAsk runs the CLI and goes back to the board to watch the rows.
-func (m model) startAsk() (tea.Model, tea.Cmd) {
+func (m model) startAsk() (model, tea.Cmd) {
 	m.ask.armed = false
 	m.ask.busy = true
 	m.ask.started = time.Now()

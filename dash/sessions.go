@@ -25,6 +25,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -630,6 +631,30 @@ func jumpSessionCmd(s session) tea.Cmd {
 		}
 		return jumpMsg{id: s.ID, ok: false, how: "no terminal id"}
 	}
+}
+
+// updateSessions says how a jump or a dismiss went.
+func (m model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case jumpMsg:
+		if msg.ok {
+			slog.Info("jumped", "id", msg.id, "how", msg.how)
+			m.status = okStyle.Render("jumped to " + msg.id + " (" + msg.how + ")")
+		} else {
+			slog.Warn("jump failed", "id", msg.id, "how", msg.how)
+			m.status = warnStyle.Render("could not jump to " + msg.id +
+				" (" + msg.how + ")")
+		}
+	case dismissMsg:
+		if msg.ok {
+			slog.Info("dismissed", "id", msg.id)
+			m.status = okStyle.Render("dismissed session " + msg.id)
+			return m, readSessionsCmd()
+		}
+		slog.Warn("dismiss failed", "id", msg.id)
+		m.status = warnStyle.Render("could not dismiss " + msg.id)
+	}
+	return m, nil
 }
 
 // dismissSessionCmd deletes a stale session file (a crashed session that

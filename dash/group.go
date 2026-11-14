@@ -246,3 +246,19 @@ func groupHeader(root string, isRepo bool, n int, home string, wide bool) string
 	}
 	return line
 }
+
+// toggleGroup is Ctrl-G: the rows regroup (or return to the plain rank
+// order), the cursor stays on the row it was on, and the choice is written
+// to the board file for the next run (a failure to write is a status line,
+// not a refusal: the toggle still holds for this run).
+func (m model) toggleGroup() model {
+	m.group = !m.group
+	m.rebuildKeepingCursor()
+	status := "rows in your order (Ctrl-G groups them by repository)"
+	if m.group {
+		status = "rows grouped by repository (Ctrl-G returns to your order)"
+	}
+	m.act("group", status, "on", m.group)
+	m.remember(func(p *boardPrefs) { p.Group = groupPref(m.group) })
+	return m
+}

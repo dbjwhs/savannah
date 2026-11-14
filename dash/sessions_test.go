@@ -154,8 +154,8 @@ func TestReadSessions(t *testing.T) {
 
 func TestSessionRowsInRebuild(t *testing.T) {
 	m := testBoard(t, bare, sized(0, 0), withSessions([]session{{ID: "s1", State: "waiting"}}), func(m *model) {
-		m.tasks = map[string][]task{"n1": {{ID: "t-1", State: "idle"}}}
-		m.nodes = []string{"n1"}
+		m.mesh.tasks = map[string][]task{"n1": {{ID: "t-1", State: "idle"}}}
+		m.mesh.nodes = []string{"n1"}
 	})
 	if len(m.rows) != 2 {
 		t.Fatalf("rows = %d, want 2", len(m.rows))

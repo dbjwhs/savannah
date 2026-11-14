@@ -157,12 +157,12 @@ func (m model) restoreCmd(dry bool) tea.Cmd {
 	}
 }
 
-func (m *model) enterSnapshot() tea.Cmd {
+func (m model) enterSnapshot() (model, tea.Cmd) {
 	m.mode = modeSnapshot
 	m.snap.lines, m.snap.busy, m.snap.err = nil, "", ""
 	m.status = ""
 	slog.Debug("snapshot screen opened")
-	return m.snapshotsCmd()
+	return m, m.snapshotsCmd()
 }
 
 func (m *model) leaveSnapshot() { m.mode = modeBoard }

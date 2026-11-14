@@ -77,7 +77,7 @@ type reposMsg struct {
 }
 
 // workOutputMsg carries one fetch of the output view; seq orphans fetches
-// and ticks from an earlier view the same way tailSeq does for the tail.
+// and ticks from an earlier view the same way tail.seq does for the tail.
 type workOutputMsg struct {
 	seq  int
 	name string
@@ -247,107 +247,131 @@ func outputTickCmd(seq int) tea.Cmd {
 }
 
 // updateWork folds the work commands' results into the model. These arrive
-// in any mode (a `new` can finish after Esc left the dialog), so each case
+// in any mode (a `new` can finish after Esc left the dialog), so each one
 // checks where the user is now before touching a screen.
 func (m model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case workOpenMsg:
-		if msg.err != "" {
-			m.fail("open failed", "open "+msg.name, msg.err, "name", msg.name)
-			return m, nil
-		}
-		slog.Info("open done", "name", msg.name, "action", msg.action)
-		m.status = okStyle.Render(msg.action + " " + msg.name)
-		if msg.action == "reopened" {
-			return m, readSessionsCmd()
-		}
-		return m, nil
+		return m.workOpened(msg)
 	case workDoneMsg:
-		v := workVerbs[msg.verb]
-		if msg.err != "" {
-			// A title's text stays in the box so a refused one is a one-edit fix.
-			m.fail(msg.verb+" failed", v.refused+msg.name, msg.err, "name", msg.name)
-			return m, nil
-		}
-		switch {
-		case msg.verb != verbTitle:
-			slog.Info(v.done, "name", msg.name)
-			m.status = okStyle.Render(v.ok + msg.name)
-		case msg.text == "":
-			slog.Info("title cleared", "name", msg.name)
-			m.status = okStyle.Render("cleared the title of " + msg.name)
-		default:
-			slog.Info(v.done, "name", msg.name, "title", msg.text)
-			m.status = okStyle.Render(v.ok + msg.name + ": " + msg.text)
-		}
-		if msg.verb == verbTitle {
-			m.titleFor = ""
-			m.input.SetValue("")
-		}
-		if v.reread {
-			return m, readSessionsCmd()
-		}
-		return m, nil
+		return m.workDone(msg)
 	case workNewMsg:
-		if msg.err != "" {
-			if m.mode == modeNew {
-				// Keep what was typed so a typo is a one-field fix.
-				slog.Warn("new failed", "name", msg.name, "err", msg.err)
-				m.nd.busy = false
-				m.nd.err = clip(msg.err)
-				return m, nil
-			}
-			m.fail("new failed", "new "+msg.name, msg.err, "name", msg.name)
-			return m, nil
-		}
-		if m.mode == modeNew {
-			m.mode = modeBoard
-			m.nd = newDialog{}
-		}
-		slog.Info("new done", "name", msg.name)
-		m.status = okStyle.Render("opened " + msg.name)
-		return m, readSessionsCmd()
+		return m.workNewDone(msg)
 	case workAdoptMsg:
-		if msg.err != "" {
-			// The name stays in the box so a refused one is a one-edit fix.
-			m.fail("adopt failed", "name "+msg.name, msg.err, "name", msg.name)
-			return m, nil
-		}
-		slog.Info("adopted", "name", msg.name, "title", msg.title)
-		m.adoptFor, m.adoptProject = "", ""
-		m.input.SetValue("")
-		named := "named it " + msg.name
-		if msg.title != "" {
-			named += " (" + msg.title + ")"
-		}
-		if m.adoptNote {
-			m.noteFor = msg.name
-			m.status = okStyle.Render(named + "; now its note (Enter saves, Esc skips)")
-		} else {
-			m.status = okStyle.Render(named)
-		}
-		return m, readSessionsCmd()
+		return m.workAdopted(msg)
 	case reposMsg:
 		if m.mode == modeNew {
 			m.nd.repos, m.nd.reposErr = msg.info, msg.err
 		}
-		return m, nil
 	case workOutputMsg:
 		if m.mode == modeOutput && msg.seq == m.out.seq {
 			m.out.text = msg.text
 			m.refreshOutput()
 		}
-		return m, nil
 	case outputTick:
-		if m.mode != modeOutput || msg.seq != m.out.seq {
-			return m, nil
+		if m.mode == modeOutput && msg.seq == m.out.seq {
+			return m, tea.Batch(m.workOutputCmd(msg.seq, m.out.name), outputTickCmd(msg.seq))
 		}
-		return m, tea.Batch(m.workOutputCmd(msg.seq, m.out.name), outputTickCmd(msg.seq))
 	}
 	return m, nil
 }
 
-// ---- the output view (Ctrl-O): what that tab's Claude said last ----------
+// workOpened is the result of `work open`: a tab made again means the
+// sessions have changed.
+func (m model) workOpened(msg workOpenMsg) (model, tea.Cmd) {
+	if msg.err != "" {
+		m.fail("open failed", "open "+msg.name, msg.err, "name", msg.name)
+		return m, nil
+	}
+	slog.Info("open done", "name", msg.name, "action", msg.action)
+	m.status = okStyle.Render(msg.action + " " + msg.name)
+	if msg.action == "reopened" {
+		return m, readSessionsCmd()
+	}
+	return m, nil
+}
+
+// workDone is the result of say, note, rm or title (workVerbs). A title
+// set or cleared ends the title prompt; refused, its text stays in the box
+// so it is a one-edit fix.
+func (m model) workDone(msg workDoneMsg) (model, tea.Cmd) {
+	v := workVerbs[msg.verb]
+	if msg.err != "" {
+		m.fail(msg.verb+" failed", v.refused+msg.name, msg.err, "name", msg.name)
+		return m, nil
+	}
+	switch {
+	case msg.verb != verbTitle:
+		slog.Info(v.done, "name", msg.name)
+		m.status = okStyle.Render(v.ok + msg.name)
+	case msg.text == "":
+		slog.Info("title cleared", "name", msg.name)
+		m.status = okStyle.Render("cleared the title of " + msg.name)
+	default:
+		slog.Info(v.done, "name", msg.name, "title", msg.text)
+		m.status = okStyle.Render(v.ok + msg.name + ": " + msg.text)
+	}
+	if msg.verb == verbTitle {
+		if m.prompt.kind == promptTitle {
+			m.prompt = promptState{}
+		}
+		m.input.SetValue("")
+	}
+	if v.reread {
+		return m, readSessionsCmd()
+	}
+	return m, nil
+}
+
+// workNewDone is the result of `work new`. A refusal with the dialog still
+// up goes into the dialog, which keeps what was typed so a typo is a
+// one-field fix; success closes it.
+func (m model) workNewDone(msg workNewMsg) (model, tea.Cmd) {
+	switch {
+	case msg.err != "" && m.mode == modeNew:
+		slog.Warn("new failed", "name", msg.name, "err", msg.err)
+		m.nd.busy = false
+		m.nd.err = clip(msg.err)
+		return m, nil
+	case msg.err != "":
+		m.fail("new failed", "new "+msg.name, msg.err, "name", msg.name)
+		return m, nil
+	case m.mode == modeNew:
+		m.mode = modeBoard
+		m.nd = newDialog{}
+	}
+	slog.Info("new done", "name", msg.name)
+	m.status = okStyle.Render("opened " + msg.name)
+	return m, readSessionsCmd()
+}
+
+// workAdopted is the result of `work adopt`. Refused, the name stays in the
+// box so it is a one-edit fix. The adopt may be a drag's or Ctrl-P's
+// (adoptForMove) with the prompt line on another job: only the naming
+// prompt ends here, and only Ctrl-T's naming goes on to the note.
+func (m model) workAdopted(msg workAdoptMsg) (model, tea.Cmd) {
+	if msg.err != "" {
+		m.fail("adopt failed", "name "+msg.name, msg.err, "name", msg.name)
+		return m, nil
+	}
+	slog.Info("adopted", "name", msg.name, "title", msg.title)
+	thenNote := m.prompt.kind == promptAdopt && m.prompt.thenNote
+	if m.prompt.kind == promptAdopt {
+		m.prompt = promptState{}
+	}
+	m.input.SetValue("")
+	named := "named it " + msg.name
+	if msg.title != "" {
+		named += " (" + msg.title + ")"
+	}
+	if thenNote {
+		m.setPrompt(promptState{kind: promptNote, target: msg.name}, "")
+		m.status = okStyle.Render(named + "; now its note (Enter saves, Esc skips)")
+	} else {
+		m.status = okStyle.Render(named)
+	}
+	return m, readSessionsCmd()
+}
 
 type outputState struct {
 	name   string
@@ -356,13 +380,13 @@ type outputState struct {
 	follow bool // stick to the bottom as new replies arrive
 }
 
-func (m *model) enterOutput(name string) tea.Cmd {
+func (m model) enterOutput(name string) (model, tea.Cmd) {
 	m.mode = modeOutput
 	m.out = outputState{name: name, seq: m.out.seq + 1, follow: true, text: "fetching..."}
 	m.vp = viewport.New(m.width, m.bodyHeight(outputChrome))
 	m.refreshOutput()
 	m.status = ""
-	return tea.Batch(m.workOutputCmd(m.out.seq, name), outputTickCmd(m.out.seq))
+	return m, tea.Batch(m.workOutputCmd(m.out.seq, name), outputTickCmd(m.out.seq))
 }
 
 func (m *model) leaveOutput() {
@@ -421,9 +445,12 @@ type newDialog struct {
 	reposErr           string
 }
 
-func (m *model) enterNew() tea.Cmd {
+func (m model) enterNew() (model, tea.Cmd) {
 	m.mode = modeNew
-	m.noteFor, m.adoptFor, m.titleFor, m.pendingRm, m.status = "", "", "", "", ""
+	if !m.finding() { // a filter being typed is still being typed after the dialog
+		m.prompt = promptState{}
+	}
+	m.pendingRm, m.status = "", ""
 	mk := func(placeholder string, limit int) textinput.Model {
 		ti := textinput.New()
 		ti.Placeholder = placeholder
@@ -438,7 +465,7 @@ func (m *model) enterNew() tea.Cmd {
 		worktree: true,
 	}
 	m.nd.setFocus(fieldName)
-	return m.reposCmd()
+	return m, m.reposCmd()
 }
 
 func (d *newDialog) setFocus(i int) {

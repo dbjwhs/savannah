@@ -208,8 +208,8 @@ func TestCtrlRNamesPlainTabWithoutNote(t *testing.T) {
 	m.titles = map[string]string{"UUID-P": "Local testing"}
 	cursorTo(t, &m, hookRow("s2"))
 	m, cmd := press(m, tea.KeyCtrlR)
-	if cmd != nil || m.adoptFor != "s2" || m.adoptNote || m.titleFor != "" {
-		t.Fatalf("Ctrl-R on a plain tab: adoptFor=%q adoptNote=%v titleFor=%q", m.adoptFor, m.adoptNote, m.titleFor)
+	if cmd != nil || m.promptFor(promptAdopt) != "s2" || m.prompt.thenNote || m.promptFor(promptTitle) != "" {
+		t.Fatalf("Ctrl-R on a plain tab: adoptFor=%q adoptNote=%v titleFor=%q", m.promptFor(promptAdopt), m.prompt.thenNote, m.promptFor(promptTitle))
 	}
 	// The tab's own words are offered: Enter keeps them as the title and
 	// derives the name.
@@ -224,33 +224,33 @@ func TestCtrlRNamesPlainTabWithoutNote(t *testing.T) {
 		t.Fatalf("Enter should run adopt: cmd=%v status=%q", cmd != nil, m.status)
 	}
 	m, cmd = send(m, workAdoptMsg{name: "local-testing", title: "Local testing"})
-	if m.noteFor != "" || m.adoptFor != "" || !strings.Contains(m.status, "named it local-testing (Local testing)") ||
+	if m.promptFor(promptNote) != "" || m.promptFor(promptAdopt) != "" || !strings.Contains(m.status, "named it local-testing (Local testing)") ||
 		strings.Contains(m.status, "now its note") || cmd == nil {
-		t.Errorf("after adopt: noteFor=%q adoptFor=%q status=%q", m.noteFor, m.adoptFor, m.status)
+		t.Errorf("after adopt: noteFor=%q adoptFor=%q status=%q", m.promptFor(promptNote), m.promptFor(promptAdopt), m.status)
 	}
 	// Ctrl-T still takes the note after naming.
 	cursorTo(t, &m, hookRow("s2"))
 	m, _ = press(m, tea.KeyCtrlT)
-	if m.adoptFor != "s2" || !m.adoptNote {
-		t.Errorf("Ctrl-T should name with a note to follow: adoptFor=%q adoptNote=%v", m.adoptFor, m.adoptNote)
+	if m.promptFor(promptAdopt) != "s2" || !m.prompt.thenNote {
+		t.Errorf("Ctrl-T should name with a note to follow: adoptFor=%q adoptNote=%v", m.promptFor(promptAdopt), m.prompt.thenNote)
 	}
 	m, _ = send(m, workAdoptMsg{name: "x"})
-	if m.noteFor != "x" {
-		t.Errorf("Ctrl-T adopt should move on to the note, noteFor=%q", m.noteFor)
+	if m.promptFor(promptNote) != "x" {
+		t.Errorf("Ctrl-T adopt should move on to the note, noteFor=%q", m.promptFor(promptNote))
 	}
 }
 
 func TestCtrlREditsTitle(t *testing.T) {
 	m := boardWith(t, true) // cursor on live, which has no title yet
 	m, _ = press(m, tea.KeyCtrlR)
-	if m.titleFor != "live" || m.input.Value() != "" || m.adoptFor != "" {
-		t.Fatalf("Ctrl-R on a work row: titleFor=%q input=%q", m.titleFor, m.input.Value())
+	if m.promptFor(promptTitle) != "live" || m.input.Value() != "" || m.promptFor(promptAdopt) != "" {
+		t.Fatalf("Ctrl-R on a work row: titleFor=%q input=%q", m.promptFor(promptTitle), m.input.Value())
 	}
 	if out := m.View(); !strings.Contains(out, "title for live") {
 		t.Errorf("prompt line should say title for live:\n%s", out)
 	}
 	m, cmd := press(m, tea.KeyEnter) // empty, and nothing to clear
-	if cmd != nil || m.titleFor != "live" || !strings.Contains(m.status, "no title yet") {
+	if cmd != nil || m.promptFor(promptTitle) != "live" || !strings.Contains(m.status, "no title yet") {
 		t.Errorf("empty title on an untitled session: cmd=%v status=%q", cmd != nil, m.status)
 	}
 	m.input.SetValue("Live One")
@@ -259,12 +259,12 @@ func TestCtrlREditsTitle(t *testing.T) {
 		t.Fatalf("Enter should run work title: cmd=%v status=%q", cmd != nil, m.status)
 	}
 	m, cmd = send(m, workDoneMsg{verb: verbTitle, name: "live", text: "Live One", err: "title: no such session"})
-	if cmd != nil || m.titleFor != "live" || m.input.Value() != "Live One" || !strings.Contains(m.status, "title live: title: no such session") {
-		t.Errorf("refused title should keep the box: titleFor=%q input=%q status=%q", m.titleFor, m.input.Value(), m.status)
+	if cmd != nil || m.promptFor(promptTitle) != "live" || m.input.Value() != "Live One" || !strings.Contains(m.status, "title live: title: no such session") {
+		t.Errorf("refused title should keep the box: titleFor=%q input=%q status=%q", m.promptFor(promptTitle), m.input.Value(), m.status)
 	}
 	m, cmd = send(m, workDoneMsg{verb: verbTitle, name: "live", text: "Live One"})
-	if cmd == nil || m.titleFor != "" || m.input.Value() != "" || !strings.Contains(m.status, "titled live: Live One") {
-		t.Errorf("after title: titleFor=%q input=%q status=%q", m.titleFor, m.input.Value(), m.status)
+	if cmd == nil || m.promptFor(promptTitle) != "" || m.input.Value() != "" || !strings.Contains(m.status, "titled live: Live One") {
+		t.Errorf("after title: titleFor=%q input=%q status=%q", m.promptFor(promptTitle), m.input.Value(), m.status)
 	}
 	// With a title set, Ctrl-R offers it; the same text is a no-op, empty clears.
 	for i := range m.work {
@@ -280,8 +280,8 @@ func TestCtrlREditsTitle(t *testing.T) {
 		t.Errorf("Ctrl-R should offer the current title, got %q", m.input.Value())
 	}
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd != nil || m.titleFor != "" || m.status != "title unchanged" {
-		t.Errorf("unchanged title: cmd=%v titleFor=%q status=%q", cmd != nil, m.titleFor, m.status)
+	if cmd != nil || m.promptFor(promptTitle) != "" || m.status != "title unchanged" {
+		t.Errorf("unchanged title: cmd=%v titleFor=%q status=%q", cmd != nil, m.promptFor(promptTitle), m.status)
 	}
 	m, _ = press(m, tea.KeyCtrlR)
 	m.input.SetValue("")
@@ -296,8 +296,8 @@ func TestCtrlREditsTitle(t *testing.T) {
 	// Esc cancels a title in progress.
 	m, _ = press(m, tea.KeyCtrlR)
 	m, cmd = press(m, tea.KeyEsc)
-	if cmd != nil || m.titleFor != "" || m.status != "title cancelled" {
-		t.Errorf("Esc: cmd=%v titleFor=%q status=%q", cmd != nil, m.titleFor, m.status)
+	if cmd != nil || m.promptFor(promptTitle) != "" || m.status != "title cancelled" {
+		t.Errorf("Esc: cmd=%v titleFor=%q status=%q", cmd != nil, m.promptFor(promptTitle), m.status)
 	}
 	if args := titleArgs("live", "Live One"); !reflect.DeepEqual(args, []string{"work", "title", "live", "--", "Live One"}) {
 		t.Errorf("titleArgs = %v", args)
@@ -406,7 +406,7 @@ func TestSectionHeadersInView(t *testing.T) {
 		t.Errorf("empty ACTIVE should carry its hint:\n%s", out)
 	}
 	// Mesh help names the view, still within one line.
-	m.mesh = true
+	m.mesh.on = true
 	for _, ln := range plainLines(m.View()) {
 		if len([]rune(ln)) > m.width {
 			t.Errorf("line wider than the terminal (%d): %q", len([]rune(ln)), ln)

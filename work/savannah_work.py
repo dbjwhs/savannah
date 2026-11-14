@@ -96,6 +96,7 @@
 # the same methods. Stdlib only.
 
 import argparse
+import collections
 import glob
 import json
 import os
@@ -1279,6 +1280,69 @@ def claim_record_dir(name):
     raise UserError(f"work session already exists: {name}")
 
 
+Worktree = collections.namedtuple("Worktree", "repo worktree branch made made_branch reattached")
+Worktree.__doc__ = """Where a new session runs and what `new` made for it, so a rollback
+knows what is its own to undo: made = the git worktree was added,
+made_branch = its branch was created here (not reattached, not --branch)."""
+
+
+def add_worktree(repo, name, branch):
+    """The git worktree of a new session: <main root>/.savannah-worktrees/<name>
+    on the given existing local branch, else on work/<name> (created, or
+    reattached when an earlier rm left it: rm keeps the branch, it is your
+    work, and a new session of the same name picks it up where it was left).
+    -> Worktree. Raises UserError with nothing left behind: a failed
+    `git worktree add` makes neither the worktree nor the branch."""
+    repo = resolve_repo_root(repo)
+    base = os.path.join(repo, WORKTREES_SUBDIR)
+    worktree = os.path.join(base, name)
+    try:
+        os.makedirs(base, exist_ok=True)
+    except OSError as e:
+        raise UserError(f"cannot create {base}: {oserr(e)}")
+    made_branch = False
+    reattached = False
+    if branch:
+        if not git_branch_exists(repo, branch):
+            raise UserError(f"branch {branch} does not exist locally")
+        p = run_git(["-C", repo, "worktree", "add", worktree, branch])
+    else:
+        branch = f"work/{name}"
+        if git_branch_exists(repo, branch):
+            reattached = True
+            p = run_git(["-C", repo, "worktree", "add", worktree, branch])
+        else:
+            p = run_git(["-C", repo, "worktree", "add", "-b", branch, worktree])
+            made_branch = p.returncode == 0
+    if p.returncode != 0:
+        raise UserError(git_fail_message(p, "git worktree add"))
+    log_debug("worktree added", name=name, worktree=worktree, branch=branch,
+              reattached=reattached, new_branch=made_branch)
+    return Worktree(repo, worktree, branch, True, made_branch, reattached)
+
+
+def rollback_new(name, rdir, term, ids, wt):
+    """Undo a failed `new`. Nothing of ours should survive it, whatever
+    failed: the tab if it already exists (a record write failing after the
+    tab is up would otherwise orphan it), the fresh worktree (nothing in it
+    yet), the branch we just made, and last, always, the claimed record
+    dir. A reattached or --branch branch is left alone."""
+    log_warn("new rolled back", name=name, tab=bool(ids), worktree=wt.made, branch=wt.made_branch)
+    try:
+        if ids:
+            try:
+                term.close_tab(ids.get("tab_id", ""),
+                               (ids.get("claude_pane", ""), ids.get("shell_pane", "")))
+            except Exception:
+                pass
+        if wt.made:
+            run_git(["-C", wt.repo, "worktree", "remove", "--force", wt.worktree])
+        if wt.made_branch:
+            run_git(["-C", wt.repo, "branch", "-D", wt.branch])
+    finally:
+        shutil.rmtree(rdir, ignore_errors=True)
+
+
 def cmd_new(a):
     name = a.name
     if not valid_name(name):
@@ -1293,87 +1357,38 @@ def cmd_new(a):
         raise UserError(f"repo is not a directory: {repo}")
 
     rdir = claim_record_dir(name)
-    worktree = repo
-    branch = ""
-    made_worktree = False
-    made_branch = False
-    reattached = False
+    wt = Worktree(repo, repo, "", False, False, False)  # --no-worktree: the repo itself
     copied = []
     term = make_terminal("")
     ids = None
     try:
         if not a.no_worktree:
-            repo = resolve_repo_root(repo)
-            base = os.path.join(repo, WORKTREES_SUBDIR)
-            worktree = os.path.join(base, name)
-            try:
-                os.makedirs(base, exist_ok=True)
-            except OSError as e:
-                raise UserError(f"cannot create {base}: {oserr(e)}")
-            if a.branch:
-                branch = a.branch
-                if not git_branch_exists(repo, branch):
-                    raise UserError(f"branch {branch} does not exist locally")
-                p = run_git(["-C", repo, "worktree", "add", worktree, branch])
-            else:
-                branch = f"work/{name}"
-                if git_branch_exists(repo, branch):
-                    # rm keeps the branch (it is your work); a new session of the
-                    # same name picks it up where it was left.
-                    reattached = True
-                    p = run_git(["-C", repo, "worktree", "add", worktree, branch])
-                else:
-                    p = run_git(["-C", repo, "worktree", "add", "-b", branch, worktree])
-                    made_branch = p.returncode == 0
-            if p.returncode != 0:
-                raise UserError(git_fail_message(p, "git worktree add"))
-            made_worktree = True
-            log_debug("worktree added", name=name, worktree=worktree, branch=branch,
-                      reattached=reattached, new_branch=made_branch)
-
+            wt = add_worktree(repo, name, a.branch)
         prompt = a.prompt or ""
-        if made_worktree:
-            copied = copy_worktree_includes(repo, worktree)
-        ids = term.create_split_tab(name, claude_command(worktree, name, prompt),
-                                    f"cd {shlex.quote(worktree)}")
+        if wt.made:
+            copied = copy_worktree_includes(wt.repo, wt.worktree)
+        ids = term.create_split_tab(name, claude_command(wt.worktree, name, prompt),
+                                    f"cd {shlex.quote(wt.worktree)}")
 
-        rec = new_record(name, repo, worktree, branch, term.kind, tab_id=ids.get("tab_id", ""),
+        rec = new_record(name, wt.repo, wt.worktree, wt.branch, term.kind, tab_id=ids.get("tab_id", ""),
                          claude_pane=ids.get("claude_pane", ""), shell_pane=ids.get("shell_pane", ""),
                          prompt=prompt, title=getattr(a, "title", ""))
         atomic_write(record_path(name), rec)
-        log_info("new", name=name, repo=repo, worktree=worktree, branch=branch, tab=rec["tab_id"],
-                 claude_pane=rec["claude_pane"], shell_pane=rec["shell_pane"], reattached=reattached,
+        log_info("new", name=name, repo=wt.repo, worktree=wt.worktree, branch=wt.branch, tab=rec["tab_id"],
+                 claude_pane=rec["claude_pane"], shell_pane=rec["shell_pane"], reattached=wt.reattached,
                  copied=len(copied), title=rec["title"])
         if a.note:
             append_note(name, a.note)
     except BaseException:
-        # Nothing of ours should survive a failed new, whatever failed: the
-        # claimed record dir, the fresh worktree (nothing in it yet), the
-        # branch we just made, and the tab if it already exists (a record
-        # write failing after the tab is up would otherwise orphan it). A
-        # reattached or --branch branch is left alone.
-        log_warn("new rolled back", name=name, tab=bool(ids), worktree=made_worktree, branch=made_branch)
-        try:
-            if ids:
-                try:
-                    term.close_tab(ids.get("tab_id", ""),
-                                   (ids.get("claude_pane", ""), ids.get("shell_pane", "")))
-                except Exception:
-                    pass
-            if made_worktree:
-                run_git(["-C", repo, "worktree", "remove", "--force", worktree])
-            if made_branch:
-                run_git(["-C", repo, "branch", "-D", branch])
-        finally:
-            shutil.rmtree(rdir, ignore_errors=True)
+        rollback_new(name, rdir, term, ids, wt)
         raise
 
-    if reattached:
-        print(f"new: reattached existing branch {branch}", file=sys.stderr)
+    if wt.reattached:
+        print(f"new: reattached existing branch {wt.branch}", file=sys.stderr)
     if copied:
         print(f"new: copied {len(copied)} from {WORKTREE_INCLUDE}: {', '.join(copied)}", file=sys.stderr)
-    where = f"{worktree} on {branch}" if branch else worktree
-    tag = " (reattached)" if reattached else ""
+    where = f"{wt.worktree} on {wt.branch}" if wt.branch else wt.worktree
+    tag = " (reattached)" if wt.reattached else ""
     emit(a, rec, f"{name}: {where}{tag} (tab {rec['tab_id']}, claude {rec['claude_pane']})")
     return 0
 
@@ -1592,6 +1607,37 @@ def current_branch(d):
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
+def release_pane_claims(pane, h, name):
+    """Before name adopts hook session h in pane: a record that claims the
+    pane AND joins the session is that tab already (UserError). One that
+    claims it without joining (the pane now runs a Claude in another
+    directory, so that record's own tab is gone) has a stale claim: its
+    claude_pane and tab_id are cleared, so `say` and `rm` on the old record
+    never reach the new tab, and `open` remakes its own."""
+    for other in list_records():
+        if other.get("claude_pane") != pane:
+            continue
+        if join_session(other, [h]) is not None:
+            raise UserError(f"that tab is already work session {other['name']}")
+        stale = load_record(other["name"])
+        stale["claude_pane"], stale["tab_id"] = "", ""
+        save_record(stale)
+        log_warn("pane released", name=other["name"], claude_pane=pane, to=name,
+                 why="the pane runs a Claude in another directory")
+
+
+def pane_tab_id(term, pane):
+    """The iTerm2 tab a pane sits in, "" when it2 cannot say. Best effort:
+    the tab is for the board's eye only; nothing acts on it."""
+    try:
+        for s in term.sessions():
+            if s.get("id") == pane:
+                return str(s.get("tab_id") or "")
+    except UserError:
+        pass
+    return ""
+
+
 def adopt_session(name, h, session_id, title="", note=""):
     """The shared half of `adopt` and `autoname`: write the record that
     takes hook session h (its id is session_id) into work session name. The
@@ -1600,11 +1646,8 @@ def adopt_session(name, h, session_id, title="", note=""):
     join key). Refuses (UserError, no record left behind) an invalid or taken
     name, a session whose directory is not here, or a pane some record
     claims AND joins (the same rule as the board: the record's worktree is
-    the hook's directory). A record that claims the pane but cannot join
-    the hook session (the pane now runs a Claude in another directory, so
-    that record's own tab is gone) has a stale claim: it is released, the
-    record's claude_pane and tab_id cleared, so `say` and `rm` on the old
-    record never reach the new tab, and `open` remakes its own."""
+    the hook's directory); a stale claim on the pane is released
+    (release_pane_claims)."""
     if not valid_name(name):
         raise UserError(f"invalid name {name!r}: {NAME_HELP}")
     rdir = claim_record_dir(name)
@@ -1615,31 +1658,13 @@ def adopt_session(name, h, session_id, title="", note=""):
                             "which is not a directory here")
         pane = hook_pane(h)
         if pane:
-            for other in list_records():
-                if other.get("claude_pane") != pane:
-                    continue
-                if join_session(other, [h]) is not None:
-                    raise UserError(f"that tab is already work session {other['name']}")
-                stale = load_record(other["name"])
-                stale["claude_pane"], stale["tab_id"] = "", ""
-                save_record(stale)
-                log_warn("pane released", name=other["name"], claude_pane=pane, to=name,
-                         why="the pane runs a Claude in another directory")
+            release_pane_claims(pane, h, name)
         try:
             repo = resolve_repo_root(project)
         except UserError:
             repo = project  # no git here; the directory is the whole story
         term = make_terminal("")
-        tab_id = ""
-        if pane:
-            # Best effort: the tab is for the board's eye only; nothing acts on it.
-            try:
-                for s in term.sessions():
-                    if s.get("id") == pane:
-                        tab_id = str(s.get("tab_id") or "")
-                        break
-            except UserError:
-                pass
+        tab_id = pane_tab_id(term, pane) if pane else ""
         rec = new_record(name, repo, project, current_branch(project), term.kind, tab_id=tab_id,
                          claude_pane=pane, adopted=True, title=title)
         atomic_write(record_path(name), rec)
@@ -1894,6 +1919,94 @@ def unique_name(name, taken):
     return f"{name}-{i}"
 
 
+def autoname_pick(wanted, plain, skipped):
+    """The tabs to name: every unclaimed one (plain), or of those only the
+    session ids asked for. An id that is not among them is added to skipped
+    with why (a work session already, or no live session at all)."""
+    if not wanted:
+        return plain
+    by_id = {h.get("session_id"): h for h in plain}
+    chosen = []
+    for sid in wanted:
+        if sid in by_id:
+            chosen.append(by_id[sid])
+        elif hook_session_by_id(sid) is not None:
+            skipped.append({"session_id": sid, "why": "already a work session"})
+        else:
+            skipped.append({"session_id": sid, "why": "no live Claude session"})
+    return chosen
+
+
+def autoname_jobs(plain, skipped):
+    """One naming job per tab that has something to name it by: its prompts
+    and the excerpt the headless call reads. A tab nothing has been typed
+    into yet is added to skipped (it is named on a later run)."""
+    jobs = []
+    for h in plain:
+        sid = h.get("session_id", "") if isinstance(h.get("session_id"), str) else ""
+        project = h["project"]
+        prompts, reply = session_prompts(h)
+        if not prompts:
+            skipped.append({"session_id": sid, "project": project, "why": "no prompt yet"})
+            continue
+        jobs.append({"session_id": sid, "project": project, "h": h, "prompts": prompts,
+                     "excerpt": session_excerpt(project, prompts, reply)})
+    return jobs
+
+
+def title_for(job, no_claude):
+    """(title, how, error) for one naming job: Claude's title (how
+    "claude"), or the first prompt's first line (how "prompt") with
+    no_claude or when the call fails; error then says why it failed. Runs
+    on a pool thread, one per tab."""
+    if no_claude:
+        return squeeze(first_line(job["prompts"][0]), NAME_FALLBACK_MAX), "prompt", ""
+    try:
+        return ask_title(job["excerpt"]), "claude", ""
+    except UserError as e:
+        log_warn("autoname fallback", session=job["session_id"], error=str(e))
+        return squeeze(first_line(job["prompts"][0]), NAME_FALLBACK_MAX), "prompt", str(e)
+
+
+def autoname_adopt(jobs, results, taken, dry_run):
+    """Give each titled job its name (the checkout's when the tab sits in a
+    `<repo>-<ID>` checkout, else from the title, never one in taken) and
+    adopt the tab under it; dry_run only says what would be. -> (named,
+    failed)."""
+    named, failed = [], []
+    for job, (title, how, err) in zip(jobs, results):
+        name = unique_name(slug_name(checkout_name(job["project"])) or slug_name(title)
+                           or slug_name(job["project"]) or "tab", taken)
+        taken.add(name)
+        entry = {"session_id": job["session_id"], "project": job["project"], "name": name,
+                 "title": title, "how": how}
+        if err:
+            entry["claude_error"] = err
+        if dry_run:
+            named.append(entry)
+            continue
+        try:
+            adopt_session(name, job["h"], job["session_id"], title=title)
+        except UserError as e:
+            failed.append({"session_id": job["session_id"], "project": job["project"], "error": str(e)})
+            continue
+        named.append(entry)
+    return named, failed
+
+
+def print_autoname(named, skipped, failed, dry_run):
+    """autoname's result for a person: one line per tab."""
+    verb = "would name" if dry_run else "named"
+    for e in named:
+        print(f"{verb} {e['session_id']}: {e['name']}  \"{e['title']}\"  ({e['how']}, {display_path(e['project'])})")
+    for e in skipped:
+        print(f"skipped {e['session_id']}: {e['why']}")
+    for e in failed:
+        print(f"failed {e['session_id']}: {e['error']}")
+    if not (named or skipped or failed):
+        print("nothing to name: every live Claude Code tab is a work session already")
+
+
 def cmd_autoname(a):
     """Name every Claude Code tab no record claims (or the given session
     ids) from what it is doing: a title from a headless Claude over the
@@ -1906,79 +2019,22 @@ def cmd_autoname(a):
     outcome is in the output (named / skipped / failed)."""
     hooks = load_hook_sessions()
     records = list_records()
-    plain = unclaimed_sessions(hooks, records)
-    wanted = list(dict.fromkeys(a.session or []))
-    named, skipped, failed = [], [], []
-    if wanted:
-        by_id = {h.get("session_id"): h for h in plain}
-        chosen = []
-        for sid in wanted:
-            if sid in by_id:
-                chosen.append(by_id[sid])
-            elif hook_session_by_id(sid) is not None:
-                skipped.append({"session_id": sid, "why": "already a work session"})
-            else:
-                skipped.append({"session_id": sid, "why": "no live Claude session"})
-        plain = chosen
-    jobs = []
-    for h in plain:
-        sid = h.get("session_id", "") if isinstance(h.get("session_id"), str) else ""
-        project = h["project"]
-        prompts, reply = session_prompts(h)
-        if not prompts:
-            skipped.append({"session_id": sid, "project": project, "why": "no prompt yet"})
-            continue
-        jobs.append({"session_id": sid, "project": project, "h": h, "prompts": prompts,
-                     "excerpt": session_excerpt(project, prompts, reply)})
+    skipped = []
+    plain = autoname_pick(list(dict.fromkeys(a.session or [])), unclaimed_sessions(hooks, records), skipped)
+    jobs = autoname_jobs(plain, skipped)
     log_info("autoname", candidates=len(plain), asking=len(jobs), skipped=len(skipped),
              claude=not a.no_claude, dry_run=a.dry_run)
-
-    def title_for(job):
-        if a.no_claude:
-            return squeeze(first_line(job["prompts"][0]), NAME_FALLBACK_MAX), "prompt", ""
-        try:
-            return ask_title(job["excerpt"]), "claude", ""
-        except UserError as e:
-            log_warn("autoname fallback", session=job["session_id"], error=str(e))
-            return squeeze(first_line(job["prompts"][0]), NAME_FALLBACK_MAX), "prompt", str(e)
-
     if jobs:
         with ThreadPoolExecutor(max_workers=min(NAME_WORKERS, len(jobs))) as pool:
-            results = list(pool.map(title_for, jobs))
+            results = list(pool.map(lambda job: title_for(job, a.no_claude), jobs))
     else:
         results = []
-    taken = {r["name"] for r in records}
-    for job, (title, how, err) in zip(jobs, results):
-        name = unique_name(slug_name(checkout_name(job["project"])) or slug_name(title)
-                           or slug_name(job["project"]) or "tab", taken)
-        taken.add(name)
-        entry = {"session_id": job["session_id"], "project": job["project"], "name": name,
-                 "title": title, "how": how}
-        if err:
-            entry["claude_error"] = err
-        if a.dry_run:
-            named.append(entry)
-            continue
-        try:
-            adopt_session(name, job["h"], job["session_id"], title=title)
-        except UserError as e:
-            failed.append({"session_id": job["session_id"], "project": job["project"], "error": str(e)})
-            continue
-        named.append(entry)
-    out = {"dry_run": bool(a.dry_run), "named": named, "skipped": skipped, "failed": failed}
+    named, failed = autoname_adopt(jobs, results, {r["name"] for r in records}, a.dry_run)
     log_info("autoname done", named=len(named), skipped=len(skipped), failed=len(failed), dry_run=a.dry_run)
     if a.json:
-        print(json.dumps(out))
-        return 0
-    verb = "would name" if a.dry_run else "named"
-    for e in named:
-        print(f"{verb} {e['session_id']}: {e['name']}  \"{e['title']}\"  ({e['how']}, {display_path(e['project'])})")
-    for e in skipped:
-        print(f"skipped {e['session_id']}: {e['why']}")
-    for e in failed:
-        print(f"failed {e['session_id']}: {e['error']}")
-    if not (named or skipped or failed):
-        print("nothing to name: every live Claude Code tab is a work session already")
+        print(json.dumps({"dry_run": bool(a.dry_run), "named": named, "skipped": skipped, "failed": failed}))
+    else:
+        print_autoname(named, skipped, failed, a.dry_run)
     return 0
 
 
@@ -2390,6 +2446,102 @@ def ask_reply(h, question):
     return ""
 
 
+def ask_send(term, targets, question):
+    """Type the question into each target's Claude pane. -> (asked, failed):
+    the targets it reached, each stamped with when (sent), and an entry for
+    each whose pane is gone."""
+    asked, failed = [], []
+    for t in targets:
+        if term.write(t["pane"], question):
+            t["sent"] = time.time()
+            asked.append(t)
+            log_info("asked", name=t["name"], session=t["session_id"], pane=t["pane"], chars=len(question))
+        else:
+            log_warn("pane gone", name=t["name"], pane="claude", session=t["pane"])
+            failed.append({"session_id": t["session_id"], "name": t["name"], "project": t["project"],
+                           "error": "claude pane no longer exists"})
+    return asked, failed
+
+
+def ask_wait(asked, question, timeout):
+    """Poll the hook files until every asked tab shows the question answered
+    (ask_answered) or timeout seconds have passed. An answered target gets
+    its fresh hook (h) and when (answered). -> seconds waited since the
+    first question was typed."""
+    deadline = time.time() + timeout
+    pending = {t["session_id"]: t for t in asked}
+    while pending and time.time() < deadline:
+        time.sleep(ASK_POLL)
+        for h in load_hook_sessions():
+            sid = h.get("session_id")
+            if sid in pending and ask_answered(h, question):
+                pending[sid]["h"] = h
+                pending[sid]["answered"] = time.time()
+                del pending[sid]
+    return round(time.time() - (asked[0]["sent"]), 1)
+
+
+def keep_reply(rec, reply, question):
+    """A work session's reply is its own account: it goes onto the record as
+    the latest summary and into its notes (the question after it, so the
+    NOTE column shows the answer's first line). The record is read again
+    first: the wait was long enough for a move, a title or a status to land
+    on it, and that must not be undone."""
+    try:
+        rec = load_record(rec["name"])
+    except UserError:
+        pass
+    rec["summary"] = reply
+    rec["summary_at"] = int(time.time())
+    save_record(rec)
+    append_note(rec["name"], reply + "\n(asked: " + first_prompt_line(question) + ")")
+    log_info("reply noted", name=rec["name"], chars=len(reply))
+
+
+def ask_collect(asked, question, no_wait):
+    """Each asked tab's outcome, in the order asked: how (answered, timeout,
+    or sent with no_wait) and the reply read from its transcript; a work
+    session's reply is kept (keep_reply). -> the entries the output lists."""
+    out = []
+    for t in asked:
+        answered = "answered" in t
+        reply = ask_reply(t["h"], question) if (answered or no_wait) else ""
+        if answered and not reply:
+            # Stopped, but the transcript has no text for it yet (or none at
+            # all): read it once more after a moment, then report as is.
+            time.sleep(ASK_POLL)
+            reply = ask_reply(t["h"], question)
+        how = "answered" if answered else ("sent" if no_wait else "timeout")
+        out.append({"session_id": t["session_id"], "name": t["name"], "project": t["project"],
+                    "how": how, "reply": reply})
+        if t["rec"] is not None and reply:
+            keep_reply(t["rec"], reply, question)
+    return out
+
+
+def print_ask(asked, skipped, failed, timeout):
+    """ask's result for a person: each reply under a heading, then who was
+    skipped and who could not be reached."""
+    if not asked and not skipped and not failed:
+        print("nothing to ask: no live Claude Code tab")
+        return
+    for i, e in enumerate(asked):
+        if i:
+            print()
+        who = e["name"] or e["session_id"]
+        print(f"## {who}  ({display_path(e['project'])})  {e['how']}")
+        if e["reply"]:
+            print(e["reply"])
+        elif e["how"] == "sent":
+            print("(asked; savannah work output shows the reply)")
+        else:
+            print(f"(no reply within {timeout} s; savannah work output shows it when it comes)")
+    for e in skipped:
+        print(f"skipped {e['name'] or e['session_id'] or display_path(e['project'])}: {e['why']}")
+    for e in failed:
+        print(f"failed {e['name'] or e['session_id']}: {e['error']}")
+
+
 def cmd_ask(a):
     """Type one question into every tab that is safe to interrupt (idle or
     done; never a working or waiting one, never the asking session), wait
@@ -2405,85 +2557,21 @@ def cmd_ask(a):
     hooks = load_hook_sessions()
     records = list_records()
     targets, skipped = ask_targets(a.name, a.all, hooks, records)
-    term = make_terminal("")
-    asked, failed = [], []
-    for t in targets:
-        if term.write(t["pane"], question):
-            t["sent"] = time.time()
-            asked.append(t)
-            log_info("asked", name=t["name"], session=t["session_id"], pane=t["pane"], chars=len(question))
-        else:
-            log_warn("pane gone", name=t["name"], pane="claude", session=t["pane"])
-            failed.append({"session_id": t["session_id"], "name": t["name"], "project": t["project"],
-                           "error": "claude pane no longer exists"})
+    asked, failed = ask_send(make_terminal(""), targets, question)
     log_info("ask", asked=len(asked), skipped=len(skipped), failed=len(failed), wait=not a.no_wait,
              timeout=a.timeout)
     log_verbose("ask question", text=question[:300])
     waited = 0.0
     if asked and not a.no_wait:
-        deadline = time.time() + a.timeout
-        pending = {t["session_id"]: t for t in asked}
-        while pending and time.time() < deadline:
-            time.sleep(ASK_POLL)
-            for h in load_hook_sessions():
-                sid = h.get("session_id")
-                if sid in pending and ask_answered(h, question):
-                    pending[sid]["h"] = h
-                    pending[sid]["answered"] = time.time()
-                    del pending[sid]
-        waited = round(time.time() - (asked[0]["sent"]), 1)
-    out_asked = []
-    for t in asked:
-        answered = "answered" in t
-        reply = ask_reply(t["h"], question) if (answered or a.no_wait) else ""
-        if answered and not reply:
-            # Stopped, but the transcript has no text for it yet (or none at
-            # all): read it once more after a moment, then report as is.
-            time.sleep(ASK_POLL)
-            reply = ask_reply(t["h"], question)
-        how = "answered" if answered else ("sent" if a.no_wait else "timeout")
-        entry = {"session_id": t["session_id"], "name": t["name"], "project": t["project"],
-                 "how": how, "reply": reply}
-        out_asked.append(entry)
-        if t["rec"] is not None and reply:
-            # The reply is the session's own account: it goes into its notes
-            # (the question after it, so the NOTE column shows the answer's
-            # first line) and onto the record as the latest summary.
-            # Read again first: the wait was long enough for a move, a title
-            # or a status to land on this record, and it must not be undone.
-            try:
-                rec = load_record(t["rec"]["name"])
-            except UserError:
-                rec = t["rec"]
-            rec["summary"] = reply
-            rec["summary_at"] = int(time.time())
-            save_record(rec)
-            append_note(rec["name"], reply + "\n(asked: " + first_prompt_line(question) + ")")
-            log_info("reply noted", name=rec["name"], chars=len(reply))
+        waited = ask_wait(asked, question, a.timeout)
+    out_asked = ask_collect(asked, question, a.no_wait)
     log_info("ask done", asked=len(asked), answered=sum(1 for e in out_asked if e["how"] == "answered"),
              waited=waited)
     if a.json:
         print(json.dumps({"question": question, "timeout": a.timeout, "waited": waited, "asked": out_asked,
                           "skipped": skipped, "failed": failed}))
-        return 0
-    if not out_asked and not skipped and not failed:
-        print("nothing to ask: no live Claude Code tab")
-        return 0
-    for i, e in enumerate(out_asked):
-        if i:
-            print()
-        who = e["name"] or e["session_id"]
-        print(f"## {who}  ({display_path(e['project'])})  {e['how']}")
-        if e["reply"]:
-            print(e["reply"])
-        elif e["how"] == "sent":
-            print("(asked; savannah work output shows the reply)")
-        else:
-            print(f"(no reply within {a.timeout} s; savannah work output shows it when it comes)")
-    for e in skipped:
-        print(f"skipped {e['name'] or e['session_id'] or display_path(e['project'])}: {e['why']}")
-    for e in failed:
-        print(f"failed {e['name'] or e['session_id']}: {e['error']}")
+    else:
+        print_ask(out_asked, skipped, failed, a.timeout)
     return 0
 
 
@@ -2536,6 +2624,84 @@ def cmd_hub(a):
     return 0  # not reached: execvp replaces the process
 
 
+def stale_record_reason(name):
+    """Why a record dir holds no usable record, or "" when it does. Read by
+    hand, not through load_record: that folds all three cases into "no such
+    work session", and rm tells the owner which one it was."""
+    if not os.path.exists(record_path(name)):
+        return "no record.json"      # new died between mkdir and record write
+    try:
+        with open(record_path(name)) as f:
+            if not isinstance(json.load(f), dict):
+                return "record.json is not an object"
+    except (OSError, ValueError):
+        return "unreadable record.json"
+    return ""
+
+
+def remove_stale(name, rdir, why):
+    """Forget a stale or corrupt record dir. Any worktree it had is left for
+    `git worktree list` since the record cannot say where it is."""
+    try:
+        shutil.rmtree(rdir)
+    except OSError as e:
+        raise UserError(f"cannot remove stale {rdir}: {oserr(e)}")
+    log_info("removed stale", name=name, why=why)
+    print(f"removed {name} (stale: {why}; check `git worktree list` for leftovers)")
+
+
+def refuse_nested(name, worktree):
+    """rm never removes a worktree another work session lives inside."""
+    nested = [r["name"] for r in list_records()
+              if r["name"] != name and r.get("worktree") and is_inside(r["worktree"], worktree)]
+    if nested:
+        raise UserError(f"refusing: work session(s) {', '.join(sorted(nested))} live inside "
+                        f"{worktree}; rm them first or pass --keep-worktree")
+
+
+def archive_notes(name, rec):
+    """Copy the session's notes into the archive. -> the copy's path, "" when
+    there are no notes. A copy, so nothing is lost if a later step of rm
+    refuses: withdraw_archive takes it back and everything stays in place."""
+    np = notes_path(name)
+    archived = ""
+    if os.path.exists(np):
+        try:
+            adir = os.path.join(work_dir(), ARCHIVE_SUBDIR)
+            os.makedirs(adir, exist_ok=True)
+            created = rec.get("created") or int(time.time())
+            archived = archive_target(adir, name, created)
+            shutil.copy2(np, archived)
+        except OSError as e:
+            raise UserError(f"cannot archive notes to {archived or adir}: {oserr(e)}")
+    return archived
+
+
+def withdraw_archive(archived):
+    """Take back archive_notes' copy (best effort); "" = there was none."""
+    if archived:
+        try:
+            os.remove(archived)
+        except OSError:
+            pass
+
+
+def remove_worktree(repo, worktree, force):
+    """`git worktree remove` for rm, or a prune when the directory is already
+    gone by hand. A dirty worktree without force is a UserError that says
+    how to go on."""
+    if os.path.isdir(worktree):
+        args = ["-C", repo, "worktree", "remove"]
+        if force:
+            args.append("--force")
+        p = run_git(args + [worktree])
+        if p.returncode != 0:
+            hint = "" if force else " (dirty? pass --force to discard, or --keep-worktree)"
+            raise UserError(git_fail_message(p, "git worktree remove") + hint)
+    else:
+        run_git(["-C", repo, "worktree", "prune"])  # dir already gone by hand
+
+
 def cmd_rm(a):
     name = a.name
     if not valid_name(name):
@@ -2546,25 +2712,9 @@ def cmd_rm(a):
     if os.path.lexists(rdir) and (os.path.islink(rdir) or not is_direct_child(rdir, work_dir())):
         raise UserError(f"refusing to remove {rdir}: not a directory directly under {work_dir()}")
     if os.path.isdir(rdir):
-        why = ""
-        if not os.path.exists(record_path(name)):
-            why = "no record.json"      # new died between mkdir and record write
-        else:
-            try:
-                with open(record_path(name)) as f:
-                    if not isinstance(json.load(f), dict):
-                        why = "record.json is not an object"
-            except (OSError, ValueError):
-                why = "unreadable record.json"
+        why = stale_record_reason(name)
         if why:
-            # Stale or corrupt: forget it. Any worktree it had is left for
-            # `git worktree list` since the record cannot say where it is.
-            try:
-                shutil.rmtree(rdir)
-            except OSError as e:
-                raise UserError(f"cannot remove stale {rdir}: {oserr(e)}")
-            log_info("removed stale", name=name, why=why)
-            print(f"removed {name} (stale: {why}; check `git worktree list` for leftovers)")
+            remove_stale(name, rdir, why)
             return 0
 
     rec = load_record(name)
@@ -2577,49 +2727,19 @@ def cmd_rm(a):
     removing_worktree = has_worktree and not a.keep_worktree and not adopted
 
     if removing_worktree:
-        nested = [r["name"] for r in list_records()
-                  if r["name"] != name and r.get("worktree") and is_inside(r["worktree"], worktree)]
-        if nested:
-            raise UserError(f"refusing: work session(s) {', '.join(sorted(nested))} live inside "
-                            f"{worktree}; rm them first or pass --keep-worktree")
+        refuse_nested(name, worktree)
 
     # Archive first (a copy, so nothing is lost if a later step refuses):
     # if git says no, the copy is withdrawn and everything stays in place.
-    np = notes_path(name)
-    archived = ""
-    if os.path.exists(np):
-        try:
-            adir = os.path.join(work_dir(), ARCHIVE_SUBDIR)
-            os.makedirs(adir, exist_ok=True)
-            created = rec.get("created") or int(time.time())
-            archived = archive_target(adir, name, created)
-            shutil.copy2(np, archived)
-        except OSError as e:
-            raise UserError(f"cannot archive notes to {archived or adir}: {oserr(e)}")
-
-    def withdraw_archive():
-        if archived:
-            try:
-                os.remove(archived)
-            except OSError:
-                pass
+    archived = archive_notes(name, rec)
 
     # Worktree next: a dirty worktree without --force must leave EVERYTHING
     # in place, including the tab, so nothing is closed before git agrees.
     if removing_worktree:
         try:
-            if os.path.isdir(worktree):
-                args = ["-C", repo, "worktree", "remove"]
-                if a.force:
-                    args.append("--force")
-                p = run_git(args + [worktree])
-                if p.returncode != 0:
-                    hint = "" if a.force else " (dirty? pass --force to discard, or --keep-worktree)"
-                    raise UserError(git_fail_message(p, "git worktree remove") + hint)
-            else:
-                run_git(["-C", repo, "worktree", "prune"])  # dir already gone by hand
+            remove_worktree(repo, worktree, a.force)
         except BaseException:
-            withdraw_archive()
+            withdraw_archive(archived)
             raise
 
     closed = False
@@ -2691,6 +2811,21 @@ def hook_fields(h):
     return out
 
 
+def tab_layout(listed):
+    """What `it2 session list` says about each pane, keyed by pane id:
+    (order, tabs, titles) = its place in iTerm2's tab order, its tab id, its
+    tab title without the process (tab_title). A pane listed twice counts
+    once, where it first appears."""
+    order, tabs, titles = {}, {}, {}
+    for i, s in enumerate(listed):
+        sid = s.get("id") if isinstance(s, dict) else None
+        if isinstance(sid, str) and sid and sid not in order:
+            order[sid] = i
+            tabs[sid] = s.get("tab_id", "") if isinstance(s.get("tab_id"), str) else ""
+            titles[sid] = tab_title(s.get("title", "") if isinstance(s.get("title"), str) else "")
+    return order, tabs, titles
+
+
 def take_snapshot(note, now=None):
     """The snapshot dict: every work record (in iTerm2 tab order, the ones
     whose Claude pane is gone last, then by name) with its joined Claude
@@ -2708,13 +2843,7 @@ def take_snapshot(note, now=None):
         listed = []
         it2_ok = False
         log_warn("snapshot without it2", error=str(e))
-    order, tabs, titles = {}, {}, {}
-    for i, s in enumerate(listed):
-        sid = s.get("id") if isinstance(s, dict) else None
-        if isinstance(sid, str) and sid and sid not in order:
-            order[sid] = i
-            tabs[sid] = s.get("tab_id", "") if isinstance(s.get("tab_id"), str) else ""
-            titles[sid] = tab_title(s.get("title", "") if isinstance(s.get("title"), str) else "")
+    order, tabs, titles = tab_layout(listed)
 
     def position(pane, fallback):
         return (0, order[pane], "") if pane in order else (1, 0, fallback)
@@ -2895,6 +3024,117 @@ def cmd_snapshots(a):
     return 0
 
 
+class RestoreRun:
+    """One restore as it goes: what the two halves (restore_work,
+    restore_plain) need to look at (the terminal, the panes alive now, the
+    hook sessions, whether this is a dry run) and what they have done so
+    far: restored and plain (the JSON lists of remade tabs), skipped,
+    failed, and lines, the same story for a person in the order it
+    happened."""
+
+    def __init__(self, term, live, hooks, dry_run):
+        self.term, self.live, self.hooks, self.dry_run = term, live, hooks, dry_run
+        self.restored, self.plain, self.skipped, self.failed, self.lines = [], [], [], [], []
+
+    def skip(self, key, value, why):
+        # JSON carries the full name or project path; the human line shows ~/.
+        self.skipped.append({key: value, "why": why})
+        self.lines.append(f"skipped {display_path(value)}: {why}")
+        log_debug("restore skip", **{key: value, "why": why})
+
+    def fail(self, key, value, err):
+        self.failed.append({key: value, "error": str(err)})
+        self.lines.append(f"failed {display_path(value)}: {err}")
+        log_warn("restore failed", **{key: value, "error": str(err)})
+
+
+def restore_how(entry, rec, hooks):
+    """What a remade tab's Claude starts with, for a snapshot entry and the
+    record whose worktree it runs in (a plain tab passes a bare
+    {"worktree": project} and no hooks): "resume" when the snapshot's own
+    conversation is on disk, else "continue" when the directory has any
+    transcript, else "fresh". -> (how, howtext); howtext is how for a
+    person, with the session id on a resume."""
+    session_id = snapshot_str(entry, "session_id")
+    if transcript_for(session_id, snapshot_str(entry, "transcript_path"), rec["worktree"]):
+        return "resume", f"resume {session_id}"
+    if find_transcript(rec, hooks)[0]:
+        return "continue", "continue"
+    return "fresh", "fresh"
+
+
+def restore_work(run, entries):
+    """The work sessions of a snapshot, in its order: a record whose Claude
+    pane is still there (or was started again by hand, reclaim_pane) is
+    left alone; one whose tab is gone gets a fresh tab and split
+    (remake_tab)."""
+    for entry in entries:
+        name = entry["name"]
+        if not valid_name(name):
+            run.skip("name", name, "bad name")
+            continue
+        try:
+            rec = load_record(name)
+        except UserError:
+            run.skip("name", name, "no record")
+            continue
+        if claude_alive(rec, run.live) or reclaim_pane(rec, run.live, dry=run.dry_run):
+            run.skip("name", name, "alive")
+            continue
+        worktree = rec.get("worktree") or ""
+        if not worktree or not os.path.isdir(worktree):
+            run.skip("name", name, "worktree gone")
+            continue
+        how, howtext = restore_how(entry, rec, run.hooks)
+        if run.dry_run:
+            run.restored.append({"name": name, "how": how, "tab_id": ""})
+            run.lines.append(f"would restore {name} ({howtext})")
+            continue
+        try:
+            remake_tab(rec, run.term, run.live, how=how, resume_id=snapshot_str(entry, "session_id"))
+        except UserError as e:
+            run.fail("name", name, e)
+            continue
+        run.restored.append({"name": name, "how": how, "tab_id": rec.get("tab_id", "")})
+        run.lines.append(f"restored {name} ({howtext}, tab {rec.get('tab_id', '')})")
+
+
+def restore_plain(run, entries):
+    """The other Claude Code tabs a snapshot saw: each comes back as a
+    single pane in its directory, unless it was already closed when the
+    snapshot was taken, is open now, or its directory is gone."""
+    for entry in entries:
+        project = entry["project"]
+        label = display_path(project)
+        session_id = snapshot_str(entry, "session_id")
+        if entry.get("pane_alive") is False:
+            run.skip("project", project, "not open when the snapshot was taken")
+            continue
+        h = hook_session_by_id(session_id) if session_id else None
+        if h is not None and hook_pane(h) in run.live:
+            run.skip("project", project, "alive")
+            continue
+        if not os.path.isdir(project):
+            run.skip("project", project, "project gone")
+            continue
+        how, howtext = restore_how(entry, {"worktree": project}, [])
+        if run.dry_run:
+            run.plain.append({"project": project, "how": how, "tab_id": ""})
+            run.lines.append(f"would open plain {label} ({howtext})")
+            continue
+        title = snapshot_str(entry, "title") or os.path.basename(project.rstrip(os.sep)) or project
+        cmd = claude_command(project, "", "", resume=(how == "continue"),
+                             resume_id=(session_id if how == "resume" else ""))
+        try:
+            ids = run.term.create_tab(title, cmd)
+        except UserError as e:
+            run.fail("project", project, e)
+            continue
+        run.plain.append({"project": project, "how": how, "tab_id": ids["tab_id"]})
+        run.lines.append(f"plain {label} ({howtext}, tab {ids['tab_id']})")
+        log_info("plain tab remade", project=project, how=how, tab=ids["tab_id"])
+
+
 def cmd_restore(a):
     """Put a snapshot's tabs back. Work sessions first, in snapshot order:
     a record whose Claude pane is still there is left alone; one whose tab
@@ -2914,116 +3154,34 @@ def cmd_restore(a):
         if not a.dry_run:
             raise
         live = set()  # the plan can still be shown: nothing is known to be open
-    hooks = load_hook_sessions()
-    restored, plain, skipped, failed, lines = [], [], [], [], []
-
-    def skip(key, value, why):
-        # JSON carries the full name or project path; the human line shows ~/.
-        skipped.append({key: value, "why": why})
-        lines.append(f"skipped {display_path(value)}: {why}")
-        log_debug("restore skip", **{key: value, "why": why})
-
-    def fail(key, value, err):
-        failed.append({key: value, "error": str(err)})
-        lines.append(f"failed {display_path(value)}: {err}")
-        log_warn("restore failed", **{key: value, "error": str(err)})
-
-    for entry in snap["sessions"]:
-        name = entry["name"]
-        if not valid_name(name):
-            skip("name", name, "bad name")
-            continue
-        try:
-            rec = load_record(name)
-        except UserError:
-            skip("name", name, "no record")
-            continue
-        if claude_alive(rec, live) or reclaim_pane(rec, live, dry=a.dry_run):
-            skip("name", name, "alive")
-            continue
-        worktree = rec.get("worktree") or ""
-        if not worktree or not os.path.isdir(worktree):
-            skip("name", name, "worktree gone")
-            continue
-        session_id = snapshot_str(entry, "session_id")
-        if transcript_for(session_id, snapshot_str(entry, "transcript_path"), worktree):
-            how = "resume"
-        elif find_transcript(rec, hooks)[0]:
-            how = "continue"
-        else:
-            how = "fresh"
-        howtext = f"resume {session_id}" if how == "resume" else how
-        if a.dry_run:
-            restored.append({"name": name, "how": how, "tab_id": ""})
-            lines.append(f"would restore {name} ({howtext})")
-            continue
-        try:
-            remake_tab(rec, term, live, how=how, resume_id=session_id)
-        except UserError as e:
-            fail("name", name, e)
-            continue
-        restored.append({"name": name, "how": how, "tab_id": rec.get("tab_id", "")})
-        lines.append(f"restored {name} ({howtext}, tab {rec.get('tab_id', '')})")
-
+    run = RestoreRun(term, live, load_hook_sessions(), a.dry_run)
+    restore_work(run, snap["sessions"])
     if not a.no_plain:
-        for entry in snap["plain"]:
-            project = entry["project"]
-            label = display_path(project)
-            session_id = snapshot_str(entry, "session_id")
-            if entry.get("pane_alive") is False:
-                skip("project", project, "not open when the snapshot was taken")
-                continue
-            h = hook_session_by_id(session_id) if session_id else None
-            if h is not None and hook_pane(h) in live:
-                skip("project", project, "alive")
-                continue
-            if not os.path.isdir(project):
-                skip("project", project, "project gone")
-                continue
-            if transcript_for(session_id, snapshot_str(entry, "transcript_path"), project):
-                how = "resume"
-            elif find_transcript({"worktree": project}, [])[0]:
-                how = "continue"
-            else:
-                how = "fresh"
-            howtext = f"resume {session_id}" if how == "resume" else how
-            if a.dry_run:
-                plain.append({"project": project, "how": how, "tab_id": ""})
-                lines.append(f"would open plain {label} ({howtext})")
-                continue
-            title = snapshot_str(entry, "title") or os.path.basename(project.rstrip(os.sep)) or project
-            cmd = claude_command(project, "", "", resume=(how == "continue"),
-                                 resume_id=(session_id if how == "resume" else ""))
-            try:
-                ids = term.create_tab(title, cmd)
-            except UserError as e:
-                fail("project", project, e)
-                continue
-            plain.append({"project": project, "how": how, "tab_id": ids["tab_id"]})
-            lines.append(f"plain {label} ({howtext}, tab {ids['tab_id']})")
-            log_info("plain tab remade", project=project, how=how, tab=ids["tab_id"])
+        restore_plain(run, snap["plain"])
 
-    counts = (f"{len(restored)} work sessions, {len(plain)} plain tabs, "
-              f"{len(skipped)} skipped, {len(failed)} failed")
-    log_info("restore", stamp=stamp, dry_run=bool(a.dry_run), restored=len(restored),
-             plain=len(plain), skipped=len(skipped), failed=len(failed))
+    counts = (f"{len(run.restored)} work sessions, {len(run.plain)} plain tabs, "
+              f"{len(run.skipped)} skipped, {len(run.failed)} failed")
+    log_info("restore", stamp=stamp, dry_run=bool(a.dry_run), restored=len(run.restored),
+             plain=len(run.plain), skipped=len(run.skipped), failed=len(run.failed))
     if a.json:
-        print(json.dumps({"stamp": stamp, "path": path, "dry_run": bool(a.dry_run), "restored": restored,
-                          "plain": plain, "skipped": skipped, "failed": failed}))
+        print(json.dumps({"stamp": stamp, "path": path, "dry_run": bool(a.dry_run), "restored": run.restored,
+                          "plain": run.plain, "skipped": run.skipped, "failed": run.failed}))
     else:
-        for ln in lines:
+        for ln in run.lines:
             print(ln)
         if a.dry_run:
             print(f"plan from snapshot {stamp}: {counts} (nothing touched)")
         else:
             print(f"restored from snapshot {stamp}: {counts}")
-    return 1 if failed else 0
+    return 1 if run.failed else 0
 
 
 # --------------------------------------------------------------------------
 
 
 def build_parser():
+    """The whole command line as one flat table: a verb() per verb, its
+    arguments in the order --help shows them."""
     ap = argparse.ArgumentParser(
         prog="savannah_work",
         description="Local interactive Claude Code work sessions: one iTerm2 tab "
@@ -3032,189 +3190,150 @@ def build_parser():
     sub = ap.add_subparsers(dest="verb", metavar="<verb>")
     sub.required = True
 
-    p = sub.add_parser("new", help="create a work session (worktree, tab, record)")
-    p.add_argument("name")
-    p.add_argument("--repo", help="git repo to work in (default: cwd); resolved to the main worktree root")
-    p.add_argument("--branch", help="check out this existing local branch (default: work/<name>, "
-                                    "created, or reattached if rm left it behind)")
-    p.add_argument("--no-worktree", action="store_true", help="run in the repo itself")
-    p.add_argument("--prompt", help="initial prompt passed to claude")
-    p.add_argument("--note", help="first note to record")
-    p.add_argument("--title", help=f"free-text title the board shows (first line, {TITLE_MAX} chars; "
-                                   "the name stays the identifier)")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_new)
+    def arg(*names, **kw):
+        return names, kw
 
-    p = sub.add_parser("ls", help="list work sessions joined with live Claude sessions")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_ls)
+    def flag(name, help=None):
+        return arg(name, action="store_true", help=help)
 
-    p = sub.add_parser("note", help="append a note (text args or stdin)")
-    p.add_argument("name")
-    p.add_argument("text", nargs="*")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_note)
+    def oneof(*args):
+        return None, args   # a mutually exclusive group of arg()s
 
-    p = sub.add_parser("notes", help="print the notes file")
-    p.add_argument("name")
-    p.set_defaults(fn=cmd_notes)
+    def verb(name, fn, help, *args, json=True):
+        # One verb: its parser, its arguments in order, --json last (so it
+        # closes the usage line), and the function that runs it.
+        p = sub.add_parser(name, help=help)
+        for names, kw in args:
+            if names is None:
+                g = p.add_mutually_exclusive_group()
+                for gnames, gkw in kw:
+                    g.add_argument(*gnames, **gkw)
+            else:
+                p.add_argument(*names, **kw)
+        if json:
+            p.add_argument("--json", action="store_true")
+        p.set_defaults(fn=fn)
 
-    p = sub.add_parser("say", help="type text into the Claude pane (use -- before text starting with -)")
-    p.add_argument("name")
-    p.add_argument("text", nargs="+")
-    p.set_defaults(fn=cmd_say)
+    name = arg("name")
+    note = arg("--note", help="first note to record")
+    dash_hint = "(use -- before text starting with -)"
+    title_cut = f"(first line, {TITLE_MAX} chars"
 
-    p = sub.add_parser("ask", help="type one question into every tab that is safe to interrupt (idle or "
-                                   "done, never working or waiting), wait for the replies, keep each work "
-                                   "session's as its summary")
-    p.add_argument("name", nargs="*", help="work sessions to ask (or --all)")
-    p.add_argument("--all", action="store_true", help="every live Claude Code tab, plain tabs too")
-    p.add_argument("-q", "--question", default="", metavar="TEXT",
-                   help="the question (default: what are you working on, where are you, what is next)")
-    p.add_argument("--timeout", type=float, default=ASK_TIMEOUT, metavar="SECONDS",
-                   help=f"how long to wait for the replies (default {ASK_TIMEOUT})")
-    p.add_argument("--no-wait", action="store_true", help="type the question and return at once")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_ask)
-
-    p = sub.add_parser("sh", help="type a command into the shell pane (use -- before text starting with -)")
-    p.add_argument("name")
-    p.add_argument("cmd", nargs="+")
-    p.set_defaults(fn=cmd_sh)
-
-    p = sub.add_parser("jump", help="focus the Claude pane (or --shell)")
-    p.add_argument("name")
-    p.add_argument("--shell", action="store_true")
-    p.set_defaults(fn=cmd_jump)
-
-    p = sub.add_parser("open", help="focus the tab, or open it again (new tab + split, claude --continue) "
-                                    "when it is gone")
-    p.add_argument("name")
-    p.add_argument("--shell", action="store_true", help="focus the shell pane instead")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_open)
-
-    p = sub.add_parser("adopt", help="take a Claude Code tab you opened yourself into a named work "
-                                     "session (no new tab, no worktree; its hook file names the "
-                                     "directory and pane)")
-    p.add_argument("name")
-    p.add_argument("--session", required=True, metavar="ID",
-                   help="that tab's Claude session id (the hook file's name, the dash's row, "
-                        "work ls --json claude_session_id)")
-    p.add_argument("--note", help="first note to record")
-    p.add_argument("--title", help=f"free-text title the board shows (first line, {TITLE_MAX} chars)")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_adopt)
-
-    p = sub.add_parser("autoname", help="name every Claude Code tab that is not a work session yet from "
-                                        "what it is doing: a headless claude titles an excerpt of its "
-                                        "transcript, the name is derived, the tab is adopted (the board "
-                                        "runs this when it comes up)")
-    p.add_argument("session", nargs="*", metavar="SESSION_ID", help="only these tabs (default: every unnamed one)")
-    p.add_argument("--dry-run", action="store_true", help="print the names, adopt nothing")
-    p.add_argument("--no-claude", action="store_true",
-                   help="no headless call: the first prompt's first line is the title")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_autoname)
-
-    p = sub.add_parser("move", help="where the row sits on the board: --now (the top section, what you are "
-                                    "pushing on), --active or --later, and/or --rank N (order inside a section)")
-    p.add_argument("name")
-    g = p.add_mutually_exclusive_group()
-    g.add_argument("--now", action="store_true", help="the NOW section at the top: what you are pushing on")
-    g.add_argument("--active", action="store_true", help="the ACTIVE section: what you are on, in the background")
-    g.add_argument("--later", action="store_true", help="the LATER section")
-    p.add_argument("--rank", type=int, metavar="N",
-                   help="order inside the section, lower first (a new session ranks by its creation time)")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_move)
-
-    p = sub.add_parser("rename", help="a new name for the record (notes and status travel; the worktree, "
-                                      "the branch and the tab keep the old name)")
-    p.add_argument("old")
-    p.add_argument("new")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_rename)
-
-    p = sub.add_parser("status", help="what that tab's Claude is polling for you: text reports one more "
-                                      "poll, no text reads it, --clear removes it")
-    p.add_argument("name", nargs="?", help="the session (omit with --here)")
-    p.add_argument("text", nargs="*", help="the report, e.g. \"waiting for ctest (run 2 of 3)\" "
-                                           "(first line, 200 chars)")
-    p.add_argument("--here", action="store_true",
-                   help="the session this shell runs in (the record whose Claude pane is $ITERM_SESSION_ID, "
-                        "else the one record whose worktree is the cwd); every positional is then text")
-    p.add_argument("--clear", action="store_true", help="remove the report")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_status)
-
-    p = sub.add_parser("title", help="the free-text title the board shows in its WORK column (capitals, "
-                                     "spaces, anything; the name stays the identifier): text sets it, "
-                                     "--clear removes it, neither prints it")
-    p.add_argument("name")
-    p.add_argument("text", nargs="*", help=f"the title (first line, {TITLE_MAX} chars); "
-                                           "text starting with - goes after --")
-    p.add_argument("--clear", action="store_true", help="remove the title")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_title)
-
-    p = sub.add_parser("log", help="read savannah's log (one file, every piece of savannah writes it): "
-                                   "the last N lines at a level, --follow for new ones")
-    p.add_argument("--level", choices=savannah_log.READ_LEVELS, default="normal",
-                   help="normal = INFO and above (default), debug adds DEBUG, verbose adds everything")
-    p.add_argument("--lines", type=int, default=LOG_LINES_DEFAULT, metavar="N",
-                   help=f"how many lines (default {LOG_LINES_DEFAULT})")
-    p.add_argument("--follow", action="store_true", help="keep printing new lines until Ctrl-C")
-    p.add_argument("--path", action="store_true", help="print only the log file's path")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_log)
-
-    p = sub.add_parser("repos", help="list the git repos in your folder of repos (DIR remembers it)")
-    p.add_argument("dir", nargs="?")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_repos)
-
-    p = sub.add_parser("snapshot", help="save the layout (every work session and open Claude Code tab, "
-                                        "in tab order, with the Claude session ids) under "
-                                        "<work dir>/snapshots, for restore after a reboot")
-    p.add_argument("--note", default="", help="why, e.g. \"before reboot\"")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_snapshot)
-
-    p = sub.add_parser("snapshots", help="list the saved snapshots, newest first")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_snapshots)
-
-    p = sub.add_parser("restore", help="put a snapshot's tabs back: remake every work session whose tab "
-                                       "is gone (claude --resume its conversation) and reopen the plain "
-                                       "tabs; never closes anything")
-    p.add_argument("which", nargs="?", default="latest", metavar="STAMP",
-                   help="a stamp from `snapshots` (default: latest)")
-    p.add_argument("--dry-run", action="store_true", help="print the plan, touch nothing")
-    p.add_argument("--no-plain", action="store_true", help="work sessions only, leave the plain tabs")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_restore)
-
-    p = sub.add_parser("output", help="print the last N turns (your prompt, Claude's reply) of that tab")
-    p.add_argument("name")
-    p.add_argument("--last", type=int, default=1, metavar="N")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_output)
-
-    p = sub.add_parser("rm", help="close tab, remove worktree (never an adopted session's directory), "
-                                  "archive notes")
-    p.add_argument("name")
-    p.add_argument("--keep-worktree", action="store_true")
-    p.add_argument("--force", action="store_true", help="discard a dirty worktree")
-    p.set_defaults(fn=cmd_rm)
-
-    p = sub.add_parser("hub", help="register the peer shim in DIR/.mcp.json, add a starter "
-                                   "CLAUDE.md, launch claude there (the coordinating session)")
-    p.add_argument("dir", nargs="?", help="hub directory: your folder of repos "
-                                          "(default: the remembered hub, else cwd)")
-    p.add_argument("--no-launch", action="store_true", help="write the files, do not start claude")
-    p.add_argument("--json", action="store_true")
-    p.set_defaults(fn=cmd_hub)
+    verb("new", cmd_new, "create a work session (worktree, tab, record)",
+         name,
+         arg("--repo", help="git repo to work in (default: cwd); resolved to the main worktree root"),
+         arg("--branch", help="check out this existing local branch (default: work/<name>, "
+                              "created, or reattached if rm left it behind)"),
+         flag("--no-worktree", "run in the repo itself"),
+         arg("--prompt", help="initial prompt passed to claude"),
+         note,
+         arg("--title", help=f"free-text title the board shows {title_cut}; "
+                             "the name stays the identifier)"))
+    verb("ls", cmd_ls, "list work sessions joined with live Claude sessions")
+    verb("note", cmd_note, "append a note (text args or stdin)", name, arg("text", nargs="*"))
+    verb("notes", cmd_notes, "print the notes file", name, json=False)
+    verb("say", cmd_say, f"type text into the Claude pane {dash_hint}",
+         name, arg("text", nargs="+"), json=False)
+    verb("ask", cmd_ask,
+         "type one question into every tab that is safe to interrupt (idle or "
+         "done, never working or waiting), wait for the replies, keep each work "
+         "session's as its summary",
+         arg("name", nargs="*", help="work sessions to ask (or --all)"),
+         flag("--all", "every live Claude Code tab, plain tabs too"),
+         arg("-q", "--question", default="", metavar="TEXT",
+             help="the question (default: what are you working on, where are you, what is next)"),
+         arg("--timeout", type=float, default=ASK_TIMEOUT, metavar="SECONDS",
+             help=f"how long to wait for the replies (default {ASK_TIMEOUT})"),
+         flag("--no-wait", "type the question and return at once"))
+    verb("sh", cmd_sh, f"type a command into the shell pane {dash_hint}",
+         name, arg("cmd", nargs="+"), json=False)
+    verb("jump", cmd_jump, "focus the Claude pane (or --shell)", name, flag("--shell"), json=False)
+    verb("open", cmd_open,
+         "focus the tab, or open it again (new tab + split, claude --continue) when it is gone",
+         name, flag("--shell", "focus the shell pane instead"))
+    verb("adopt", cmd_adopt,
+         "take a Claude Code tab you opened yourself into a named work "
+         "session (no new tab, no worktree; its hook file names the "
+         "directory and pane)",
+         name,
+         arg("--session", required=True, metavar="ID",
+             help="that tab's Claude session id (the hook file's name, the dash's row, "
+                  "work ls --json claude_session_id)"),
+         note,
+         arg("--title", help=f"free-text title the board shows {title_cut})"))
+    verb("autoname", cmd_autoname,
+         "name every Claude Code tab that is not a work session yet from "
+         "what it is doing: a headless claude titles an excerpt of its "
+         "transcript, the name is derived, the tab is adopted (the board "
+         "runs this when it comes up)",
+         arg("session", nargs="*", metavar="SESSION_ID", help="only these tabs (default: every unnamed one)"),
+         flag("--dry-run", "print the names, adopt nothing"),
+         flag("--no-claude", "no headless call: the first prompt's first line is the title"))
+    verb("move", cmd_move,
+         "where the row sits on the board: --now (the top section, what you are "
+         "pushing on), --active or --later, and/or --rank N (order inside a section)",
+         name,
+         oneof(flag("--now", "the NOW section at the top: what you are pushing on"),
+               flag("--active", "the ACTIVE section: what you are on, in the background"),
+               flag("--later", "the LATER section")),
+         arg("--rank", type=int, metavar="N",
+             help="order inside the section, lower first (a new session ranks by its creation time)"))
+    verb("rename", cmd_rename,
+         "a new name for the record (notes and status travel; the worktree, "
+         "the branch and the tab keep the old name)",
+         arg("old"), arg("new"))
+    verb("status", cmd_status,
+         "what that tab's Claude is polling for you: text reports one more "
+         "poll, no text reads it, --clear removes it",
+         arg("name", nargs="?", help="the session (omit with --here)"),
+         arg("text", nargs="*", help="the report, e.g. \"waiting for ctest (run 2 of 3)\" "
+                                     "(first line, 200 chars)"),
+         flag("--here", "the session this shell runs in (the record whose Claude pane is $ITERM_SESSION_ID, "
+                        "else the one record whose worktree is the cwd); every positional is then text"),
+         flag("--clear", "remove the report"))
+    verb("title", cmd_title,
+         "the free-text title the board shows in its WORK column (capitals, "
+         "spaces, anything; the name stays the identifier): text sets it, "
+         "--clear removes it, neither prints it",
+         name,
+         arg("text", nargs="*", help=f"the title {title_cut}); text starting with - goes after --"),
+         flag("--clear", "remove the title"))
+    verb("log", cmd_log,
+         "read savannah's log (one file, every piece of savannah writes it): "
+         "the last N lines at a level, --follow for new ones",
+         arg("--level", choices=savannah_log.READ_LEVELS, default="normal",
+             help="normal = INFO and above (default), debug adds DEBUG, verbose adds everything"),
+         arg("--lines", type=int, default=LOG_LINES_DEFAULT, metavar="N",
+             help=f"how many lines (default {LOG_LINES_DEFAULT})"),
+         flag("--follow", "keep printing new lines until Ctrl-C"),
+         flag("--path", "print only the log file's path"))
+    verb("repos", cmd_repos, "list the git repos in your folder of repos (DIR remembers it)",
+         arg("dir", nargs="?"))
+    verb("snapshot", cmd_snapshot,
+         "save the layout (every work session and open Claude Code tab, "
+         "in tab order, with the Claude session ids) under "
+         "<work dir>/snapshots, for restore after a reboot",
+         arg("--note", default="", help="why, e.g. \"before reboot\""))
+    verb("snapshots", cmd_snapshots, "list the saved snapshots, newest first")
+    verb("restore", cmd_restore,
+         "put a snapshot's tabs back: remake every work session whose tab "
+         "is gone (claude --resume its conversation) and reopen the plain "
+         "tabs; never closes anything",
+         arg("which", nargs="?", default="latest", metavar="STAMP",
+             help="a stamp from `snapshots` (default: latest)"),
+         flag("--dry-run", "print the plan, touch nothing"),
+         flag("--no-plain", "work sessions only, leave the plain tabs"))
+    verb("output", cmd_output, "print the last N turns (your prompt, Claude's reply) of that tab",
+         name, arg("--last", type=int, default=1, metavar="N"))
+    verb("rm", cmd_rm,
+         "close tab, remove worktree (never an adopted session's directory), archive notes",
+         name, flag("--keep-worktree"), flag("--force", "discard a dirty worktree"), json=False)
+    verb("hub", cmd_hub,
+         "register the peer shim in DIR/.mcp.json, add a starter "
+         "CLAUDE.md, launch claude there (the coordinating session)",
+         arg("dir", nargs="?", help="hub directory: your folder of repos "
+                                    "(default: the remembered hub, else cwd)"),
+         flag("--no-launch", "write the files, do not start claude"))
     return ap
 
 

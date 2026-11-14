@@ -3,13 +3,12 @@
 
 #include "task_supervisor.hpp"
 
-#include <fcntl.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <random>
 #include <thread>
 
@@ -36,27 +35,47 @@ std::string new_session_id() {
 // How often tail() looks for new chunks while a turn is running.
 constexpr std::chrono::milliseconds kTailPollInterval{50};
 
-// Run a git command silently; return its exit code (-1 on spawn failure).
+// Run a git command silently; return its exit code (-1 on spawn failure,
+// 128 when git did not exit on its own).
 int run_git(const std::vector<std::string>& args) {
-    // argv is built before the fork: the child only execs.
     std::vector<std::string> argv = {"git"};
     argv.insert(argv.end(), args.begin(), args.end());
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            dup2(devnull, STDIN_FILENO);
-        }
-        std::vector<char*> cargv = to_cargv(argv);
-        execvp(cargv[0], cargv.data());
-        _exit(127);
-    }
-    int status = 0;
-    if (waitpid(pid, &status, 0) != pid) return -1;
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+    Child git = spawn(argv, kSilent);
+    const std::optional<int> status = git.wait();
+    if (!status) return -1;
+    return WIFEXITED(*status) ? WEXITSTATUS(*status) : 128;
+}
+
+// One task_send auto-continues at most this many times past claude's
+// --max-turns cap; bounds token burn on a runaway task.
+constexpr int kMaxAutoContinues = 4;
+
+// What an auto-continue sends in place of the caller's prompt.
+constexpr const char* kContinuePrompt = "Continue where you left off.";
+
+// The argv of one worker invocation.
+std::vector<std::string> worker_argv(const NodeConfig& config,
+                                     const std::string& prompt, bool first,
+                                     const std::string& session) {
+    std::vector<std::string> argv = base_agent_argv(config, prompt);
+    // Workers have no human to answer prompts; acceptEdits lets them work
+    // in their worktree without blocking, while risky ops still fail and
+    // report.
+    argv.push_back("--permission-mode");
+    argv.push_back("acceptEdits");
+    // First turn stamps the session id; every later turn (including an
+    // auto-continue) resumes it.
+    argv.push_back(first ? "--session-id" : "--resume");
+    argv.push_back(session);
+    return argv;
+}
+
+// The state a finished turn leaves its task in.
+TaskState end_state(bool cancelled, bool saw_result, bool max_turns) {
+    if (cancelled) return TaskState::Cancelled;
+    if (!saw_result) return TaskState::Failed;
+    // Still at the turn cap after the last auto-continue: work is pending.
+    return max_turns ? TaskState::Incomplete : TaskState::Idle;
 }
 
 }  // namespace
@@ -87,12 +106,67 @@ TaskView TaskSupervisor::snapshot(Task& t) {
     TaskView v;
     v.id = t.id;
     v.title = t.title;
-    v.state = t.state;
+    v.state = to_string(t.state);
     v.worktree = t.worktree;
     v.session_id = t.session_id;
     v.turns = t.turns;
     v.last_line = t.last_line;
     return v;
+}
+
+struct TaskSupervisor::Invocation {
+    bool saw_result = false;  // the agent ended with its own RESULT
+    bool max_turns = false;   // ... and that RESULT was error_max_turns
+};
+
+TaskSupervisor::Invocation TaskSupervisor::run_invocation(
+    Task& t, const std::string& prompt) {
+    bool first;
+    std::int64_t timeout;
+    std::string cwd, session;
+    {
+        std::lock_guard<std::mutex> lock(t.m);
+        first = (t.turns == 0);
+        timeout = t.timeout_ms;
+        cwd = t.worktree;
+        session = t.session_id;
+        // Delimit every resumed invocation (a new task_send, or an
+        // auto-continue past the max-turns cap) in the transcript so the
+        // tail shows turn boundaries instead of running the text together.
+        // The task's very first invocation needs no leading separator.
+        if (!first) {
+            t.transcript.push_back(
+                {ChunkKind::Text,
+                 "\n\n----- turn " + std::to_string(t.turns + 1) +
+                     " -----\n"});
+        }
+    }
+
+    AgentProcess proc;
+    auto outcome = proc.run(
+        worker_argv(config_, prompt, first, session), timeout, *t.cancel,
+        [&t](const Chunk& c) {
+            std::lock_guard<std::mutex> lock(t.m);
+            t.transcript.push_back(c);
+            if (c.kind == ChunkKind::Text && !c.payload.empty()) {
+                t.last_line = c.payload;
+            }
+        },
+        cwd);
+
+    std::lock_guard<std::mutex> lock(t.m);
+    if (!outcome.saw_result) {
+        // An explicit cancel reports as cancelled whatever else the
+        // outcome says (a cancel that lands before the spawn included).
+        std::string reason =
+            t.cancel->load() ? "cancelled" : failure_reason(outcome);
+        t.transcript.push_back(
+            {ChunkKind::Result,
+             ChunkMapper::synthetic_error_result(reason, outcome.exit_code)});
+    }
+    ++t.turns;
+    return {outcome.saw_result,
+            outcome.saw_result && outcome.max_turns_reached};
 }
 
 void TaskSupervisor::drive_turn(Task* t, const std::string& prompt) {
@@ -102,90 +176,23 @@ void TaskSupervisor::drive_turn(Task* t, const std::string& prompt) {
     // auto-continue budget. Without this a long task stalls the instant it hits
     // --max-turns and the caller has to hand-send "continue" every time (the
     // friction the enum-to-string delegation run surfaced). The task stays
-    // "running" for the whole loop; only the final outcome sets the end state.
-    constexpr int kMaxAutoContinues = 4;  // bounds token burn on a runaway task
-
+    // running for the whole loop; only the final outcome sets the end state.
     std::string turn_prompt = prompt;
-    bool saw_result = false;
-    bool max_turns = false;
+    Invocation last;
     int auto_continues = 0;
 
     for (;;) {
-        bool first;
-        std::int64_t timeout;
-        std::string cwd, session;
-        {
-            std::lock_guard<std::mutex> lock(t->m);
-            first = (t->turns == 0);
-            timeout = t->timeout_ms;
-            cwd = t->worktree;
-            session = t->session_id;
-            // Delimit every resumed invocation (a new task_send, or an
-            // auto-continue past the max-turns cap) in the transcript so the
-            // tail shows turn boundaries instead of running the text together.
-            // The task's very first invocation needs no leading separator.
-            if (!first) {
-                t->transcript.push_back(
-                    {ChunkKind::Text,
-                     "\n\n----- turn " + std::to_string(t->turns + 1) +
-                         " -----\n"});
-            }
-        }
-
-        std::vector<std::string> argv = base_agent_argv(config_, turn_prompt);
-        // Workers have no human to answer prompts; acceptEdits lets them work
-        // in their worktree without blocking, while risky ops still fail and
-        // report.
-        argv.push_back("--permission-mode");
-        argv.push_back("acceptEdits");
-        // First turn stamps the session id; every later turn (including an
-        // auto-continue) resumes it.
-        argv.push_back(first ? "--session-id" : "--resume");
-        argv.push_back(session);
-
-        AgentProcess proc;
-        auto outcome = proc.run(
-            argv, timeout, *t->cancel,
-            [t](const Chunk& c) {
-                std::lock_guard<std::mutex> lock(t->m);
-                t->transcript.push_back(c);
-                if (c.kind == ChunkKind::Text && !c.payload.empty()) {
-                    t->last_line = c.payload;
-                }
-            },
-            cwd);
-
-        {
-            std::lock_guard<std::mutex> lock(t->m);
-            if (!outcome.saw_result) {
-                // An explicit cancel reports as cancelled whatever else the
-                // outcome says (a cancel that lands before the spawn included).
-                std::string reason = t->cancel->load()
-                                         ? "cancelled"
-                                         : failure_reason(outcome);
-                t->transcript.push_back(
-                    {ChunkKind::Result,
-                     ChunkMapper::synthetic_error_result(reason,
-                                                         outcome.exit_code)});
-            }
-            ++t->turns;
-        }
-
-        saw_result = outcome.saw_result;
-        max_turns = outcome.saw_result && outcome.max_turns_reached;
+        last = run_invocation(*t, turn_prompt);
 
         // Continue only if the agent hit the turn cap with work still pending,
         // is not cancelled, produced a result, and we still have budget.
-        if (t->cancel->load() || !saw_result || !max_turns) break;
+        if (t->cancel->load() || !last.saw_result || !last.max_turns) break;
         if (++auto_continues > kMaxAutoContinues) break;
-        turn_prompt = "Continue where you left off.";
+        turn_prompt = kContinuePrompt;
     }
 
     std::lock_guard<std::mutex> lock(t->m);
-    t->state = t->cancel->load() ? "cancelled"
-               : !saw_result     ? "failed"
-               : max_turns        ? "incomplete"  // hit the auto-continue budget
-                                   : "idle";
+    t->state = end_state(t->cancel->load(), last.saw_result, last.max_turns);
 }
 
 TaskView TaskSupervisor::create(const TaskCreate& spec) {
@@ -216,13 +223,13 @@ TaskView TaskSupervisor::create(const TaskCreate& spec) {
             t->worktree = path;
             t->branch = branch;
         } else {
-            t->state = "failed";
+            t->state = TaskState::Failed;
             t->last_line = "git worktree add failed (rc " + std::to_string(rc) + ")";
         }
     }
 
-    if (t->state != "failed" && !spec.prompt.empty()) {
-        t->state = "running";
+    if (t->state != TaskState::Failed && !spec.prompt.empty()) {
+        t->state = TaskState::Running;
         t->worker = std::thread(&TaskSupervisor::drive_turn, this, t, spec.prompt);
     }
 
@@ -255,8 +262,11 @@ bool TaskSupervisor::send(const std::string& id, const std::string& prompt) {
     Task* t = found.task.get();
     {
         std::lock_guard<std::mutex> tlock(t->m);
-        if (t->state == "running" || t->state == "cancelled") return false;
-        t->state = "running";
+        if (t->state == TaskState::Running ||
+            t->state == TaskState::Cancelled) {
+            return false;
+        }
+        t->state = TaskState::Running;
     }
     if (t->worker.joinable()) t->worker.join();  // previous turn is done
     t->worker = std::thread(&TaskSupervisor::drive_turn, this, t, prompt);
@@ -275,7 +285,7 @@ void TaskSupervisor::tail(const std::string& id,
         return;
     }
     // Snapshot then follow: drain everything already buffered, and while the
-    // turn is running keep draining new chunks. State leaves "running" only
+    // turn is running keep draining new chunks. State leaves Running only
     // after the worker's final push, so a not-running observation is final.
     std::size_t idx = 0;
     for (;;) {
@@ -283,7 +293,7 @@ void TaskSupervisor::tail(const std::string& id,
         {
             std::lock_guard<std::mutex> tlock(t->m);
             for (; idx < t->transcript.size(); ++idx) emit(t->transcript[idx]);
-            running = (t->state == "running");
+            running = (t->state == TaskState::Running);
         }
         if (!running) return;
         std::this_thread::sleep_for(kTailPollInterval);
@@ -298,7 +308,7 @@ bool TaskSupervisor::cancel(const std::string& id) {
     if (t->worker.joinable()) t->worker.join();
     {
         std::lock_guard<std::mutex> tlock(t->m);
-        t->state = "cancelled";
+        t->state = TaskState::Cancelled;
     }
     prune_worktree(*t);
     return true;
@@ -310,7 +320,7 @@ bool TaskSupervisor::remove(const std::string& id) {
     std::shared_ptr<Task> t = found.task;
     {
         std::lock_guard<std::mutex> tlock(t->m);
-        if (t->state == "running") return false;  // cancel first
+        if (t->state == TaskState::Running) return false;  // cancel first
     }
     // Not running, and mu_ is held so no send() can start a new turn: the
     // worker thread (if any) is at or past its final state store. Join it

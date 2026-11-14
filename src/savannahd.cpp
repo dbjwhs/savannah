@@ -45,12 +45,6 @@ using song::i32;
 
 namespace {
 
-savannah::NodeConfig g_config;
-
-// Task workers (persistent, resumable sessions). Constructed in main once
-// g_config is loaded; null until then.
-std::unique_ptr<savannah::TaskSupervisor> g_tasks;
-
 sw::TaskInfo to_wire(const savannah::TaskView& v) {
     sw::TaskInfo info;
     info.id = v.id;
@@ -63,14 +57,10 @@ sw::TaskInfo to_wire(const savannah::TaskView& v) {
     return info;
 }
 
-// Single-flight state.
-std::mutex g_flight_mutex;          // held only for state transitions
-std::atomic<bool> g_busy{false};
-std::atomic<bool> g_cancel{false};
-
-std::vector<std::string> build_agent_argv(const std::string& prompt,
+std::vector<std::string> build_agent_argv(const savannah::NodeConfig& config,
+                                          const std::string& prompt,
                                           const sw::AskOptions& opts) {
-    std::vector<std::string> argv = savannah::base_agent_argv(g_config, prompt);
+    std::vector<std::string> argv = savannah::base_agent_argv(config, prompt);
     if (!opts.system_hint.empty()) {
         argv.push_back("--append-system-prompt");
         argv.push_back(opts.system_hint);
@@ -146,53 +136,49 @@ void write_chunk(StreamWriter& writer, savannah::ChunkKind kind,
     }
 }
 
-// Clears the single-flight gate even when handle_ask unwinds on an
-// exception (a stream write failure must not brick the node as "busy").
-struct FlightGuard {
-    ~FlightGuard() { g_busy.store(false); }
-};
-
 // The node's service implementation. The generated dispatchers
 // (dispatch_AgentNode / dispatch_AgentNode_stream) decode arguments and route
-// method ids to these overrides; the single-flight gate, agent supervision, and
-// task supervisor live here. Streaming methods (ask, task_output) write chunks
-// to the StreamWriter and are routed through the generated stream dispatcher on
-// kService_AgentNode_Stream (song finding 6: this wiring is now generated).
+// method ids to these overrides; the node's config, the single-flight gate,
+// agent supervision, and the task supervisor live here. Streaming methods
+// (ask, task_output) write chunks to the StreamWriter and are routed through
+// the generated stream dispatcher on kService_AgentNode_Stream (song finding
+// 6: this wiring is now generated). TCP mode calls in from one thread per
+// client, so everything mutable is atomic, mutex-guarded, or the supervisor's
+// own business.
 class AgentNodeImpl : public sw::IAgentNode {
 public:
+    explicit AgentNodeImpl(savannah::NodeConfig config)
+        : config_(std::move(config)), tasks_(config_) {}
+
+    const savannah::NodeConfig& config() const { return config_; }
+
     sw::AgentInfo info() override {
         sw::AgentInfo info;
-        info.name = g_config.name;
+        info.name = config_.name;
         info.model = "unknown";  // v1: node does not probe the agent
-        info.workspace = g_config.workspace;
-        info.tags = g_config.tags;
+        info.workspace = config_.workspace;
+        info.tags = config_.tags;
         info.protocol_ver = 1;
         return info;
     }
 
     void ask(const std::string& prompt, const sw::AskOptions& opts,
              StreamWriter& writer) override {
-        // Single-flight gate.
-        {
-            std::lock_guard<std::mutex> lock(g_flight_mutex);
-            if (g_busy.load()) {
-                write_chunk(writer, savannah::ChunkKind::Result,
-                            savannah::ChunkMapper::synthetic_error_result(
-                                "busy", 0));
-                return;
-            }
-            g_busy.store(true);
-            g_cancel.store(false);
+        if (!take_flight()) {
+            write_chunk(writer, savannah::ChunkKind::Result,
+                        savannah::ChunkMapper::synthetic_error_result("busy",
+                                                                      0));
+            return;
         }
-        FlightGuard flight;
+        FlightGuard flight{busy_};
 
         std::int64_t timeout =
             opts.timeout_ms > 0 ? static_cast<std::int64_t>(opts.timeout_ms)
-                                : g_config.timeout_ms;
+                                : config_.timeout_ms;
 
         savannah::AgentProcess proc;
         auto outcome = proc.run(
-            build_agent_argv(prompt, opts), timeout, g_cancel,
+            build_agent_argv(config_, prompt, opts), timeout, cancel_,
             [&](const savannah::Chunk& c) {
                 write_chunk(writer, c.kind, c.payload);
             });
@@ -206,13 +192,13 @@ public:
     }
 
     bool cancel() override {
-        bool was_busy = g_busy.load();
-        if (was_busy) g_cancel.store(true);
+        bool was_busy = busy_.load();
+        if (was_busy) cancel_.store(true);
         return was_busy;
     }
 
     std::string status() override {
-        return g_busy.load() ? "busy" : "idle";
+        return busy_.load() ? "busy" : "idle";
     }
 
     sw::TaskInfo task_new(const sw::TaskSpec& spec) override {
@@ -222,79 +208,108 @@ public:
         c.workdir = spec.workdir;
         c.make_worktree = spec.make_worktree;
         c.timeout_ms = spec.timeout_ms;
-        return to_wire(g_tasks->create(c));
+        return to_wire(tasks_.create(c));
     }
 
     sw::TaskList task_list() override {
         sw::TaskList out;
-        for (const auto& v : g_tasks->list()) out.tasks.push_back(to_wire(v));
+        for (const auto& v : tasks_.list()) out.tasks.push_back(to_wire(v));
         return out;
     }
 
     bool task_send(const std::string& id, const std::string& prompt) override {
-        return g_tasks->send(id, prompt);
+        return tasks_.send(id, prompt);
     }
 
     sw::TaskInfo task_status(const std::string& id) override {
-        return to_wire(g_tasks->status(id));
+        return to_wire(tasks_.status(id));
     }
 
     void task_output(const std::string& id, StreamWriter& writer) override {
-        g_tasks->tail(id, [&](const savannah::Chunk& c) {
+        tasks_.tail(id, [&](const savannah::Chunk& c) {
             write_chunk(writer, c.kind, c.payload);
         });
     }
 
     bool task_cancel(const std::string& id) override {
-        return g_tasks->cancel(id);
+        return tasks_.cancel(id);
     }
 
     bool task_rm(const std::string& id) override {
-        return g_tasks->remove(id);
+        return tasks_.remove(id);
     }
+
+private:
+    // Clears the single-flight gate even when ask unwinds on an exception
+    // (a stream write failure must not brick the node as "busy").
+    struct FlightGuard {
+        std::atomic<bool>& busy;
+        ~FlightGuard() { busy.store(false); }
+    };
+
+    // The single-flight gate: claim the node for one ask, or false when an
+    // ask is already in flight. A claim clears any stale cancel request.
+    bool take_flight() {
+        std::lock_guard<std::mutex> lock(flight_mutex_);
+        if (busy_.load()) return false;
+        busy_.store(true);
+        cancel_.store(false);
+        return true;
+    }
+
+    const savannah::NodeConfig config_;
+
+    // Single-flight state.
+    std::mutex flight_mutex_;          // held only for state transitions
+    std::atomic<bool> busy_{false};
+    std::atomic<bool> cancel_{false};
+
+    // Task workers (persistent, resumable sessions). Holds a reference to
+    // config_, so it is declared after it; destroyed first, which cancels
+    // and joins every worker.
+    savannah::TaskSupervisor tasks_;
 };
 
-}  // namespace
-
-int main(int argc, char** argv) {
+// What the command line (and $SAVANNAHD_CONFIG) asked for.
+struct Args {
     std::string config_path;
     bool tcp = false;
     bool mdns = false;
-    long tcp_port = 0;
-    if (const char* env = std::getenv("SAVANNAHD_CONFIG")) config_path = env;
+    u16 tcp_port = 0;
+};
+
+// Unknown arguments are ignored, as they always were. On a bad --tcp value
+// `error` is set and the result is not to be used.
+Args parse_args(int argc, char** argv, std::string& error) {
+    Args args;
+    if (const char* env = std::getenv("SAVANNAHD_CONFIG")) args.config_path = env;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--config" && i + 1 < argc) {
-            config_path = argv[i + 1];
+        const std::string arg = argv[i];
+        if (arg == "--config" && i + 1 < argc) {
+            args.config_path = argv[i + 1];
         }
-        if (std::string(argv[i]) == "--tcp" && i + 1 < argc) {
-            tcp = true;
+        if (arg == "--tcp" && i + 1 < argc) {
+            args.tcp = true;
             char* end = nullptr;
-            tcp_port = std::strtol(argv[i + 1], &end, 10);
-            if (end == argv[i + 1] || *end != '\0' || tcp_port < 0 || tcp_port > 65535) {
-                return die(std::string("--tcp wants a port, 0 to 65535, not ") +
-                           argv[i + 1]);
+            const long port = std::strtol(argv[i + 1], &end, 10);
+            if (end == argv[i + 1] || *end != '\0' || port < 0 || port > 65535) {
+                error = std::string("--tcp wants a port, 0 to 65535, not ") +
+                        argv[i + 1];
+                return args;
             }
+            args.tcp_port = static_cast<u16>(port);
         }
-        if (std::string(argv[i]) == "--mdns") mdns = true;
+        if (arg == "--mdns") args.mdns = true;
     }
-    if (config_path.empty()) {
-        return die("no config (set SAVANNAHD_CONFIG or --config)");
-    }
+    return args;
+}
 
-    try {
-        g_config = savannah::NodeConfig::from(
-            savannah::Config::parse_file(config_path));
-    } catch (const std::exception& e) {
-        return die(e.what());
-    }
-
-    g_tasks = std::make_unique<savannah::TaskSupervisor>(g_config);
-
-    song::ServiceRuntime runtime;
-    AgentNodeImpl node;
-    // Register the generated dispatchers (song finding 6): they decode arguments
-    // and route method ids to AgentNodeImpl. Streaming methods live on the
-    // generated kService_AgentNode_Stream, resolved ahead of the unary id.
+// Hook the node into the runtime: the generated dispatchers (song finding
+// 6) decode arguments and route method ids to AgentNodeImpl, streaming
+// methods on the generated kService_AgentNode_Stream, resolved ahead of the
+// unary id; then every method is declared for the capability exchange.
+// `node` must outlive the runtime's serving loop.
+void register_node(song::ServiceRuntime& runtime, AgentNodeImpl& node) {
     runtime.register_dispatcher(sw::kService_AgentNode,
         [&node](u16 m, Buffer& req, Buffer& resp) {
             sw::dispatch_AgentNode(node, m, req, resp);
@@ -308,62 +323,89 @@ int main(int argc, char** argv) {
         runtime.register_method(m.service, m.method, m.flags);
     }
     runtime.set_capability(song::wire::Capability::streaming);
+}
 
-    song::Log::debug("savannahd up: node=" + g_config.name +
-               " agent=" + g_config.agent_cmd);
-    if (tcp) {
-        // --tcp alone binds loopback (HMAC optional there). --mdns is LAN
-        // exposure: it binds all interfaces and therefore refuses to run
-        // without a key. Port 0 = OS-assigned. The marker line on stdout is
-        // the contract test harnesses parse.
-        std::string key;
-        if (!g_config.hmac_key_file.empty()) {
-            try {
-                key = savannah::load_hmac_key(g_config.hmac_key_file);
-            } catch (const std::exception& e) {
-                return die(e.what());
-            }
+// Serve concurrent clients over TCP; returns only on a startup failure
+// (main's exit code). --tcp alone binds loopback (HMAC optional there).
+// --mdns is LAN exposure: it binds all interfaces and therefore refuses to
+// run without a key. Port 0 = OS-assigned. The marker line on stdout is the
+// contract test harnesses parse.
+int serve_tcp(song::ServiceRuntime& runtime, const savannah::NodeConfig& config,
+              u16 port, bool mdns) {
+    std::string key;
+    if (!config.hmac_key_file.empty()) {
+        try {
+            key = savannah::load_hmac_key(config.hmac_key_file);
+        } catch (const std::exception& e) {
+            return die(e.what());
         }
-        if (mdns && key.empty()) {
-            return die("--mdns requires mesh.hmac_key_file "
-                       "(refusing unauthenticated LAN exposure)");
-        }
-        // With a key, every accepted client is wrapped in SecureTransport
-        // via song's transport wrapper hook: a bad or missing HMAC tag
-        // throws on first receive and drops the client before any
-        // dispatcher runs. An empty key serves plaintext (loopback tests).
-        if (!key.empty()) {
-            runtime.set_transport_wrapper(
-                [key](std::unique_ptr<song::Transport> t)
-                    -> std::unique_ptr<song::Transport> {
-                    return std::make_unique<song::SecureTransport>(
-                        std::move(t), song::SecurityConfig(key));
-                });
-        }
-        song::TcpListener listener;
-        listener.listen(static_cast<song::u16>(tcp_port), kListenBacklog,
-                        mdns ? "" : "127.0.0.1");
-
-        std::unique_ptr<song::Discovery> discovery;
-        song::ServiceRegistration registration;
-        if (mdns) {
-            discovery = song::create_discovery();
-            if (!discovery || !discovery->is_available()) {
-                return die("mDNS not available");
-            }
-            registration = song::ServiceRegistration(
-                *discovery, g_config.name, savannah_wire::kMeshServiceType,
-                listener.bound_port());
-            if (!registration.is_registered()) {
-                return die("mDNS registration failed");
-            }
-        }
-
-        std::printf("SAVANNAHD_TCP_PORT=%u\n",
-                    static_cast<unsigned>(listener.bound_port()));
-        std::fflush(stdout);
-        runtime.run_tcp_multi(listener);  // [[noreturn]]
-    } else {
-        runtime.run();
     }
+    if (mdns && key.empty()) {
+        return die("--mdns requires mesh.hmac_key_file "
+                   "(refusing unauthenticated LAN exposure)");
+    }
+    // With a key, every accepted client is wrapped in SecureTransport
+    // via song's transport wrapper hook: a bad or missing HMAC tag
+    // throws on first receive and drops the client before any
+    // dispatcher runs. An empty key serves plaintext (loopback tests).
+    if (!key.empty()) {
+        runtime.set_transport_wrapper(
+            [key](std::unique_ptr<song::Transport> t)
+                -> std::unique_ptr<song::Transport> {
+                return std::make_unique<song::SecureTransport>(
+                    std::move(t), song::SecurityConfig(key));
+            });
+    }
+    song::TcpListener listener;
+    listener.listen(port, kListenBacklog, mdns ? "" : "127.0.0.1");
+
+    std::unique_ptr<song::Discovery> discovery;
+    song::ServiceRegistration registration;
+    if (mdns) {
+        discovery = song::create_discovery();
+        if (!discovery || !discovery->is_available()) {
+            return die("mDNS not available");
+        }
+        registration = song::ServiceRegistration(
+            *discovery, config.name, savannah_wire::kMeshServiceType,
+            listener.bound_port());
+        if (!registration.is_registered()) {
+            return die("mDNS registration failed");
+        }
+    }
+
+    std::printf("SAVANNAHD_TCP_PORT=%u\n",
+                static_cast<unsigned>(listener.bound_port()));
+    std::fflush(stdout);
+    runtime.run_tcp_multi(listener);  // [[noreturn]]
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    std::string bad_args;
+    const Args args = parse_args(argc, argv, bad_args);
+    if (!bad_args.empty()) return die(bad_args);
+    if (args.config_path.empty()) {
+        return die("no config (set SAVANNAHD_CONFIG or --config)");
+    }
+
+    savannah::NodeConfig config;
+    try {
+        config = savannah::NodeConfig::from(
+            savannah::Config::parse_file(args.config_path));
+    } catch (const std::exception& e) {
+        return die(e.what());
+    }
+
+    song::ServiceRuntime runtime;
+    AgentNodeImpl node(std::move(config));
+    register_node(runtime, node);
+
+    song::Log::debug("savannahd up: node=" + node.config().name +
+               " agent=" + node.config().agent_cmd);
+    if (args.tcp) {
+        return serve_tcp(runtime, node.config(), args.tcp_port, args.mdns);
+    }
+    runtime.run();
 }

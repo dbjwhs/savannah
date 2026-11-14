@@ -195,21 +195,112 @@ def work_session_for(cwd, iterm_session_id):
     return max(matches)[1]
 
 
+def read_event():
+    """The event Claude Code passes on stdin, as a dict. Anything else (no
+    input, bad JSON, valid JSON that is not an object: an array, a string, a
+    number) carries no fields we can read and is an empty event."""
+    try:
+        raw = sys.stdin.read()
+        event = json.loads(raw) if raw.strip() else {}
+    except (ValueError, OSError):
+        event = {}
+    return event if isinstance(event, dict) else {}
+
+
+def load_record(path):
+    """The session file already there, or {}: a state-less event (a
+    heartbeat) starts from it and so preserves the message and identity
+    already captured. A missing or damaged file, or one that parses but is
+    not an object, is rebuilt from scratch rather than crashing on the first
+    key assignment."""
+    try:
+        with open(path) as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def apply_event(record, event, name):
+    """What event (its hook_event_name is name) changes in record: the
+    transcript path, the last prompt, the state, the notification message
+    and type. Pure: reads nothing but its arguments, so the rules can be
+    tested without a file or an environment. Fields an event does not carry
+    keep the value record already has."""
+    # Where Claude Code keeps this conversation's transcript. Most events
+    # carry it; when one does not, the previous value stands.
+    tp = event.get("transcript_path")
+    if isinstance(tp, str) and tp:
+        record["transcript_path"] = tp
+    record.setdefault("transcript_path", "")
+
+    # What you last asked for, so a tab still tells you what it was doing.
+    # "prompt" is the documented field, "user_prompt" an alternate name. First
+    # line only, capped at 200 chars, and kept through every later event.
+    if name == "UserPromptSubmit":
+        prompt = event.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            prompt = event.get("user_prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            record["last_prompt"] = first_line(prompt, 200)
+    record.setdefault("last_prompt", "")
+
+    notify_type = event.get("notification_type", "") if name == "Notification" else ""
+    if not isinstance(notify_type, str):
+        notify_type = ""
+    if name == "Notification" and notify_type == "idle_prompt":
+        # The idle nudge: nothing needs you, so it carries no message and
+        # keeps the state it found. A file an older hook stamped waiting for
+        # the nudge itself (state waiting, notify_type idle_prompt) heals
+        # here: idle. A real waiting (a permission prompt still up) stays,
+        # and its message and type with it.
+        record.setdefault("state", "idle")
+        if record["state"] == "waiting" and record.get("notify_type") == "idle_prompt":
+            record["state"] = "idle"
+        if record["state"] != "waiting":
+            record["message"] = ""
+            record["notify_type"] = notify_type
+    elif name == "Notification":
+        # A notification carries why it needs you (notification_message is
+        # the documented field; message is an older/alternate name we also
+        # accept). notification_type says which kind, so the dash can say why.
+        record["state"] = EVENT_STATE[name]
+        record["message"] = (event.get("notification_message")
+                             or event.get("message") or "needs attention")
+        record["notify_type"] = notify_type
+    else:
+        # Any non-notification event clears the message and the type.
+        if name in EVENT_STATE:
+            record["state"] = EVENT_STATE[name]
+        record.setdefault("state", "working")
+        record["message"] = ""
+        record["notify_type"] = ""
+    return record
+
+
+def emit_work_context(record, sid):
+    """A work session's Claude learns which session it is and how to report
+    a poll to the board. The only thing this hook ever prints to stdout, and
+    only on SessionStart: Claude Code adds additionalContext to the session
+    (stdout that is not JSON would have to be plain text). Nothing when the
+    session's directory is no work session's worktree."""
+    work_name = work_session_for(record["project"], os.environ.get("ITERM_SESSION_ID", ""))
+    if not work_name:
+        return
+    cmd = savannah_command()
+    context = WORK_CONTEXT.format(name=work_name, cmd=cmd)
+    log_info("work context", session=sid, name=work_name, cmd=cmd)
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "SessionStart", "additionalContext": context}}))
+
+
 def run():
     # savannah's own headless calls (work autoname's `claude -p`) set this so
     # they never show up as a tab on the board, whatever Claude Code's flags
     # do with hooks that run.
     if os.environ.get("SAVANNAH_HOOK_IGNORE"):
         return 0
-    try:
-        raw = sys.stdin.read()
-        event = json.loads(raw) if raw.strip() else {}
-    except (ValueError, OSError):
-        event = {}
-    # Valid JSON that is not an object (an array, a string, a number) carries
-    # no fields we can read; treat it like an empty event.
-    if not isinstance(event, dict):
-        event = {}
+    event = read_event()
 
     sid = event.get("session_id") or ""
     if not isinstance(sid, str):
@@ -234,75 +325,16 @@ def run():
         log_debug("event", event=name, session=sid, cwd=event.get("cwd") or "", file=path, removed=True)
         return 0
 
-    # Start from any existing record so a state-less event (a heartbeat)
-    # preserves the message and identity already captured.
-    record = {}
-    try:
-        with open(path) as f:
-            record = json.load(f)
-    except (OSError, ValueError):
-        record = {}
-    # A damaged record that parses but is not an object is rebuilt from
-    # scratch rather than crashing on the first key assignment.
-    if not isinstance(record, dict):
-        record = {}
-
+    # What only this process knows (the clock, the directory, the Claude Code
+    # pid, the terminal) is stamped here; what the event says is apply_event.
+    record = load_record(path)
     record["session_id"] = sid
     record["project"] = event.get("cwd") or os.getcwd()
     record["updated"] = int(time.time())
     record["pid"] = os.getppid()  # the Claude Code process, not this hook
     record["mode"] = event.get("permission_mode", record.get("mode", ""))
     record.update(terminal_identity())
-
-    # Where Claude Code keeps this conversation's transcript. Most events
-    # carry it; when one does not, the previous value stands.
-    tp = event.get("transcript_path")
-    if isinstance(tp, str) and tp:
-        record["transcript_path"] = tp
-    record.setdefault("transcript_path", "")
-
-    # What you last asked for, so a tab still tells you what it was doing.
-    # "prompt" is the documented field, "user_prompt" an alternate name. First
-    # line only, capped at 200 chars, and kept through every later event.
-    if name == "UserPromptSubmit":
-        prompt = event.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            prompt = event.get("user_prompt")
-        if isinstance(prompt, str) and prompt.strip():
-            record["last_prompt"] = first_line(prompt, 200)
-    record.setdefault("last_prompt", "")
-
-    notify_type = event.get("notification_type", "") if name == "Notification" else ""
-    if not isinstance(notify_type, str):
-        notify_type = ""
-    nudge = name == "Notification" and notify_type == "idle_prompt"
-    if name in EVENT_STATE and not nudge:
-        record["state"] = EVENT_STATE[name]
-    record.setdefault("state", "idle" if nudge else "working")
-    # A file an older hook stamped waiting for the nudge itself (state
-    # waiting, notify_type idle_prompt) heals on the next nudge: idle.
-    if nudge and record["state"] == "waiting" and record.get("notify_type") == "idle_prompt":
-        record["state"] = "idle"
-
-    # A notification carries why it needs you (notification_message is the
-    # documented field; message is an older/alternate name we also accept).
-    # notification_type says which kind, so the dash can say why. The idle
-    # nudge carries no message (nothing needs you) and keeps the state it
-    # found; when that state is a real waiting (a permission prompt still
-    # up), its message and type stay too. Any non-notification event clears
-    # both.
-    if nudge and record["state"] == "waiting":
-        pass
-    elif nudge:
-        record["message"] = ""
-        record["notify_type"] = notify_type
-    elif name == "Notification":
-        record["message"] = (event.get("notification_message")
-                             or event.get("message") or "needs attention")
-        record["notify_type"] = notify_type
-    else:
-        record["message"] = ""
-        record["notify_type"] = ""
+    apply_event(record, event, name)
 
     written = True
     try:
@@ -313,17 +345,8 @@ def run():
     log_debug("event", event=name or "", session=sid, state=record.get("state", ""), cwd=record["project"],
               iterm=record.get("iterm_session_id", ""), file=path, written=written)
 
-    # A work session's Claude learns which session it is and how to report
-    # a poll to the board. The only thing this hook ever prints to stdout,
-    # and only on SessionStart: Claude Code adds additionalContext to the
-    # session (stdout that is not JSON would have to be plain text).
     if name == "SessionStart":
-        work_name = work_session_for(record["project"], os.environ.get("ITERM_SESSION_ID", ""))
-        if work_name:
-            context = WORK_CONTEXT.format(name=work_name, cmd=savannah_command())
-            log_info("work context", session=sid, name=work_name, cmd=savannah_command())
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "SessionStart", "additionalContext": context}}))
+        emit_work_context(record, sid)
     return 0
 
 

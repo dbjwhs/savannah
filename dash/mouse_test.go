@@ -136,9 +136,9 @@ func TestMouseFlags(t *testing.T) {
 // draws there has its hit, so the header lines never shift the rows.
 func TestClickMeshWorkerRows(t *testing.T) {
 	m := boardWith(t, true)
-	m.mesh = true
-	m.nodes = []string{"n1"}
-	m.tasks = map[string][]task{"n1": {
+	m.mesh.on = true
+	m.mesh.nodes = []string{"n1"}
+	m.mesh.tasks = map[string][]task{"n1": {
 		{ID: "t-1", Title: "first", State: "idle"},
 		{ID: "t-2", Title: "second", State: "idle"},
 		{ID: "t-3", Title: "third", State: "idle"},

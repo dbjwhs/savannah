@@ -132,7 +132,7 @@ func logTickCmd(seq int) tea.Cmd {
 	return tea.Tick(logRefresh, func(time.Time) tea.Msg { return logTick{seq: seq} })
 }
 
-func (m *model) enterLog() tea.Cmd {
+func (m model) enterLog() (model, tea.Cmd) {
 	m.mode = modeLog
 	m.lg.seq++
 	m.lg.follow, m.lg.err = true, ""
@@ -140,7 +140,7 @@ func (m *model) enterLog() tea.Cmd {
 	m.refreshLog()
 	m.status = ""
 	slog.Debug("log view opened", "level", logChoiceNames[m.lg.choice])
-	return tea.Batch(readLogCmd(m.lg.seq), logTickCmd(m.lg.seq))
+	return m, tea.Batch(readLogCmd(m.lg.seq), logTickCmd(m.lg.seq))
 }
 
 func (m *model) leaveLog() {

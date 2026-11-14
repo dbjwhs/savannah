@@ -9,8 +9,11 @@
 
 #pragma once
 
+#include <sys/types.h>  // pid_t
+
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,81 @@ inline std::vector<char*> to_cargv(const std::vector<std::string>& argv) {
     cargv.push_back(nullptr);
     return cargv;
 }
+
+/// An owned file descriptor: closed when it goes out of scope.
+class UniqueFd {
+public:
+    UniqueFd() = default;
+    explicit UniqueFd(int fd) : fd_(fd) {}
+    ~UniqueFd() { reset(); }
+
+    UniqueFd(UniqueFd&& other) noexcept : fd_(other.release()) {}
+    UniqueFd& operator=(UniqueFd&& other) noexcept {
+        if (this != &other) reset(other.release());
+        return *this;
+    }
+    UniqueFd(const UniqueFd&) = delete;
+    UniqueFd& operator=(const UniqueFd&) = delete;
+
+    int get() const { return fd_; }
+    /// Give the descriptor up without closing it.
+    int release() {
+        int fd = fd_;
+        fd_ = -1;
+        return fd;
+    }
+    /// Close what is held (if anything) and hold `fd` instead.
+    void reset(int fd = -1);
+
+private:
+    int fd_ = -1;
+};
+
+/// A forked child process. Whoever holds it must reap it: wait() does that
+/// and hands back the status; a Child destroyed before wait() (an exception
+/// unwinding past it) is sent SIGKILL and reaped there, so no path leaves a
+/// zombie or a child blocked forever on a full pipe.
+class Child {
+public:
+    Child() = default;
+    explicit Child(pid_t pid) : pid_(pid) {}
+    ~Child();
+
+    Child(Child&& other) noexcept : pid_(other.pid_) { other.pid_ = -1; }
+    Child& operator=(Child&&) = delete;
+    Child(const Child&) = delete;
+    Child& operator=(const Child&) = delete;
+
+    /// False when the fork failed (or the child was already reaped).
+    bool spawned() const { return pid_ > 0; }
+
+    /// SIGKILL the child. It still has to be reaped (wait() or destruction).
+    void kill();
+
+    /// Block until the child exits and reap it. The raw waitpid status (see
+    /// exit_code()), or nullopt when there was nothing to reap.
+    std::optional<int> wait();
+
+private:
+    pid_t pid_ = -1;
+};
+
+/// A waitpid status as one number: the exit code, 128 + the signal number
+/// for a child a signal killed, -1 for anything else.
+int exit_code(int wait_status);
+
+/// spawn()'s stdout argument for a child nobody listens to: stdout and
+/// stderr both go to /dev/null.
+inline constexpr int kSilent = -1;
+
+/// fork + exec `argv` (argv[0] looked up on PATH). The child's stdin is
+/// /dev/null. Its stdout is `stdout_fd` with stderr inherited, or, for
+/// kSilent, both are /dev/null. `cwd`, if non-empty, is its working
+/// directory: a chdir that fails ends the child with _exit(126), an exec
+/// that fails with _exit(127). A failed fork returns a Child that is not
+/// spawned().
+Child spawn(const std::vector<std::string>& argv, int stdout_fd,
+            const std::string& cwd = "");
 
 class AgentProcess {
 public:

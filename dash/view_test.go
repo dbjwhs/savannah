@@ -91,14 +91,14 @@ func TestNeighborTaskRow(t *testing.T) {
 
 func TestTaskArgs(t *testing.T) {
 	// Mesh mode with a key: no --addr even if set (addr is pin-only).
-	m := model{key: "mesh.key", addr: "1.2.3.4:9"}
+	m := model{mesh: meshState{key: "mesh.key", addr: "1.2.3.4:9"}}
 	got := m.taskArgs("tail", "n1", "t-1")
 	want := []string{"task", "tail", "n1", "t-1", "--key", "mesh.key"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("mesh: got %v, want %v", got, want)
 	}
 	// Pinned node with --addr.
-	m = model{pin: "n1", addr: "1.2.3.4:9", key: "k"}
+	m = model{mesh: meshState{pin: "n1", addr: "1.2.3.4:9", key: "k"}}
 	got = m.taskArgs("ls", "n1", "--json")
 	want = []string{"task", "ls", "n1", "--json", "--addr", "1.2.3.4:9", "--key", "k"}
 	if !reflect.DeepEqual(got, want) {
@@ -111,7 +111,7 @@ func TestTaskArgs(t *testing.T) {
 // to the flicker-free fallback, and a fresh (shorter) replay does not
 // replace it on screen until it catches up.
 func TestTailRunLifecycle(t *testing.T) {
-	m := model{mode: modeView, tailSeq: 1, follow: true, width: 80, height: 24}
+	m := model{mode: modeView, tail: tailState{seq: 1, follow: true}, width: 80, height: 24}
 
 	step := func(msg interface{}) {
 		next, _ := m.updateTail(msg)
@@ -120,31 +120,31 @@ func TestTailRunLifecycle(t *testing.T) {
 
 	step(tailDataMsg{seq: 1, data: []byte("hello ")})
 	step(tailDataMsg{seq: 1, data: []byte("world\n")})
-	if string(m.tailBuf) != "hello world\n" {
-		t.Fatalf("tailBuf = %q", m.tailBuf)
+	if string(m.tail.buf) != "hello world\n" {
+		t.Fatalf("tailBuf = %q", m.tail.buf)
 	}
 
 	step(tailDataMsg{seq: 0, data: []byte("STALE")}) // old run: ignored
-	if string(m.tailBuf) != "hello world\n" {
-		t.Fatalf("stale data leaked in: %q", m.tailBuf)
+	if string(m.tail.buf) != "hello world\n" {
+		t.Fatalf("stale data leaked in: %q", m.tail.buf)
 	}
 
 	step(tailExitMsg{seq: 1}) // run completed: promoted, current reset
-	if string(m.lastBuf) != "hello world\n" || m.tailBuf != nil {
-		t.Fatalf("after exit: lastBuf=%q tailBuf=%q", m.lastBuf, m.tailBuf)
+	if string(m.tail.last) != "hello world\n" || m.tail.buf != nil {
+		t.Fatalf("after exit: lastBuf=%q tailBuf=%q", m.tail.last, m.tail.buf)
 	}
 
 	step(tailDataMsg{seq: 1, data: []byte("hello ")}) // replay catching up
-	if got := displayBuf(m.tailBuf, m.lastBuf); string(got) != "hello world\n" {
+	if got := displayBuf(m.tail.buf, m.tail.last); string(got) != "hello world\n" {
 		t.Fatalf("display flickered to short replay: %q", got)
 	}
 	step(tailDataMsg{seq: 1, data: []byte("world\nmore\n")}) // caught up
-	if got := displayBuf(m.tailBuf, m.lastBuf); string(got) != "hello world\nmore\n" {
+	if got := displayBuf(m.tail.buf, m.tail.last); string(got) != "hello world\nmore\n" {
 		t.Fatalf("display stuck on old run: %q", got)
 	}
 
 	step(tailExitMsg{seq: 99}) // stale exit: no promotion
-	if string(m.lastBuf) != "hello world\n" {
-		t.Fatalf("stale exit promoted: %q", m.lastBuf)
+	if string(m.tail.last) != "hello world\n" {
+		t.Fatalf("stale exit promoted: %q", m.tail.last)
 	}
 }

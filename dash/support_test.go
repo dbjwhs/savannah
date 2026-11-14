@@ -154,3 +154,13 @@ func plainLines(view string) []string {
 	}
 	return out
 }
+
+// promptFor is who the prompt line is for when it is of that kind (the
+// plain tab being named, the work session being titled or noted), "" when
+// the prompt line has another job.
+func (m model) promptFor(kind promptKind) string {
+	if m.prompt.kind != kind {
+		return ""
+	}
+	return m.prompt.target
+}

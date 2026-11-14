@@ -54,8 +54,8 @@ func TestCtrlKFilters(t *testing.T) {
 	}
 	cursorTo(t, &m, workRow("slow"))
 	m, cmd := press(m, tea.KeyCtrlK)
-	if cmd != nil || !m.finding || !strings.Contains(m.View(), "find:") {
-		t.Fatalf("Ctrl-K should take the prompt line: finding=%v", m.finding)
+	if cmd != nil || !m.finding() || !strings.Contains(m.View(), "find:") {
+		t.Fatalf("Ctrl-K should take the prompt line: finding=%v", m.finding())
 	}
 	m = typeText(m, "slo")
 	if got := rowNames(m); !reflect.DeepEqual(got, []string{"slow", "gone"}) {
@@ -70,8 +70,8 @@ func TestCtrlKFilters(t *testing.T) {
 	}
 	// Enter keeps the filter; the prompt line is slow's again.
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd != nil || m.finding || m.filter != "slow" || m.input.Value() != "" || !strings.Contains(m.status, `1 row matches "slow"`) {
-		t.Fatalf("Enter: finding=%v filter=%q input=%q status=%q", m.finding, m.filter, m.input.Value(), m.status)
+	if cmd != nil || m.finding() || m.filter != "slow" || m.input.Value() != "" || !strings.Contains(m.status, `1 row matches "slow"`) {
+		t.Fatalf("Enter: finding=%v filter=%q input=%q status=%q", m.finding(), m.filter, m.input.Value(), m.status)
 	}
 	if out := m.View(); !strings.Contains(out, "say to slow") {
 		t.Errorf("after Enter the prompt line should be the row's:\n%s", out)
@@ -84,12 +84,12 @@ func TestCtrlKFilters(t *testing.T) {
 	// Ctrl-K again edits the same filter; Esc clears everything and the
 	// cursor stays on slow.
 	m, _ = press(m, tea.KeyCtrlK)
-	if !m.finding || m.input.Value() != "slow" {
-		t.Errorf("Ctrl-K again should prefill the filter: finding=%v input=%q", m.finding, m.input.Value())
+	if !m.finding() || m.input.Value() != "slow" {
+		t.Errorf("Ctrl-K again should prefill the filter: finding=%v input=%q", m.finding(), m.input.Value())
 	}
 	m, cmd = press(m, tea.KeyEsc)
-	if cmd != nil || m.finding || m.filter != "" || !strings.Contains(m.status, "filter cleared") {
-		t.Fatalf("Esc: finding=%v filter=%q status=%q", m.finding, m.filter, m.status)
+	if cmd != nil || m.finding() || m.filter != "" || !strings.Contains(m.status, "filter cleared") {
+		t.Fatalf("Esc: finding=%v filter=%q status=%q", m.finding(), m.filter, m.status)
 	}
 	if got := rowNames(m); !reflect.DeepEqual(got, []string{"live", "parked", "slow", "#s3", "#s2"}) || m.rows[m.cursor].s.Work != "slow" {
 		t.Errorf("after Esc: rows=%v cursor on %q", got, m.rows[m.cursor].s.Work)

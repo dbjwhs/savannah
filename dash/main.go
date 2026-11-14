@@ -36,7 +36,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"time"
 
@@ -45,15 +44,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
-
-type task struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	State    string `json:"state"`
-	Turns    int    `json:"turns"`
-	LastLine string `json:"last_line"`
-	Worktree string `json:"worktree"`
-}
 
 // Board rows are either a mesh worker (a task on a node) or a local Claude
 // Code session (an open tab, via the hook). One cursor moves over both;
@@ -70,50 +60,29 @@ type row struct {
 	s    session // valid when kind == rowSession
 }
 
-type nodesMsg struct {
-	nodes []string
-	err   string
-}
-type tasksMsg struct {
-	node  string
-	tasks []task
-	err   string
-}
-
-// taskDoneMsg is the result of a `task send` or `task rm` on a mesh worker.
-type taskDoneMsg struct {
-	verb, node, id string // verb: "send" | "rm" (taskVerbs)
-	ok             bool
-}
+// fetchTick is the board's one-second tick: the sessions are read again,
+// and with --mesh every node's workers.
 type fetchTick time.Time
-type discoverTick time.Time
 
 type model struct {
-	key     string
 	bin     string
-	pin     string        // non-empty: single-node mode, skip discovery
-	addr    string        // single-node --addr (a node off mDNS)
-	mesh    bool          // --mesh (or a pinned node): discovery + workers; off = the work board alone
+	mesh    meshState     // --mesh: the nodes and their workers (mesh.go)
 	group   bool          // rows gathered by repository inside each section (group.go; Ctrl-G)
 	fade    time.Duration // rows untouched longer than this are dimmed; 0 = never (fade.go; Ctrl-F)
 	history bool          // HISTORY (closed work sessions) open on the board (history.go; Ctrl-E)
-	finding bool          // the prompt line is the filter (find.go; Ctrl-K)
-	filter  string        // the filter in force: only matching rows are on the board
+	filter  string        // the filter in force: only matching rows are on the board (find.go; Ctrl-K)
+	prompt  promptState   // what the prompt line is for: the row, the filter, a name, a title, a note
 
 	// Naming the tabs the owner opened by hand (autoname.go).
 	autoname  bool            // on: plain tabs with a prompt are named through `work autoname`
 	naming    bool            // one `work autoname` is in flight
 	nameTried map[string]bool // hook session ids submitted this run
 
-	nodes    []string          // discovered node names, sorted
-	tasks    map[string][]task // node -> its tasks
-	errs     map[string]string // node -> last fetch error
-	lsErr    string            // last discovery error
-	hooks    []session         // last good hook sessions (readSessions), kept across read errors
-	work     []workRecord      // last good work records (readWork), kept across read errors
-	sessions []session         // hooks joined with work (joinWork) + offline work rows
-	sessErr  string            // last session-read error
-	workErr  string            // last work-dir read error
+	hooks    []session    // last good hook sessions (readSessions), kept across read errors
+	work     []workRecord // last good work records (readWork), kept across read errors
+	sessions []session    // hooks joined with work (joinWork) + offline work rows
+	sessErr  string       // last session-read error
+	workErr  string       // last work-dir read error
 
 	rows   []row
 	cursor int
@@ -124,32 +93,23 @@ type model struct {
 	home   string // $HOME, for ~ in paths
 
 	// Work-row actions (work.go).
-	pendingRm    string            // work session awaiting the second Ctrl-X
-	noteFor      string            // non-empty: the prompt line is a note for this work session
-	adoptFor     string            // non-empty: the prompt line names this plain tab (hook session id)
-	adoptProject string            // that tab's directory, for the label
-	adoptNote    bool              // Ctrl-T named it: the note follows; Ctrl-R: just the name
-	titleFor     string            // non-empty: the prompt line is the title of this work session
-	titles       map[string]string // iTerm2 pane id -> tab title (order.go), for unnamed tabs
-	out          outputState       // the output view (modeOutput)
-	nd           newDialog         // the new-task dialog (modeNew)
-	panel        panelState        // the detail panel's reply fetch (board.go)
-	lg           logState          // the log view (modeLog, logview.go)
-	snap         snapState         // the snapshot screen (modeSnapshot, snapshot.go)
-	ask          askState          // Ctrl-A: one question to every tab (modeAsk, ask.go)
-	sessTicks    int               // sessions reads so far (the snapshot hint waits for the first)
+	pendingRm string            // work session awaiting the second Ctrl-X
+	titles    map[string]string // iTerm2 pane id -> tab title (order.go), for unnamed tabs
+	out       outputState       // the output view (modeOutput)
+	nd        newDialog         // the new-task dialog (modeNew)
+	panel     panelState        // the detail panel's reply fetch (board.go)
+	lg        logState          // the log view (modeLog, logview.go)
+	snap      snapState         // the snapshot screen (modeSnapshot, snapshot.go)
+	ask       askState          // Ctrl-A: one question to every tab (modeAsk, ask.go)
+	sessTicks int               // sessions reads so far (the snapshot hint waits for the first)
 
-	// Full-screen worker view (view.go).
-	mode     int        // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk
-	click    clickState // the last mouse press, for the double click (mouse.go)
-	viewNode string
-	viewID   string
-	vp       viewport.Model
-	follow   bool // stick to the bottom as output arrives
-	tailSeq  int  // orphans in-flight tail messages on retarget/leave
-	tailProc *exec.Cmd
-	tailBuf  []byte // the current tail run
-	lastBuf  []byte // the last completed run (flicker-free fallback)
+	// The screens (screens, below). vp is the one viewport the four
+	// scrolling screens share (the worker view, output, log, ask): only one
+	// is up at a time, and each makes it anew on entry.
+	mode  int            // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk
+	click clickState     // the last mouse press, for the double click (mouse.go)
+	vp    viewport.Model // the screen in front's scrolling body
+	tail  tailState      // the full-screen worker view (modeView, view.go)
 }
 
 var (
@@ -170,83 +130,8 @@ func cliError(err error) string {
 	return err.Error()
 }
 
-// discoverCmd browses the mesh and returns the current node names. `savannah
-// ls` prints "name host:port" per line; we take the name.
-func (m model) discoverCmd() tea.Cmd {
-	bin := m.bin
-	return func() tea.Msg {
-		out, err := poll(bin, "ls", "--timeout-ms", "1500")
-		if err != nil {
-			return nodesMsg{err: cliError(err)}
-		}
-		var nodes []string
-		for _, ln := range strings.Split(string(out), "\n") {
-			if f := strings.Fields(ln); len(f) >= 1 && f[0] != "" {
-				nodes = append(nodes, f[0])
-			}
-		}
-		sort.Strings(nodes)
-		return nodesMsg{nodes: nodes}
-	}
-}
-
-// taskArgs builds `task <sub> <node> ...` argv with the shared --addr/--key
-// flags (used by the board's ls/send and the view's tail).
-func (m model) taskArgs(sub, node string, rest ...string) []string {
-	args := append([]string{"task", sub, node}, rest...)
-	if m.pin != "" && m.addr != "" {
-		args = append(args, "--addr", m.addr)
-	}
-	if m.key != "" {
-		args = append(args, "--key", m.key)
-	}
-	return args
-}
-
-func (m model) fetchCmd(node string) tea.Cmd {
-	bin := m.bin
-	args := m.taskArgs("ls", node, "--json")
-	return func() tea.Msg {
-		ts, errText := runJSON[[]task](poll, bin, args, "bad json")
-		return tasksMsg{node: node, tasks: ts, err: errText}
-	}
-}
-
-// taskVerbs is what the board says about a finished `task send` or `task
-// rm`: the INFO record and status line of a success, the WARN record and
-// status line of a refusal (the CLI's exit is all the board is told, so
-// why is the likely reason).
-var taskVerbs = map[string]struct{ done, ok, failed, not, why string }{
-	"send": {"sent", "sent to ", "send failed", "not sent to ", " (busy or gone)"},
-	"rm":   {"task removed", "removed ", "task rm failed", "not removed ", " (running? cancel first)"},
-}
-
-// taskCmd runs one verb on a mesh worker: `task send <node> <id> <text>`,
-// or `task rm <node> <id>`, which forgets a finished worker (the server
-// refuses a running one, so a mistimed Ctrl-X is safe).
-func (m model) taskCmd(verb, node, id string, rest ...string) tea.Cmd {
-	bin := m.bin
-	args := m.taskArgs(verb, node, append([]string{id}, rest...)...)
-	return func() tea.Msg {
-		_, err := run(bin, args...)
-		return taskDoneMsg{verb: verb, node: node, id: id, ok: err == nil}
-	}
-}
-
 func fetchTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return fetchTick(t) })
-}
-func discoverTickCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg { return discoverTick(t) })
-}
-
-// fetchAll fans out one task-list fetch per known node.
-func (m model) fetchAll() tea.Cmd {
-	var cmds []tea.Cmd
-	for _, n := range m.nodes {
-		cmds = append(cmds, m.fetchCmd(n))
-	}
-	return tea.Batch(cmds...)
 }
 
 func (m *model) rebuildRows() {
@@ -267,8 +152,8 @@ func (m *model) rebuildRows() {
 			rows = append(rows, r)
 		}
 	}
-	for _, n := range m.nodes {
-		for _, t := range m.tasks[n] {
+	for _, n := range m.mesh.nodes {
+		for _, t := range m.mesh.tasks[n] {
 			if r := (row{kind: rowTask, node: n, t: t}); m.rowMatches(r, words, recs) {
 				rows = append(rows, r)
 			}
@@ -385,22 +270,6 @@ func rowSignature(rows []row) string {
 	return strings.TrimSpace(b.String())
 }
 
-// toggleGroup is Ctrl-G: the rows regroup (or return to the plain rank
-// order), the cursor stays on the row it was on, and the choice is written
-// to the board file for the next run (a failure to write is a status line,
-// not a refusal: the toggle still holds for this run).
-func (m model) toggleGroup() model {
-	m.group = !m.group
-	m.rebuildKeepingCursor()
-	status := "rows in your order (Ctrl-G groups them by repository)"
-	if m.group {
-		status = "rows grouped by repository (Ctrl-G returns to your order)"
-	}
-	m.act("group", status, "on", m.group)
-	m.remember(func(p *boardPrefs) { p.Group = groupPref(m.group) })
-	return m
-}
-
 // currentRow returns the highlighted row, ok=false if there is none.
 func (m model) currentRow() (row, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
@@ -430,8 +299,8 @@ func (m model) sectionCounts() (sessions, tasks int) {
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink, fetchTickCmd(), readSessionsCmd(), titlesCmd(), titleTickCmd(),
 		m.snapshotsCmd()}
-	if m.mesh {
-		if m.pin == "" {
+	if m.mesh.on {
+		if m.mesh.pin == "" {
 			cmds = append(cmds, m.discoverCmd(), discoverTickCmd())
 		}
 		cmds = append(cmds, m.fetchAll())
@@ -439,6 +308,33 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// screen is one of the board's full-screen modes: its keys, its view and,
+// where it has them, what a resize must lay out again and its mouse.
+type screen struct {
+	keys   func(model, tea.KeyMsg) (tea.Model, tea.Cmd)
+	view   func(model) string
+	resize func(*model)                                   // nil: nothing of the screen's is sized to the terminal
+	mouse  func(model, tea.MouseMsg) (tea.Model, tea.Cmd) // nil: the screen ignores the mouse
+}
+
+// screens is the one place a mode is dispatched from, indexed by mode
+// (view.go): Update sends keys, resizes and the mouse through it, View
+// draws through it. The new-session dialog and the snapshot screen draw
+// from the model's width on every frame and so have nothing to resize.
+var screens = [...]screen{
+	modeBoard:    {keys: model.updateBoardKeys, view: model.viewBoard, mouse: model.updateMouse},
+	modeView:     {keys: model.updateViewKeys, view: model.viewView, resize: (*model).refreshViewport},
+	modeOutput:   {keys: model.updateOutputKeys, view: model.viewOutput, resize: (*model).refreshOutput},
+	modeNew:      {keys: model.updateNewKeys, view: model.viewNew},
+	modeLog:      {keys: model.updateLogKeys, view: model.viewLog, resize: (*model).refreshLog},
+	modeSnapshot: {keys: model.updateSnapshotKeys, view: model.viewSnapshot},
+	modeAsk:      {keys: model.updateAskKeys, view: model.viewAsk, resize: (*model).refreshAsk},
+}
+
+// Update hands each message to its owner: a command's result to the file
+// whose command it was, a key or the mouse to the screen in front. What
+// nobody owns (the cursor's blink, a resize once the screen has laid
+// itself out again) ends at the prompt line's text box.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tailStartedMsg, tailDataMsg, tailExitMsg, tailRespawnMsg:
@@ -452,35 +348,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateLog(msg)
 	case snapshotsMsg, snapshotDoneMsg, restoreDoneMsg:
 		return m.updateSnapshot(msg)
+	case nodesMsg, tasksMsg, taskDoneMsg, discoverTick:
+		return m.updateMesh(msg)
+	case jumpMsg, dismissMsg:
+		return m.updateSessions(msg)
 	case panelOutputMsg:
-		if msg.seq == m.panel.seq {
-			m.panel.text, m.panel.have = msg.text, true
-		}
-		return m, nil
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.input.Width = inputWidth(m.width)
-		switch m.mode {
-		case modeView:
-			m.refreshViewport()
-		case modeOutput:
-			m.refreshOutput()
-		case modeLog:
-			m.refreshLog()
-		case modeAsk:
-			m.refreshAsk()
-		}
+		return m.updatePanel(msg)
+	case autonameMsg:
+		return m.updateAutoname(msg)
 	case askMsg:
 		return m.updateAsk(msg)
 	case openMsg:
 		return m.updateOpen(msg)
-	case discoverTick:
-		return m, tea.Batch(m.discoverCmd(), discoverTickCmd())
 	case fetchTick:
 		// Sessions refresh every tick regardless of mesh; workers only when meshed.
 		cmds := []tea.Cmd{readSessionsCmd(), fetchTickCmd()}
-		if m.mesh {
+		if m.mesh.on {
 			cmds = append(cmds, m.fetchAll())
 		}
 		return m, tea.Batch(cmds...)
@@ -489,663 +372,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshotHint()
 		panel, naming := m.refreshPanel(), m.startAutoname()
 		return m, tea.Batch(panel, naming)
-	case autonameMsg:
-		m.naming = false
-		if msg.err != "" {
-			slog.Warn("autoname failed", "tabs", len(msg.ids), "err", msg.err)
-		} else {
-			slog.Info("autonamed", "tabs", len(msg.ids), "named", len(msg.out.Named),
-				"skipped", len(msg.out.Skipped), "failed", len(msg.out.Failed))
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.input.Width = inputWidth(m.width)
+		if resize := screens[m.mode].resize; resize != nil {
+			resize(&m)
 		}
-		m.status = autonameStatus(msg)
-		return m, readSessionsCmd()
-	case jumpMsg:
-		if msg.ok {
-			slog.Info("jumped", "id", msg.id, "how", msg.how)
-			m.status = okStyle.Render("jumped to " + msg.id + " (" + msg.how + ")")
-		} else {
-			slog.Warn("jump failed", "id", msg.id, "how", msg.how)
-			m.status = warnStyle.Render("could not jump to " + msg.id +
-				" (" + msg.how + ")")
-		}
-		return m, nil
-	case dismissMsg:
-		if msg.ok {
-			slog.Info("dismissed", "id", msg.id)
-			m.status = okStyle.Render("dismissed session " + msg.id)
-			return m, readSessionsCmd()
-		}
-		slog.Warn("dismiss failed", "id", msg.id)
-		m.status = warnStyle.Render("could not dismiss " + msg.id)
-		return m, nil
-	case nodesMsg:
-		if msg.err != "" {
-			m.lsErr = msg.err
-		} else {
-			m.lsErr = ""
-			m.nodes = msg.nodes
-			// Drop tasks for nodes that left the mesh.
-			live := map[string]bool{}
-			for _, n := range msg.nodes {
-				live[n] = true
-			}
-			for n := range m.tasks {
-				if !live[n] {
-					delete(m.tasks, n)
-					delete(m.errs, n)
-				}
-			}
-			m.rebuildRows()
-		}
-		return m, nil
-	case tasksMsg:
-		if msg.err != "" {
-			m.errs[msg.node] = msg.err
-		} else {
-			delete(m.errs, msg.node)
-			m.tasks[msg.node] = msg.tasks
-		}
-		m.rebuildRows()
-		// A poll can flip the viewed task's decision banner on or off,
-		// which changes the viewport height.
-		if m.mode == modeView {
-			m.refreshViewport()
-		}
-		return m, nil
-	case taskDoneMsg:
-		v, who := taskVerbs[msg.verb], msg.node+"/"+msg.id
-		if !msg.ok {
-			slog.Warn(v.failed, "node", msg.node, "task", msg.id)
-			m.status = warnStyle.Render(v.not + who + v.why)
-			return m, nil
-		}
-		slog.Info(v.done, "node", msg.node, "task", msg.id)
-		m.status = okStyle.Render(v.ok + who)
-		if msg.verb == "rm" {
-			// Drop the row now instead of waiting out the poll tick.
-			return m, m.fetchCmd(msg.node)
-		}
-		return m, nil
 	case tea.MouseMsg:
-		return m.updateMouse(msg)
-	case tea.KeyMsg:
-		switch m.mode {
-		case modeView:
-			return m.updateViewKeys(msg)
-		case modeOutput:
-			return m.updateOutputKeys(msg)
-		case modeNew:
-			return m.updateNewKeys(msg)
-		case modeLog:
-			return m.updateLogKeys(msg)
-		case modeSnapshot:
-			return m.updateSnapshotKeys(msg)
-		case modeAsk:
-			return m.updateAskKeys(msg)
+		if mouse := screens[m.mode].mouse; mouse != nil {
+			return mouse(m, msg)
 		}
-		return m.updateBoardKeys(msg)
-	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
-}
-
-// updateBoardKeys is the board's key map. Work rows (a live tab tagged with
-// its work session, or an offline record) get the work verbs; a plain hook
-// row keeps jump and dismiss; a mesh worker keeps send, view and rm.
-func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// A pending Ctrl-X confirm survives exactly one keypress: the next Ctrl-X
-	// on the same row. Anything else (a cursor move, a typed character)
-	// withdraws it, so a removal is never confirmed by accident.
-	pending := m.pendingRm
-	m.pendingRm = ""
-	r, hasRow := m.currentRow()
-	isWork := hasRow && r.isWork()
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
-	case tea.KeyEsc:
-		if m.finding || m.filter != "" {
-			return m.clearFind(), nil
-		}
-		if m.adoptFor != "" {
-			m.adoptFor, m.adoptProject = "", ""
-			m.input.SetValue("")
-			m.status = "naming cancelled"
-			return m, nil
-		}
-		if m.titleFor != "" {
-			m.titleFor = ""
-			m.input.SetValue("")
-			m.status = "title cancelled"
-			return m, nil
-		}
-		if m.noteFor != "" {
-			m.noteFor = ""
-			m.input.SetValue("")
-			m.status = "note cancelled"
-			return m, nil
-		}
-		return m, tea.Quit
-	case tea.KeyCtrlN:
-		cmd := m.enterNew()
-		return m, cmd
-	case tea.KeyCtrlL:
-		cmd := m.enterLog()
-		return m, cmd
-	case tea.KeyCtrlS:
-		cmd := m.enterSnapshot()
-		return m, cmd
-	case tea.KeyCtrlF:
-		return m.toggleFade(), nil
-	case tea.KeyCtrlE:
-		return m.toggleHistory(), nil
-	case tea.KeyCtrlP:
-		return m.pressNow()
-	case tea.KeyCtrlK:
-		if m.finding {
-			return m.acceptFind(), nil
-		}
-		return m.pressFind(), nil
-	case tea.KeyCtrlG:
-		return m.toggleGroup(), nil
-	case tea.KeyCtrlA:
-		return m.pressAsk()
-	case tea.KeyUp:
-		if msg.Alt { // Option-Up: a third spelling of the drag (see Shift-Up)
-			return m.dragRow(-1)
-		}
-		m.moveCursor(-1)
-		cmd := m.refreshPanel()
-		return m, cmd
-	case tea.KeyDown:
-		if msg.Alt {
-			return m.dragRow(1)
-		}
-		m.moveCursor(1)
-		cmd := m.refreshPanel()
-		return m, cmd
-	// The drag has three spellings, since a terminal or the OS may take one:
-	// Shift-arrows (the one the help names), Ctrl-arrows (macOS Mission
-	// Control takes these by default) and Option-arrows (KeyUp/Down + Alt).
-	case tea.KeyShiftUp, tea.KeyCtrlUp:
-		return m.dragRow(-1)
-	case tea.KeyShiftDown, tea.KeyCtrlDown:
-		return m.dragRow(1)
-	case tea.KeyCtrlR:
-		return m.startNaming(r, hasRow)
-	case tea.KeyCtrlB:
-		if !hasRow || r.kind != rowSession {
-			m.status = warnStyle.Render("Ctrl-B opens a row's ticket and pull request; select a session")
-			return m, nil
-		}
-		return m.pressOpen(r.s)
-	case tea.KeyTab:
-		if !hasRow {
-			return m, nil
-		}
-		if r.kind == rowSession {
-			return m, jumpSessionCmd(r.s)
-		}
-		cmd := m.enterView(r.node, r.t.ID)
-		return m, cmd
-	case tea.KeyCtrlO:
-		if !isWork {
-			m.status = warnStyle.Render("Ctrl-O shows a work session's last replies; select one")
-			return m, nil
-		}
-		cmd := m.enterOutput(r.s.Work)
-		return m, cmd
-	case tea.KeyCtrlT:
-		if !isWork {
-			if hasRow && r.kind == rowSession {
-				// A plain tab has nowhere to keep a note until it is a work
-				// session: name it first (adopt), the note follows.
-				m.adoptFor, m.adoptProject, m.adoptNote = r.s.ID, r.s.Project, true
-				m.noteFor, m.titleFor = "", ""
-				m.input.SetValue(nameSuggestion(r.s.Project, titleOf(r.s, m.titles), m.takenNames()))
-				m.input.CursorEnd()
-				m.status = ""
-				return m, nil
-			}
-			m.status = warnStyle.Render("Ctrl-T notes a session; select one")
-			return m, nil
-		}
-		m.noteFor = r.s.Work
-		m.adoptFor, m.adoptProject, m.titleFor = "", "", ""
-		m.input.SetValue("")
-		m.status = ""
 		return m, nil
-	case tea.KeyCtrlX:
-		if !hasRow {
-			return m, nil
-		}
-		if isWork {
-			name := r.s.Work
-			if pending == name {
-				m.act("rm", "removing "+name+"...", "name", name)
-				return m, m.workVerbCmd(verbRm, name, "")
-			}
-			m.pendingRm = name
-			m.status = warnStyle.Render("Ctrl-X again to remove " + name +
-				" (closes its tab, removes a clean worktree, keeps the branch)")
-			return m, nil
-		}
-		if r.kind == rowSession {
-			m.act("dismiss", "dismissing session "+r.s.ID+"...", "id", r.s.ID)
-			return m, dismissSessionCmd(r.s)
-		}
-		if r.t.State == "running" {
-			m.status = warnStyle.Render(r.node + "/" + r.t.ID +
-				" is running (cancel first)")
-			return m, nil
-		}
-		m.act("task rm", "removing "+r.node+"/"+r.t.ID+"...", "node", r.node, "task", r.t.ID)
-		return m, m.taskCmd("rm", r.node, r.t.ID)
-	case tea.KeyEnter:
-		if m.finding {
-			return m.acceptFind(), nil
-		}
-		text := strings.TrimSpace(m.input.Value())
-		if m.adoptFor != "" {
-			// A name as typed, or any words: then the name is derived and
-			// the words become the title (board.go nameFor).
-			name, title, nerr := nameFor(text, m.takenNames())
-			if nerr != "" {
-				m.status = warnStyle.Render(nerr)
-				return m, nil
-			}
-			m.act("adopt", "naming it "+name+"...", "name", name, "title", title, "session", m.adoptFor)
-			return m, m.workAdoptCmd(name, m.adoptFor, title)
-		}
-		if m.titleFor != "" {
-			name := m.titleFor
-			rec, _ := m.recordOf(name)
-			switch {
-			case text == rec.Title && text == "":
-				m.status = warnStyle.Render(name + " has no title yet; type one (the name stays " + name + ")")
-			case text == rec.Title:
-				m.titleFor = ""
-				m.input.SetValue("")
-				m.status = "title unchanged"
-			case text == "":
-				m.act("title clear", "clearing the title of "+name+"...", "name", name)
-				return m, m.workVerbCmd(verbTitle, name, "")
-			default:
-				m.act("title", "titling "+name+"...", "name", name, "title", text)
-				return m, m.workVerbCmd(verbTitle, name, text)
-			}
-			return m, nil
-		}
-		if m.noteFor != "" {
-			name := m.noteFor
-			if text == "" {
-				m.status = warnStyle.Render("nothing to note for " + name + " (Esc cancels)")
-				return m, nil
-			}
-			m.input.SetValue("")
-			m.noteFor = ""
-			m.act("note", "noting "+name+"...", "name", name, "chars", len(text))
-			return m, m.workVerbCmd(verbNote, name, text)
-		}
-		if !hasRow {
-			return m, nil
-		}
-		if isWork && text != "" {
-			name := r.s.Work
-			m.input.SetValue("")
-			m.act("say", "saying to "+labelOf(r.s)+"...", "name", name, "chars", len(text))
-			slog.Debug("say text", "name", name, "head", head([]byte(text), 200))
-			return m, m.workVerbCmd(verbSay, name, text)
-		}
-		if isWork || r.kind == rowSession || text == "" {
-			if r.kind == rowSession && !isWork && text != "" {
-				// A plain tab is a person's session: jump to it, never type.
-				m.status = warnStyle.Render(
-					"cannot send to a plain tab (not a work session); jumping instead")
-			}
-			return m.activateRow(r)
-		}
-		m.input.SetValue("")
-		m.act("task send", "sending to "+r.node+"/"+r.t.ID+"...", "node", r.node, "task", r.t.ID, "chars", len(text))
-		return m, m.taskCmd("send", r.node, r.t.ID, text)
+	case tea.KeyMsg:
+		return screens[m.mode].keys(m, msg)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	if m.finding {
-		m.applyFilter(m.input.Value())
-	}
 	return m, cmd
 }
 
-// inputView renders the prompt line's text box with a placeholder that says
-// what Enter will do for the highlighted row.
-func (m model) inputView(placeholder string) string {
-	m.input.Placeholder = placeholder
-	return m.input.View()
-}
-
-func (m model) View() string {
-	switch m.mode {
-	case modeView:
-		return m.viewView()
-	case modeOutput:
-		return m.viewOutput()
-	case modeNew:
-		return m.viewNew()
-	case modeLog:
-		return m.viewLog()
-	case modeSnapshot:
-		return m.viewSnapshot()
-	case modeAsk:
-		return m.viewAsk()
-	}
-	return m.viewBoard()
-}
-
-// viewBoard is the board: header, the tables, the detail panel sized to the
-// room left (board.go), the prompt line, status and help. It is built as
-// lines so the panel can take exactly what the terminal has left; the whole
-// thing is never taller than the terminal.
-func (m model) viewBoard() string {
-	width := m.boardWidth()
-	nSess, nTask := m.sectionCounts()
-
-	scope := "work"
-	if m.mesh {
-		scope = "mesh"
-		if m.pin != "" {
-			scope = m.pin
-		}
-	}
-	counts := fmt.Sprintf("%d session%s", nSess, plural(nSess))
-	if closed := m.countClosed(); closed > 0 {
-		counts += fmt.Sprintf("   %d closed", closed)
-	}
-	if m.filter != "" {
-		counts += fmt.Sprintf("   matching %q", m.filter)
-	}
-	if n := m.countNow(); n > 0 {
-		counts += fmt.Sprintf("   %d now", n)
-	}
-	if m.group {
-		counts += "   by repository"
-	}
-	if p := m.countPolling(); p > 0 {
-		counts += fmt.Sprintf("   %d polling", p)
-	}
-	if m.mesh {
-		counts += fmt.Sprintf("   %d worker%s", nTask, plural(nTask))
-	}
-	// One attention number over both worlds: sessions needing you + pending
-	// mesh decisions. This is the whole point: one glance, total.
-	attention := countSessionAttention(m.sessions) + countDecisions(m.rows)
-	deco := ""
-	if attention > 0 {
-		deco = "   " + needStyle.Render(fmt.Sprintf("%d need you", attention))
-	}
-	top, _ := m.topLines(width, fmt.Sprintf("%s   %s   %s%s",
-		headerStyle.Render("savannah  "+scope), counts,
-		clock(), deco))
-
-	bottom := m.promptLines(width)
-	panelH := 0
-	if m.height > 0 {
-		panelH = m.height - len(top) - len(bottom)
-	}
-	lines := top
-	lines = append(lines, m.panelLines(width, panelH, time.Now())...)
-	lines = append(lines, bottom...)
-	return strings.Join(lines, "\n")
-}
-
-// topLines is the top of the board: the header line given, a blank, the
-// LOCAL SESSIONS table and, with --mesh, the MESH WORKERS table, each
-// followed by a blank; and, line for line, what the mouse would hit there
-// (mouse.go). It is what viewBoard draws and what a click is read against.
-func (m model) topLines(width int, header string) ([]string, []lineHit) {
-	nSess, nTask := m.sectionCounts()
-	now := nowUnix()
-	top := []string{header, ""}
-	hits := []lineHit{noHit, noHit}
-	// ---- LOCAL SESSIONS (open Claude Code tabs, via the hook) ----
-	// The section shows when there are rows OR a read error to report: an
-	// error with zero rows must still be visible, not hidden by the guard.
-	if nSess > 0 || m.sessErr != "" || m.workErr != "" {
-		top = append(top, headerStyle.Render("LOCAL SESSIONS"))
-		hits = append(hits, noHit)
-		if nSess > 0 {
-			lines, lineHits := m.sessionLines(sessionColumns(width, m.sessions, m.home, m.titles, m.group), now)
-			top = append(top, lines...)
-			hits = append(hits, lineHits...)
-		}
-		if m.sessErr != "" {
-			top = append(top, warnStyle.Render("  sessions: "+m.sessErr+" (showing last good list)"))
-			hits = append(hits, noHit)
-		}
-		if m.workErr != "" {
-			top = append(top, warnStyle.Render("  work: "+m.workErr+" (showing last good list)"))
-			hits = append(hits, noHit)
-		}
-		top = append(top, "")
-		hits = append(hits, noHit)
-	}
-
-	// ---- MESH WORKERS (savannah tasks) ----
-	if m.mesh {
-		avail := max(width-64, 12) // what the fixed cells leave
-		top = append(top, headerStyle.Render("MESH WORKERS"))
-		hits = append(hits, noHit)
-		if m.lsErr != "" {
-			top = append(top, warnStyle.Render("  discovery: "+m.lsErr))
-			hits = append(hits, noHit)
-		}
-		if nTask == 0 {
-			if m.pin == "" && len(m.nodes) == 0 {
-				top = append(top, helpStyle.Render("  discovering nodes..."))
-				hits = append(hits, noHit)
-			} else {
-				top = append(top, helpStyle.Render("  (no workers yet)"))
-				hits = append(hits, noHit)
-			}
-		} else {
-			top = append(top, colStyle.Render(
-				pad("NODE", 14)+pad("ID", 7)+pad("STATE", 11)+pad("TURN", 4)+
-					pad("TITLE", 20)+"LAST LINE"))
-			hits = append(hits, noHit)
-			for i, r := range m.rows {
-				if r.kind != rowTask {
-					continue
-				}
-				last := r.t.LastLine
-				d, pending := pendingDecision(r.t)
-				if pending {
-					last = decisionCell(d)
-				}
-				line := pad(r.node, 14) + pad(r.t.ID, 7) + pad(r.t.State, 11) +
-					pad(fmt.Sprintf("%d", r.t.Turns), 4) + pad(r.t.Title, 20) +
-					trunc(last, avail)
-				switch {
-				case i == m.cursor:
-					line = selectedStyle.Render(line)
-				case pending:
-					line = needStyle.Render(line)
-				}
-				top = append(top, line)
-				hits = append(hits, lineHit{row: i, section: -1})
-			}
-		}
-		top = append(top, "")
-		hits = append(hits, noHit)
-	}
-	return top, hits
-}
-
-// promptLines is the bottom of the board: a blank line, the prompt line
-// (whose label says what Enter will do for the highlighted row), a blank
-// line, the status line (a CLI error can be long) and the key help.
-func (m model) promptLines(width int) []string {
-	r, ok := m.currentRow()
-	room := max(width-70, 8)
-	var prompt string
-	switch {
-	case m.finding:
-		prompt = headerStyle.Render("find") + ":  " +
-			m.inputView("words to match: name, title, ticket, path, branch, prompt, summary, note (Enter keeps the filter, Esc clears it)")
-	case m.adoptFor != "":
-		ph := "a name, or any words (the name is derived); Enter makes it a work session, Esc cancels"
-		if m.adoptNote {
-			ph = "a name, or any words; Enter makes it a work session and asks for the note, Esc cancels"
-		}
-		prompt = headerStyle.Render(trunc("name this tab ("+projectLabel(m.adoptProject)+")", room)) + ":  " +
-			m.inputView(ph)
-	case m.titleFor != "":
-		prompt = headerStyle.Render(trunc("title for "+m.titleFor, room)) + ":  " +
-			m.inputView("the words the board shows for it (Enter saves, empty Enter clears, Esc cancels); the name stays")
-	case m.noteFor != "":
-		prompt = headerStyle.Render(trunc("note for "+m.noteFor, room)) + ":  " +
-			m.inputView("what you decided or learned (Enter saves, Esc cancels)")
-	case !ok:
-		hint := "no rows yet: Ctrl-N opens a work session (a tab, a worktree, a first prompt)"
-		if m.mesh {
-			hint = "no rows yet: Ctrl-N opens a work session; workers appear as nodes are found"
-		}
-		prompt = helpStyle.Render(hint)
-	case r.isWork():
-		placeholder := "text for its Claude; empty Enter opens the tab"
-		if r.s.closed() {
-			placeholder = "empty Enter reopens the tab (claude --continue); text needs a live tab"
-		}
-		prompt = headerStyle.Render(trunc("say to "+labelOf(r.s), room)) + ":  " + m.inputView(placeholder)
-	case r.kind == rowSession:
-		hint := "a plain tab (no work session): Enter jumps to it, Ctrl-R names it"
-		prompt = headerStyle.Render(fitLabel(projectLabel(r.s.Project), width, hint)) +
-			"   " + helpStyle.Render(hint)
-	default:
-		prompt = "send to " + headerStyle.Render(r.node+"/"+r.t.ID) +
-			":  " + m.inputView("prompt for this worker; empty Enter opens the live view")
-	}
-	// One line, never wrapped (a wrapped help line would push the layout
-	// down): hints are dropped from the end until the line fits, so a
-	// narrow terminal loses "^C quit" (Esc quits too) before anything else.
-	parts := []string{"Shift-up/down move", "Enter say", "^P now", "^K find", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
-		"^A ask", "^T note", "^S snap", "^L log", "^X rm", "^C quit"}
-	if m.mesh {
-		parts[1] = "Enter say/send"
-		parts = append(parts[:2], append([]string{"Tab view"}, parts[2:]...)...)
-	}
-	if m.group {
-		parts[indexOf(parts, "^G group")] = "^G ungroup"
-	}
-	return []string{"", prompt, "", m.status, helpStyle.Render(fitHelp(parts, width))}
-}
-
-// labelOf is what the board calls a work session in prompts: its title when
-// it has one, else its name.
-func labelOf(s session) string {
-	if s.WorkTitle != "" {
-		return s.WorkTitle
-	}
-	return s.Work
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
-}
-
-// opts is the command line: work board by default, mesh on request.
-type opts struct {
-	pin, key, addr string
-	mesh, help     bool
-	group          int    // --group 1, --no-group -1, 0 = as the board file remembers
-	autoname       int    // --autoname 1, --no-autoname -1, 0 = on unless the board file says "off"
-	fade           string // --fade DUR|off; "" = as the board file remembers, else 3h
-	ticketURL      string // --ticket-url URL: the tracker's page, remembered in the board file
-	history        bool   // HISTORY open at start (the board file's "history": "open")
-	mouse          int    // --mouse 1, --no-mouse -1, 0 = on unless the board file says "off"
-}
-
-// parseArgs reads the argv after the program name. A leading non-flag word
-// pins one node (and implies --mesh). --no-mesh and --sessions, the old way
-// to get the work board, are accepted and mean nothing now. --group and
-// --no-group set the grouping for this run over the remembered choice.
-func parseArgs(args []string) (opts, error) {
-	var o opts
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		o.pin, o.mesh = args[0], true
-		args = args[1:]
-	}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--key", "--addr", "--fade", "--ticket-url":
-			if i+1 >= len(args) {
-				return o, fmt.Errorf("%s needs a value", args[i])
-			}
-			switch args[i] {
-			case "--key":
-				o.key = args[i+1]
-			case "--addr":
-				o.addr = args[i+1]
-			case "--ticket-url":
-				if u := args[i+1]; u != "off" && u != "default" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-					return o, fmt.Errorf("--ticket-url %q: want an http(s) URL with {ticket} for the key, off, or default", u)
-				}
-				o.ticketURL = args[i+1]
-			default:
-				if _, err := parseFade(args[i+1]); err != nil {
-					return o, err
-				}
-				o.fade = args[i+1]
-			}
-			i++
-		case "--mesh":
-			o.mesh = true
-		case "--group":
-			o.group = 1
-		case "--no-group":
-			o.group = -1
-		case "--autoname":
-			o.autoname = 1
-		case "--no-autoname":
-			o.autoname = -1
-		case "--mouse":
-			o.mouse = 1
-		case "--no-mouse":
-			o.mouse = -1
-		case "--no-mesh", "--sessions", "--work":
-			// The work board is the default; kept so old scripts still run.
-		case "-h", "--help":
-			o.help = true
-		default:
-			return o, fmt.Errorf("unknown argument %q", args[i])
-		}
-	}
-	return o, nil
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: savannah-dash [--mesh] [<node>] [--addr H:P] [--key FILE] [--group|--no-group] [--fade DUR|off] [--ticket-url URL] [--no-autoname] [--no-mouse]")
-	fmt.Fprintln(os.Stderr, "  no flags:  the work board: your work sessions and open Claude Code tabs")
-	fmt.Fprintln(os.Stderr, "  --mesh:    also discover every node via `savannah ls` and show its workers")
-	fmt.Fprintln(os.Stderr, "  <node>:    pin one node (use --addr for a node not on mDNS); implies --mesh")
-	fmt.Fprintln(os.Stderr, "  --group:   gather the rows by repository (Ctrl-G toggles it; the choice is")
-	fmt.Fprintln(os.Stderr, "             remembered in $SAVANNAH_BOARD_FILE, ~/.claude/savannah/board.json)")
-	fmt.Fprintln(os.Stderr, "  --fade DUR: dim the rows untouched for longer than DUR (3h unless set; off = never;")
-	fmt.Fprintln(os.Stderr, "             Ctrl-F cycles 1h, 3h, 8h, 24h, off and remembers it in the board file)")
-	fmt.Fprintln(os.Stderr, "  --ticket-url URL: where a ticket links, {ticket} for the key (remembered in the")
-	fmt.Fprintln(os.Stderr, "             board file; the default is "+defaultTicketURL+";")
-	fmt.Fprintln(os.Stderr, "             off = no ticket links, default = back to the built-in pattern)")
-	fmt.Fprintln(os.Stderr, "  --no-autoname:  do not name the tabs you opened by hand (`work autoname`;")
-	fmt.Fprintln(os.Stderr, "             \"autoname\": \"off\" in the board file turns it off for good)")
-	fmt.Fprintln(os.Stderr, "  --no-mouse:     no mouse reporting (click selects, double click opens, the wheel")
-	fmt.Fprintln(os.Stderr, "             scrolls; with it on, select text with Option-drag); \"mouse\": \"off\" in")
-	fmt.Fprintln(os.Stderr, "             the board file turns it off for good")
-	fmt.Fprintln(os.Stderr, "Sessions come from the session-status hook, work sessions from $SAVANNAH_WORK_DIR")
-	fmt.Fprintln(os.Stderr, "(~/.claude/savannah/work). Every action runs `savannah work ...` ($SAVANNAH_BIN).")
-}
+func (m model) View() string { return screens[m.mode].view(m) }
 
 // newModel is the one constructor, so main and the tests start from the
 // same initialised prompt box.
@@ -1160,13 +406,14 @@ func newModel(o opts, bin string) model {
 		fade = fadeDefault
 	}
 	m := model{
-		key: o.key, bin: bin, pin: o.pin, addr: o.addr, mesh: o.mesh, group: o.group > 0,
+		bin: bin, group: o.group > 0,
 		autoname: o.autoname >= 0, fade: fade, history: o.history,
-		tasks: map[string][]task{}, errs: map[string]string{}, nameTried: map[string]bool{},
-		input: ti, home: home,
+		mesh: meshState{on: o.mesh, pin: o.pin, addr: o.addr, key: o.key,
+			tasks: map[string][]task{}, errs: map[string]string{}},
+		nameTried: map[string]bool{}, input: ti, home: home,
 	}
 	if o.pin != "" {
-		m.nodes = []string{o.pin}
+		m.mesh.nodes = []string{o.pin}
 	}
 	return m
 }
@@ -1187,34 +434,8 @@ func main() {
 		bin = "savannah"
 	}
 	prefs := loadBoardPrefs(boardFile()) // the remembered choices (prefs.go)
-	if o.group == 0 && prefs.Group == "repo" {
-		o.group = 1
-	}
-	if o.autoname == 0 && prefs.Autoname == "off" {
-		o.autoname = -1
-	}
-	if o.mouse == 0 && prefs.Mouse == "off" {
-		o.mouse = -1
-	}
-	o.history = prefs.History == "open"
-	if o.fade == "" {
-		o.fade = prefs.Fade // "" stays the default; a bad value in the file is the default too
-	}
-	// The tracker is configuration, not a view toggle: --ticket-url is
-	// remembered (there is no key on the board to set it); "off" is
-	// remembered as off, "default" goes back to the built-in pattern.
-	if o.ticketURL != "" {
-		prefs, err = updateBoardPrefs(func(p *boardPrefs) {
-			p.TicketURL = o.ticketURL
-			if o.ticketURL == "default" {
-				p.TicketURL = ""
-			}
-		})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "savannah-dash: --ticket-url not remembered:", err)
-		}
-	}
-	ticketURLPattern = resolveTicketURL(prefs.TicketURL)
+	o.applyPrefs(prefs)
+	ticketURLPattern = resolveTicketURL(o.rememberTicketURL(prefs).TicketURL)
 	openLog()
 	slog.Info("board start", "pid", os.Getpid(), "args", os.Args[1:], "bin", bin, "log", logPath(),
 		"group", o.group > 0, "autoname", o.autoname >= 0, "fade", o.fade, "mouse", o.mouse >= 0)

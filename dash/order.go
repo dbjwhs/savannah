@@ -417,22 +417,18 @@ func (m model) workMoveCmd(changes []moveChange) tea.Cmd {
 // it; words become a title and a derived name), a work session gets its
 // title edited. The prompt line takes the text; Enter commits (the title
 // through `work title`, work.go's workVerbCmd), Esc cancels.
-func (m model) startNaming(r row, hasRow bool) (tea.Model, tea.Cmd) {
-	if !hasRow || r.kind != rowSession {
+func (m model) startNaming() (model, tea.Cmd) {
+	r, ok := m.currentRow()
+	if !ok || r.kind != rowSession {
 		m.status = warnStyle.Render("Ctrl-R names a session; select one")
 		return m, nil
 	}
-	m.noteFor = ""
 	if r.s.Work == "" {
-		m.adoptFor, m.adoptProject, m.adoptNote = r.s.ID, r.s.Project, false
-		m.titleFor = ""
-		m.input.SetValue(nameSuggestion(r.s.Project, titleOf(r.s, m.titles), m.takenNames()))
+		m.setPrompt(promptState{kind: promptAdopt, target: r.s.ID, project: r.s.Project},
+			nameSuggestion(r.s.Project, titleOf(r.s, m.titles), m.takenNames()))
 	} else {
-		m.adoptFor, m.adoptProject = "", ""
-		m.titleFor = r.s.Work
-		m.input.SetValue(r.s.WorkTitle)
+		m.setPrompt(promptState{kind: promptTitle, target: r.s.Work}, r.s.WorkTitle)
 	}
-	m.input.CursorEnd()
 	m.status = ""
 	return m, nil
 }

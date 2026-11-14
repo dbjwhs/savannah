@@ -44,13 +44,28 @@ struct TaskCreate {
     std::int64_t timeout_ms = 0;// per-turn; 0 = node default
 };
 
+/// Where a task is in its life. Incomplete = the last turn hit the
+/// auto-continue budget with work still pending; send again to keep going.
+enum class TaskState { Idle, Running, Incomplete, Failed, Cancelled };
+
+/// The state's name on the wire: "idle", "running", "incomplete", "failed",
+/// "cancelled". The dash and the shim match on these exact strings.
+constexpr const char* to_string(TaskState state) {
+    switch (state) {
+        case TaskState::Idle:       return "idle";
+        case TaskState::Running:    return "running";
+        case TaskState::Incomplete: return "incomplete";
+        case TaskState::Failed:     return "failed";
+        case TaskState::Cancelled:  return "cancelled";
+    }
+    return "idle";  // unreachable: every enumerator is handled above
+}
+
 /// A read-only snapshot of one task (song-agnostic; savannahd maps to wire).
 struct TaskView {
     std::string id;
     std::string title;
-    std::string state;       // running | idle | incomplete | failed | cancelled
-                             // incomplete = hit the auto-continue budget with
-                             // work still pending; send again to keep going
+    std::string state;       // to_string(TaskState); empty for an unknown id
     std::string worktree;    // cwd the worker runs in
     std::string session_id;  // claude session uuid
     std::uint32_t turns = 0;
@@ -101,7 +116,7 @@ private:
         std::int64_t timeout_ms = 0;
 
         std::mutex m;             // guards state/transcript/last_line/turns
-        std::string state = "idle";
+        TaskState state = TaskState::Idle;
         std::uint32_t turns = 0;
         std::string last_line;
         std::vector<Chunk> transcript;
@@ -119,7 +134,14 @@ private:
     };
     Found find(const std::string& id);
 
+    /// One task_send, start to finish, on the task's worker thread: the
+    /// agent is invoked until it finishes, fails, is cancelled or runs out
+    /// of auto-continues, then the task's end state is stored.
     void drive_turn(Task* t, const std::string& prompt);
+    /// One agent invocation of a turn: delimit it in the transcript, run the
+    /// agent in the task's worktree, record what came back.
+    struct Invocation;
+    Invocation run_invocation(Task& t, const std::string& prompt);
     TaskView snapshot(Task& t);  // caller holds t.m
     /// Remove the task's git worktree and branch, once. Caller holds mu_.
     void prune_worktree(Task& t);

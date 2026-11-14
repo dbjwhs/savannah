@@ -312,7 +312,13 @@ var openerArgv = func() []string {
 
 // pressOpen is Ctrl-B on a session row: its links go to the browser, the
 // status line says which (or why none).
-func (m model) pressOpen(s session) (tea.Model, tea.Cmd) {
+func (m model) pressOpen() (model, tea.Cmd) {
+	r, ok := m.currentRow()
+	if !ok || r.kind != rowSession {
+		m.status = warnStyle.Render("Ctrl-B opens a row's ticket and pull request; select a session")
+		return m, nil
+	}
+	s := r.s
 	ids, urls := rowLinks(s)
 	if len(ids) == 0 {
 		switch {

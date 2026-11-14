@@ -192,8 +192,8 @@ func TestCtrlTOnPlainRowNamesItFirst(t *testing.T) {
 	m := wideBoard(t, 140, 40)
 	cursorTo(t, &m, hookRow("s2"))
 	m, cmd := press(m, tea.KeyCtrlT)
-	if cmd != nil || m.adoptFor != "s2" || m.noteFor != "" || m.input.Value() != "other" {
-		t.Fatalf("Ctrl-T on a plain tab: cmd=%v adoptFor=%q noteFor=%q input=%q", cmd != nil, m.adoptFor, m.noteFor, m.input.Value())
+	if cmd != nil || m.promptFor(promptAdopt) != "s2" || m.promptFor(promptNote) != "" || m.input.Value() != "other" {
+		t.Fatalf("Ctrl-T on a plain tab: cmd=%v adoptFor=%q noteFor=%q input=%q", cmd != nil, m.promptFor(promptAdopt), m.promptFor(promptNote), m.input.Value())
 	}
 	if out := m.View(); !strings.Contains(out, "name this tab (other)") {
 		t.Errorf("prompt label:\n%s", out)
@@ -201,7 +201,7 @@ func TestCtrlTOnPlainRowNamesItFirst(t *testing.T) {
 	// Unusable text or a taken name is refused on the spot.
 	m.input.SetValue("???")
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd != nil || m.adoptFor != "s2" || !strings.Contains(m.status, "no name can be made") {
+	if cmd != nil || m.promptFor(promptAdopt) != "s2" || !strings.Contains(m.status, "no name can be made") {
 		t.Errorf("unusable text: cmd=%v status=%q", cmd != nil, m.status)
 	}
 	m.input.SetValue("live")
@@ -222,36 +222,36 @@ func TestCtrlTOnPlainRowNamesItFirst(t *testing.T) {
 	}
 	m.input.SetValue("other")
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd == nil || m.adoptFor != "s2" || !strings.Contains(m.status, "naming it other") {
-		t.Errorf("adopt Enter: cmd=%v adoptFor=%q status=%q", cmd != nil, m.adoptFor, m.status)
+	if cmd == nil || m.promptFor(promptAdopt) != "s2" || !strings.Contains(m.status, "naming it other") {
+		t.Errorf("adopt Enter: cmd=%v adoptFor=%q status=%q", cmd != nil, m.promptFor(promptAdopt), m.status)
 	}
 	// The CLI refuses: the name stays for a one-edit fix.
 	m, _ = send(m, workAdoptMsg{name: "other", err: "adopt: no live Claude session s2"})
-	if m.adoptFor != "s2" || m.input.Value() != "other" || !strings.Contains(m.status, "no live Claude session") {
-		t.Errorf("refused adopt: adoptFor=%q input=%q status=%q", m.adoptFor, m.input.Value(), m.status)
+	if m.promptFor(promptAdopt) != "s2" || m.input.Value() != "other" || !strings.Contains(m.status, "no live Claude session") {
+		t.Errorf("refused adopt: adoptFor=%q input=%q status=%q", m.promptFor(promptAdopt), m.input.Value(), m.status)
 	}
 	// It succeeds: straight into the note for the new name.
 	m, cmd = send(m, workAdoptMsg{name: "other"})
-	if cmd == nil || m.adoptFor != "" || m.noteFor != "other" || m.input.Value() != "" || !strings.Contains(m.status, "named it other") {
-		t.Errorf("adopted: cmd=%v adoptFor=%q noteFor=%q input=%q status=%q", cmd != nil, m.adoptFor, m.noteFor, m.input.Value(), m.status)
+	if cmd == nil || m.promptFor(promptAdopt) != "" || m.promptFor(promptNote) != "other" || m.input.Value() != "" || !strings.Contains(m.status, "named it other") {
+		t.Errorf("adopted: cmd=%v adoptFor=%q noteFor=%q input=%q status=%q", cmd != nil, m.promptFor(promptAdopt), m.promptFor(promptNote), m.input.Value(), m.status)
 	}
 	if out := m.View(); !strings.Contains(out, "note for other") {
 		t.Errorf("note prompt after adopt:\n%s", out)
 	}
 	// Esc cancels the naming without quitting.
 	cursorTo(t, &m, hookRow("s2"))
-	m.noteFor = ""
+	m.prompt = promptState{}
 	m, _ = press(m, tea.KeyCtrlT)
 	m, cmd = press(m, tea.KeyEsc)
-	if cmd != nil || m.adoptFor != "" || m.input.Value() != "" || !strings.Contains(m.status, "naming cancelled") {
-		t.Errorf("Esc while naming: cmd=%v adoptFor=%q input=%q status=%q", cmd != nil, m.adoptFor, m.input.Value(), m.status)
+	if cmd != nil || m.promptFor(promptAdopt) != "" || m.input.Value() != "" || !strings.Contains(m.status, "naming cancelled") {
+		t.Errorf("Esc while naming: cmd=%v adoptFor=%q input=%q status=%q", cmd != nil, m.promptFor(promptAdopt), m.input.Value(), m.status)
 	}
 	// Ctrl-T on a mesh worker still has nowhere to go.
 	m.rows = append(m.rows, row{kind: rowTask, node: "n", t: task{ID: "t-1"}})
 	m.cursor = len(m.rows) - 1
 	m, cmd = press(m, tea.KeyCtrlT)
-	if cmd != nil || m.adoptFor != "" || !strings.Contains(m.status, "Ctrl-T") {
-		t.Errorf("Ctrl-T on a worker: cmd=%v adoptFor=%q status=%q", cmd != nil, m.adoptFor, m.status)
+	if cmd != nil || m.promptFor(promptAdopt) != "" || !strings.Contains(m.status, "Ctrl-T") {
+		t.Errorf("Ctrl-T on a worker: cmd=%v adoptFor=%q status=%q", cmd != nil, m.promptFor(promptAdopt), m.status)
 	}
 }
 

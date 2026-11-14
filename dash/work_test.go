@@ -63,12 +63,12 @@ func TestParseArgs(t *testing.T) {
 
 func TestNewModel(t *testing.T) {
 	m := newModel(opts{}, "savannah")
-	if m.mesh || m.bin != "savannah" || !m.input.Focused() || m.mode != modeBoard {
-		t.Errorf("default model: mesh=%v bin=%q focused=%v mode=%d", m.mesh, m.bin, m.input.Focused(), m.mode)
+	if m.mesh.on || m.bin != "savannah" || !m.input.Focused() || m.mode != modeBoard {
+		t.Errorf("default model: mesh=%v bin=%q focused=%v mode=%d", m.mesh.on, m.bin, m.input.Focused(), m.mode)
 	}
 	p := newModel(opts{pin: "dbj-mac", mesh: true, addr: "h:1"}, "savannah")
-	if len(p.nodes) != 1 || p.nodes[0] != "dbj-mac" || !p.mesh {
-		t.Errorf("pinned model: nodes=%v mesh=%v", p.nodes, p.mesh)
+	if len(p.mesh.nodes) != 1 || p.mesh.nodes[0] != "dbj-mac" || !p.mesh.on {
+		t.Errorf("pinned model: nodes=%v mesh=%v", p.mesh.nodes, p.mesh.on)
 	}
 }
 
@@ -434,29 +434,29 @@ func TestNoteMode(t *testing.T) {
 	// On a plain tab Ctrl-T names it first (TestCtrlTOnPlainRowNamesItFirst);
 	// no note prompt yet.
 	m, cmd := press(m, tea.KeyCtrlT)
-	if cmd != nil || m.noteFor != "" || m.adoptFor != "s2" {
-		t.Errorf("Ctrl-T on a plain tab: cmd=%v noteFor=%q adoptFor=%q", cmd != nil, m.noteFor, m.adoptFor)
+	if cmd != nil || m.promptFor(promptNote) != "" || m.promptFor(promptAdopt) != "s2" {
+		t.Errorf("Ctrl-T on a plain tab: cmd=%v noteFor=%q adoptFor=%q", cmd != nil, m.promptFor(promptNote), m.promptFor(promptAdopt))
 	}
 	cursorTo(t, &m, workRow("live"))
 	m, _ = press(m, tea.KeyCtrlT)
-	if m.noteFor != "live" || m.adoptFor != "" || !strings.Contains(m.View(), "note for live") {
-		t.Errorf("Ctrl-T on a work row: noteFor=%q adoptFor=%q\n%s", m.noteFor, m.adoptFor, m.View())
+	if m.promptFor(promptNote) != "live" || m.promptFor(promptAdopt) != "" || !strings.Contains(m.View(), "note for live") {
+		t.Errorf("Ctrl-T on a work row: noteFor=%q adoptFor=%q\n%s", m.promptFor(promptNote), m.promptFor(promptAdopt), m.View())
 	}
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd != nil || m.noteFor != "live" {
-		t.Errorf("empty note: cmd=%v noteFor=%q", cmd != nil, m.noteFor)
+	if cmd != nil || m.promptFor(promptNote) != "live" {
+		t.Errorf("empty note: cmd=%v noteFor=%q", cmd != nil, m.promptFor(promptNote))
 	}
 	m = typeText(m, "decided: keep the branch")
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd == nil || m.noteFor != "" || m.input.Value() != "" || !strings.Contains(m.status, "noting live") {
-		t.Errorf("note Enter: cmd=%v noteFor=%q input=%q status=%q", cmd != nil, m.noteFor, m.input.Value(), m.status)
+	if cmd == nil || m.promptFor(promptNote) != "" || m.input.Value() != "" || !strings.Contains(m.status, "noting live") {
+		t.Errorf("note Enter: cmd=%v noteFor=%q input=%q status=%q", cmd != nil, m.promptFor(promptNote), m.input.Value(), m.status)
 	}
 	// Esc cancels a half-typed note without quitting the dash.
 	m, _ = press(m, tea.KeyCtrlT)
 	m = typeText(m, "half")
 	m, cmd = press(m, tea.KeyEsc)
-	if cmd != nil || m.noteFor != "" || m.input.Value() != "" || m.mode != modeBoard {
-		t.Errorf("Esc in note mode: cmd=%v noteFor=%q input=%q", cmd != nil, m.noteFor, m.input.Value())
+	if cmd != nil || m.promptFor(promptNote) != "" || m.input.Value() != "" || m.mode != modeBoard {
+		t.Errorf("Esc in note mode: cmd=%v noteFor=%q input=%q", cmd != nil, m.promptFor(promptNote), m.input.Value())
 	}
 	// With no note pending, Esc quits as before.
 	if _, cmd := press(m, tea.KeyEsc); cmd == nil {

@@ -40,6 +40,24 @@ type lineHit struct {
 
 var noHit = lineHit{row: -1, section: -1}
 
+// hitLines is lines of the board's top half with, line for line, what the
+// mouse hits there. They are only ever added together, so a line can never
+// be drawn without its hit and a click can never be read a line off.
+type hitLines struct {
+	lines []string
+	hits  []lineHit
+}
+
+func (h *hitLines) add(hit lineHit, line string) {
+	h.lines = append(h.lines, line)
+	h.hits = append(h.hits, hit)
+}
+
+func (h *hitLines) extend(more hitLines) {
+	h.lines = append(h.lines, more.lines...)
+	h.hits = append(h.hits, more.hits...)
+}
+
 // clickState is the last press, for telling a double click.
 type clickState struct {
 	row int
@@ -59,20 +77,14 @@ func (m model) hitAt(y int) lineHit {
 // updateMouse is the board's mouse map: a press on a row selects it (a
 // second press on the same row within doubleClick activates it), a press
 // on the HISTORY header toggles the section, the wheel moves the
-// highlight. Other screens and the dialogs ignore the mouse.
+// highlight. Only the board has a mouse map: the other screens and the
+// dialogs ignore the mouse (screens, main.go).
 func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.mode != modeBoard {
-		return m, nil
-	}
 	switch {
 	case msg.Button == tea.MouseButtonWheelUp && msg.Action == tea.MouseActionPress:
-		m.moveCursor(-1)
-		cmd := m.refreshPanel()
-		return m, cmd
+		return m.stepCursor(-1)
 	case msg.Button == tea.MouseButtonWheelDown && msg.Action == tea.MouseActionPress:
-		m.moveCursor(1)
-		cmd := m.refreshPanel()
-		return m, cmd
+		return m.stepCursor(1)
 	case msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress:
 		return m, nil
 	}
@@ -102,7 +114,7 @@ func (m model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // activateRow is Enter with an empty prompt line, and a double click: a
 // work session's tab opens (or is remade when the row is offline), a plain
 // tab is jumped to, a worker's full-screen view opens.
-func (m model) activateRow(r row) (tea.Model, tea.Cmd) {
+func (m model) activateRow(r row) (model, tea.Cmd) {
 	switch {
 	case r.isWork():
 		name := r.s.Work
@@ -112,6 +124,5 @@ func (m model) activateRow(r row) (tea.Model, tea.Cmd) {
 		action("jump", "id", r.s.ID)
 		return m, jumpSessionCmd(r.s)
 	}
-	cmd := m.enterView(r.node, r.t.ID)
-	return m, cmd
+	return m.enterView(r.node, r.t.ID)
 }

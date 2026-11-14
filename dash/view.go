@@ -55,7 +55,7 @@ const (
 )
 
 // One tail subprocess = one "run", tagged with a sequence number. Bumping
-// tailSeq orphans every in-flight message from older runs; the orphaned
+// tail.seq orphans every in-flight message from older runs; the orphaned
 // pump still drains its pipe to EOF and reaps the process.
 type tailStartedMsg struct {
 	seq  int
@@ -71,6 +71,16 @@ type tailDataMsg struct {
 }
 type tailExitMsg struct{ seq int }
 type tailRespawnMsg struct{ seq int }
+
+// tailState is the worker view: which worker it is on and its tail runs.
+type tailState struct {
+	node, id string
+	follow   bool      // stick to the bottom as output arrives
+	seq      int       // orphans in-flight tail messages on retarget/leave
+	proc     *exec.Cmd // the current run's process
+	buf      []byte    // the current tail run
+	last     []byte    // the last completed run (flicker-free fallback)
+}
 
 // tailStartCmd spawns `savannah task tail <node> <id>` with stdout and
 // stderr sharing ONE pipe, so TEXT and the [tool]/[result] lines interleave
@@ -114,38 +124,38 @@ func tailReadCmd(seq int, r io.ReadCloser, proc *exec.Cmd) tea.Cmd {
 	}
 }
 
-func (m *model) enterView(node, id string) tea.Cmd {
+func (m model) enterView(node, id string) (model, tea.Cmd) {
 	m.mode = modeView
-	m.viewNode, m.viewID = node, id
-	m.tailSeq++
+	m.tail.node, m.tail.id = node, id
+	m.tail.seq++
 	m.killTail()
-	m.tailBuf, m.lastBuf = nil, nil
-	m.follow = true
+	m.tail.buf, m.tail.last = nil, nil
+	m.tail.follow = true
 	m.vp = viewport.New(m.width, m.vpHeight())
 	m.status = ""
-	return m.tailStartCmd(m.tailSeq, node, id)
+	return m, m.tailStartCmd(m.tail.seq, node, id)
 }
 
 func (m *model) leaveView() {
 	m.mode = modeBoard
-	m.tailSeq++
+	m.tail.seq++
 	m.killTail()
-	m.tailBuf, m.lastBuf = nil, nil
+	m.tail.buf, m.tail.last = nil, nil
 }
 
 // killTail signals the current run's process; the pump sees EOF and cleans
 // up. Safe to call with no run live.
 func (m *model) killTail() {
-	if m.tailProc != nil && m.tailProc.Process != nil {
-		_ = m.tailProc.Process.Kill()
+	if m.tail.proc != nil && m.tail.proc.Process != nil {
+		_ = m.tail.proc.Process.Kill()
 	}
-	m.tailProc = nil
+	m.tail.proc = nil
 }
 
 // viewedTask finds the task the view is on; ok is false if it vanished.
 func (m model) viewedTask() (task, bool) {
-	for _, t := range m.tasks[m.viewNode] {
-		if t.ID == m.viewID {
+	for _, t := range m.mesh.tasks[m.tail.node] {
+		if t.ID == m.tail.id {
 			return t, true
 		}
 	}
@@ -221,26 +231,26 @@ func displayBuf(cur, last []byte) []byte {
 
 // refreshViewport re-renders the display buffer into the viewport.
 func (m *model) refreshViewport() {
-	buf := displayBuf(m.tailBuf, m.lastBuf)
+	buf := displayBuf(m.tail.buf, m.tail.last)
 	m.vp.Width = m.width
 	m.vp.Height = m.vpHeight()
 	m.vp.SetContent(wrapTo(stripCR(string(buf)), m.width))
-	if m.follow {
+	if m.tail.follow {
 		m.vp.GotoBottom()
 	}
 }
 
 func (m *model) appendTail(data []byte) {
-	m.tailBuf = append(m.tailBuf, data...)
-	if len(m.tailBuf) > maxTailBuf {
-		m.tailBuf = trimFront(m.tailBuf, maxTailBuf)
+	m.tail.buf = append(m.tail.buf, data...)
+	if len(m.tail.buf) > maxTailBuf {
+		m.tail.buf = trimFront(m.tail.buf, maxTailBuf)
 	}
 }
 
 func (m model) updateTail(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tailStartedMsg:
-		if msg.seq != m.tailSeq {
+		if msg.seq != m.tail.seq {
 			if msg.proc != nil && msg.proc.Process != nil {
 				_ = msg.proc.Process.Kill()
 				_ = msg.proc.Wait()
@@ -251,47 +261,47 @@ func (m model) updateTail(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != "" {
-			m.tailBuf = append(m.tailBuf, []byte("tail: "+msg.err+"\n")...)
+			m.tail.buf = append(m.tail.buf, []byte("tail: "+msg.err+"\n")...)
 			m.refreshViewport()
 			seq := msg.seq
 			return m, tea.Tick(respawnDelay,
 				func(time.Time) tea.Msg { return tailRespawnMsg{seq: seq} })
 		}
-		m.tailProc = msg.proc
-		m.tailBuf = nil
+		m.tail.proc = msg.proc
+		m.tail.buf = nil
 		return m, tailReadCmd(msg.seq, msg.r, msg.proc)
 	case tailDataMsg:
-		if msg.seq == m.tailSeq {
+		if msg.seq == m.tail.seq {
 			m.appendTail(msg.data)
 			m.refreshViewport()
 		}
 		// Always keep the pump running so stale pipes drain and close.
 		return m, tailReadCmd(msg.seq, msg.r, msg.proc)
 	case tailExitMsg:
-		if msg.seq != m.tailSeq {
+		if msg.seq != m.tail.seq {
 			return m, nil
 		}
 		// A completed run replayed the whole transcript: authoritative.
-		if len(m.tailBuf) > 0 {
-			m.lastBuf = m.tailBuf
+		if len(m.tail.buf) > 0 {
+			m.tail.last = m.tail.buf
 		}
-		m.tailBuf = nil
-		m.tailProc = nil
+		m.tail.buf = nil
+		m.tail.proc = nil
 		m.refreshViewport()
 		seq := msg.seq
 		return m, tea.Tick(respawnDelay,
 			func(time.Time) tea.Msg { return tailRespawnMsg{seq: seq} })
 	case tailRespawnMsg:
-		if msg.seq != m.tailSeq || m.mode != modeView {
+		if msg.seq != m.tail.seq || m.mode != modeView {
 			return m, nil
 		}
-		return m, m.tailStartCmd(msg.seq, m.viewNode, m.viewID)
+		return m, m.tailStartCmd(msg.seq, m.tail.node, m.tail.id)
 	}
 	return m, nil
 }
 
 func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if scrollKey(&m.vp, &m.follow, k.Type) {
+	if scrollKey(&m.vp, &m.tail.follow, k.Type) {
 		return m, nil
 	}
 	switch k.Type {
@@ -301,34 +311,42 @@ func (m model) updateViewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc, tea.KeyTab:
 		m.leaveView()
 		return m, nil
-	case tea.KeyLeft, tea.KeyRight:
-		d := 1
-		if k.Type == tea.KeyLeft {
-			d = -1
-		}
-		i, ok := neighborTaskRow(m.rows, m.viewNode, m.viewID, d)
-		if !ok {
-			return m, nil
-		}
-		r := m.rows[i]
-		m.cursor = i // keep the board's selection in step
-		if r.node == m.viewNode && r.t.ID == m.viewID {
-			return m, nil
-		}
-		cmd := m.enterView(r.node, r.t.ID)
-		return m, cmd
+	case tea.KeyLeft:
+		return m.viewNeighbor(-1)
+	case tea.KeyRight:
+		return m.viewNeighbor(1)
 	case tea.KeyEnter:
-		text := strings.TrimSpace(m.input.Value())
-		if text == "" {
-			return m, nil
-		}
-		m.input.SetValue("")
-		m.status = "sending to " + m.viewNode + "/" + m.viewID + "..."
-		return m, m.taskCmd("send", m.viewNode, m.viewID, text)
+		return m.viewSend()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
 	return m, cmd
+}
+
+// viewNeighbor is Left or Right: the view moves to the worker d rows away
+// (wrapping), and the board's selection goes with it.
+func (m model) viewNeighbor(d int) (model, tea.Cmd) {
+	i, ok := neighborTaskRow(m.rows, m.tail.node, m.tail.id, d)
+	if !ok {
+		return m, nil
+	}
+	r := m.rows[i]
+	m.cursor = i // keep the board's selection in step
+	if r.node == m.tail.node && r.t.ID == m.tail.id {
+		return m, nil
+	}
+	return m.enterView(r.node, r.t.ID)
+}
+
+// viewSend is Enter: the prompt line goes to the viewed worker.
+func (m model) viewSend() (model, tea.Cmd) {
+	text := strings.TrimSpace(m.input.Value())
+	if text == "" {
+		return m, nil
+	}
+	m.input.SetValue("")
+	m.status = "sending to " + m.tail.node + "/" + m.tail.id + "..."
+	return m, m.taskCmd("send", m.tail.node, m.tail.id, text)
 }
 
 func (m model) viewView() string {
@@ -337,7 +355,7 @@ func (m model) viewView() string {
 	if found {
 		state, title, turns = vt.State, vt.Title, vt.Turns
 	}
-	target := m.viewNode + "/" + m.viewID
+	target := m.tail.node + "/" + m.tail.id
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s   %s   turn %d   %s   %s\n",

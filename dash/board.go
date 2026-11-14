@@ -143,11 +143,48 @@ func projectCell(s session, home string, grouped bool) string {
 // column header once, then each section (NOW, ACTIVE, LATER) under its own
 // header with one styled line per session row. Section membership and order
 // come from the records (order.go); grouped, a dim header names each
-// repository inside a section (group.go); a row's state is the hook's, or
-// "polling" while its Claude's progress report is live (polling.go). The
-// hits say, line for line, which row or section header each line is, for
-// the mouse (mouse.go).
-func (m model) sessionLines(c sessCols, now int64) ([]string, []lineHit) {
+// repository inside a section (group.go). The hits say, line for line,
+// which row or section header each line is, for the mouse (mouse.go).
+func (m model) sessionLines(c sessCols, now int64) hitLines {
+	var out hitLines
+	out.add(noHit, sessionHeader(c))
+	recs := recordMap(m.work)
+	counts, groupCounts := m.sessionCounts(recs)
+	section := -1
+	group := ""
+	for i, r := range m.rows {
+		if r.kind != rowSession {
+			continue
+		}
+		s := r.s
+		for sec := sectionOf(s, recs); section < sec; {
+			section++
+			group = ""
+			out.addSection(section, m.sectionLines(section, counts[section]))
+		}
+		if m.group {
+			if root, isRepo := repoRoot(s.Project); root != group || group == "" {
+				group = root
+				n := groupCounts[[2]string{sectionName(section), root}]
+				out.add(noHit, groupHeader(root, isRepo, n, m.home, c.wide))
+			}
+		}
+		rec, hasRec := recs[s.Work]
+		style := rowStyleAt(s, now, m.fade)
+		if i == m.cursor {
+			style = selectedStyle
+		}
+		out.add(lineHit{row: i, section: -1}, style.Render(m.sessionLine(s, rec, hasRec, c, now)))
+	}
+	for section < secHistory {
+		section++
+		out.addSection(section, m.sectionLines(section, counts[section]))
+	}
+	return out
+}
+
+// sessionHeader is the table's column header for the plan.
+func sessionHeader(c sessCols) string {
 	hdr := pad("", 2) + pad("STATE", 9) + pad("WORK", c.work)
 	if c.ticket > 0 {
 		hdr += pad("TICKET", c.ticket)
@@ -160,113 +197,86 @@ func (m model) sessionLines(c sessCols, now int64) ([]string, []lineHit) {
 	if c.wide {
 		hdr += pad("NOTE", c.note)
 	}
-	lines := []string{colStyle.Render(hdr + "WHAT")}
-	hits := []lineHit{noHit}
-	recs := recordMap(m.work)
-	var counts [secHistory + 1]int
-	groupCounts := map[[2]string]int{} // (section, repo root) -> rows
+	return colStyle.Render(hdr + "WHAT")
+}
+
+// sessionCounts is the number each header shows: the session rows per
+// section, and per (section, repository) for the group headers. HISTORY
+// counts every closed session, shown or not (history.go); filtered, the
+// matching ones.
+func (m model) sessionCounts(recs map[string]workRecord) (counts [secHistory + 1]int, groups map[[2]string]int) {
+	groups = map[[2]string]int{} // (section, repo root) -> rows
 	for _, r := range m.rows {
 		if r.kind == rowSession {
 			sec := sectionOf(r.s, recs)
 			counts[sec]++
-			groupCounts[[2]string{sectionName(sec), groupKey(r.s)}]++
+			groups[[2]string{sectionName(sec), groupKey(r.s)}]++
 		}
 	}
 	if m.filter == "" {
-		counts[secHistory] = m.countClosed() // shown or not (history.go); filtered, the matching ones
+		counts[secHistory] = m.countClosed()
 	}
-	section := -1
-	group := ""
-	for i, r := range m.rows {
-		if r.kind != rowSession {
-			continue
-		}
-		s := r.s
-		for sec := sectionOf(s, recs); section < sec; {
-			section++
-			group = ""
-			lines, hits = appendSection(lines, hits, section, m.sectionLines(section, counts[section]))
-		}
-		if m.group {
-			if root, isRepo := repoRoot(s.Project); root != group || group == "" {
-				group = root
-				n := groupCounts[[2]string{sectionName(section), root}]
-				lines = append(lines, groupHeader(root, isRepo, n, m.home, c.wide))
-				hits = append(hits, noHit)
-			}
-		}
-		rec, hasRec := recs[s.Work]
-		state, glyph, what := s.State, stateGlyph(s.State), sessionDetail(s)
-		if isPolling(s, rec) {
-			state, glyph, what = "polling", pollGlyph, pollingDetail(rec.status, now)
-		}
-		proj := projectCell(s, m.home, m.group)
-		if c.paths {
-			proj = tilde(s.Project, m.home)
-		}
-		cell := workCell(s, m.titles)
-		if c.work > 2 && runeLen(cell) > c.work {
-			if s.Work == "" {
-				cell = cutTilde(cell, c.work-1) + ")" // a cut tab title keeps its shape
-			} else {
-				cell = cutTilde(cell, c.work)
-			}
-		}
-		line := pad(glyph, 2) + pad(state, 9) + pad(cell, c.work)
-		if c.ticket > 0 {
-			line += linkify(pad(trunc(s.Ticket, c.ticket), c.ticket), s)
-		}
-		line += pad(proj, c.project)
-		if c.wide {
-			tab := "-"
-			if hasRec && rec.TabID != "" {
-				tab = rec.TabID
-			}
-			line += pad(tab, c.tab)
-		}
-		line += pad(humanAge(now-s.Updated), c.age)
-		if c.wide {
-			note := ""
-			if hasRec {
-				note = rec.lastNote
-			}
-			line += pad(note, c.note)
-			if s.closed() {
-				// The note has its own column now; WHAT says what to do.
-				what = "offline, no live tab (Enter reopens it)"
-			}
-		}
-		line += trunc(what, c.what)
-		if i == m.cursor {
-			line = selectedStyle.Render(line)
-		} else {
-			line = rowStyleAt(s, now, m.fade).Render(line)
-		}
-		lines = append(lines, line)
-		hits = append(hits, lineHit{row: i, section: -1})
-	}
-	for section < secHistory {
-		section++
-		lines, hits = appendSection(lines, hits, section, m.sectionLines(section, counts[section]))
-	}
-	return lines, hits
+	return counts, groups
 }
 
-// appendSection adds a section's header lines: the first is the header
-// (a click on HISTORY's toggles it), the rest hints.
-func appendSection(lines []string, hits []lineHit, sec int, secLines []string) ([]string, []lineHit) {
+// sessionLine is one session's row, unstyled: its cells for the column
+// plan. The state is the hook's, or "polling" while its Claude's progress
+// report is live (polling.go).
+func (m model) sessionLine(s session, rec workRecord, hasRec bool, c sessCols, now int64) string {
+	state, glyph, what := s.State, stateGlyph(s.State), sessionDetail(s)
+	if isPolling(s, rec) {
+		state, glyph, what = "polling", pollGlyph, pollingDetail(rec.status, now)
+	}
+	proj := projectCell(s, m.home, m.group)
+	if c.paths {
+		proj = tilde(s.Project, m.home)
+	}
+	cell := workCell(s, m.titles)
+	if c.work > 2 && runeLen(cell) > c.work {
+		if s.Work == "" {
+			cell = cutTilde(cell, c.work-1) + ")" // a cut tab title keeps its shape
+		} else {
+			cell = cutTilde(cell, c.work)
+		}
+	}
+	line := pad(glyph, 2) + pad(state, 9) + pad(cell, c.work)
+	if c.ticket > 0 {
+		line += linkify(pad(trunc(s.Ticket, c.ticket), c.ticket), s)
+	}
+	line += pad(proj, c.project)
+	if c.wide {
+		tab := "-"
+		if hasRec && rec.TabID != "" {
+			tab = rec.TabID
+		}
+		line += pad(tab, c.tab)
+	}
+	line += pad(humanAge(now-s.Updated), c.age)
+	if c.wide {
+		note := ""
+		if hasRec {
+			note = rec.lastNote
+		}
+		line += pad(note, c.note)
+		if s.closed() {
+			// The note has its own column now; WHAT says what to do.
+			what = "offline, no live tab (Enter reopens it)"
+		}
+	}
+	return line + trunc(what, c.what)
+}
+
+// addSection adds a section's header lines: the first is the header (a
+// click on HISTORY's toggles it), the rest hints.
+func (h *hitLines) addSection(sec int, secLines []string) {
 	for i, ln := range secLines {
-		lines = append(lines, ln)
+		hit := noHit
 		if i == 0 {
-			hits = append(hits, lineHit{row: -1, section: sec})
-		} else {
-			hits = append(hits, noHit)
+			hit = lineHit{row: -1, section: sec}
 		}
+		h.add(hit, ln)
 	}
-	return lines, hits
 }
-
-// ---- notes ------------------------------------------------------------------
 
 // noteEntry is one `work note` entry: its stamp ("2026-11-03 15:25", the
 // heading without " local") and its body, blank lines dropped.
@@ -417,6 +427,15 @@ func panelOutputCmd(bin string, seq int, name string) tea.Cmd {
 	}
 }
 
+// updatePanel takes a fetched reply, unless the highlighted row has changed
+// since it was asked for.
+func (m model) updatePanel(msg panelOutputMsg) (tea.Model, tea.Cmd) {
+	if msg.seq == m.panel.seq {
+		m.panel.text, m.panel.have = msg.text, true
+	}
+	return m, nil
+}
+
 // refreshPanel points the panel at the highlighted row. A work row whose
 // (name, updated) differs from the last fetch gets a new fetch; the old text
 // stays up until it lands when the name is the same, so a finished turn
@@ -452,140 +471,183 @@ func (m model) replyText(name string) string {
 	return text
 }
 
+// panelContent is what the detail panel says about one row, before it is
+// laid out: the first line (the name, bold, and what follows it), the
+// prompt line, a status and a summary line when there are any, and one or
+// two titled columns. Column text is plain so wrapping and padding can
+// count runes; only the titles and note stamps carry a style.
+type panelContent struct {
+	name, head      string
+	prompt          string
+	status, summary string
+	leftTitle       string
+	left            func(w int) []string // the column's lines wrapped to w
+	rightTitle      string
+	right           func(w int) []string // nil: one column
+}
+
 // panelLines renders the detail panel for the highlighted row in exactly h
 // lines, w wide. h < minPanel (or a very narrow terminal) renders nothing.
-// Column text is plain so wrapping and padding can count runes; only the
-// titles and note stamps carry a style.
 func (m model) panelLines(w, h int, now time.Time) []string {
 	if h < minPanel || w < 40 {
 		return nil
 	}
 	r, ok := m.currentRow()
-	if !ok {
-		return nil
-	}
-	today := now.Format("2006-01-02")
-	var name, head, prompt, status, summary, leftTitle, rightTitle string
-	var left, right func(w int) []string
 	switch {
+	case !ok:
+		return nil
 	case r.kind == rowTask:
-		t := r.t
-		name = r.node + "/" + t.ID
-		head = fmt.Sprintf("   %s   turn %d   %s", t.State, t.Turns, t.Title)
-		prompt = "worktree  " + t.Worktree
-		leftTitle = "LAST LINE"
-		left = func(w int) []string {
+		return renderPanel(taskPanel(r), w, h)
+	case r.isWork():
+		return renderPanel(m.workPanel(r, now), w, h)
+	}
+	return renderPanel(m.plainPanel(r), w, h)
+}
+
+// taskPanel is the panel for a mesh worker: its last line and any decision
+// it is waiting on.
+func taskPanel(r row) panelContent {
+	t := r.t
+	return panelContent{
+		name:      r.node + "/" + t.ID,
+		head:      fmt.Sprintf("   %s   turn %d   %s", t.State, t.Turns, t.Title),
+		prompt:    "worktree  " + t.Worktree,
+		leftTitle: "LAST LINE",
+		left: func(w int) []string {
 			lines := wrapWords(t.LastLine, w)
 			if d, pending := pendingDecision(t); pending {
 				lines = append(lines, wrapWords(decisionCell(d), w)...)
 			}
 			return append(lines, "", "Enter (empty) or Tab opens the live view")
-		}
-	case r.isWork():
-		s := r.s
-		rec, hasRec := m.recordOf(s.Work)
-		name = s.Work
-		head = "   " + tilde(s.Project, m.home)
-		if s.WorkTitle != "" {
-			// The title leads; the name follows, since it is what the CLI takes.
-			name = s.WorkTitle
-			head = "   " + s.Work + head
-		}
-		if s.Ticket != "" {
-			head += "   " + linkify(s.Ticket, s)
-		}
-		if hasRec {
-			if rec.Branch != "" {
-				head += "   " + rec.Branch
-			}
-			if rec.TabID != "" {
-				head += "   tab " + rec.TabID
-			}
-			if rec.Adopted {
-				head += "   adopted"
-			}
-			if rec.Priority == prioLater {
-				head += "   later"
-			}
-		}
-		polling := isPolling(s, rec)
-		if polling {
-			head += "   polling"
-		} else {
-			head += "   " + sessionDetail(s)
-		}
-		if rec.status.have {
-			status = statusLine(rec.status, polling, now.Unix())
-		}
-		if hasRec && rec.Summary != "" {
-			summary = fmt.Sprintf("summary (%s ago)  %s", humanAge(now.Unix()-rec.SummaryAt),
-				strings.Join(strings.Fields(rec.Summary), " "))
-		}
-		switch {
-		case s.LastPrompt != "":
-			prompt = "last prompt  " + s.LastPrompt
-		case hasRec && rec.Prompt != "":
-			prompt = "first prompt  " + rec.Prompt
-		default:
-			prompt = "no prompt recorded yet"
-		}
-		var entries []noteEntry
-		if hasRec {
-			entries = parseNotes(rec.notes)
-		}
-		leftTitle = fmt.Sprintf("NOTES (%d)", len(entries))
-		rightTitle = "LAST REPLY"
-		left = func(w int) []string {
-			if len(entries) == 0 {
-				return []string{"none yet: Ctrl-T adds one"}
-			}
-			return noteLines(entries, w, today)
-		}
-		reply := m.replyText(s.Work)
-		right = func(w int) []string { return wrapAll(reply, w) }
-	default: // a plain tab: no record, so no notes and no reply fetch
-		s := r.s
-		name = projectLabel(s.Project)
-		head = "   " + tilde(s.Project, m.home) + "   " + sessionDetail(s)
-		if s.LastPrompt != "" {
-			prompt = "last prompt  " + s.LastPrompt
-		} else {
-			prompt = "no prompt recorded yet"
-		}
-		leftTitle, rightTitle = "NOTES", "LAST REPLY"
-		left = func(w int) []string {
-			return wrapWords("a plain tab has no notes: Ctrl-T names it, then takes one", w)
-		}
-		right = func(w int) []string {
-			return wrapWords("replies show once the tab is named (Ctrl-R; Ctrl-T names it and takes a note); Enter jumps to it", w)
-		}
+		},
 	}
+}
 
+// workPanel is the panel for a work session: what the record knows on the
+// first line, its last (or first) prompt, its progress report and summary,
+// then its notes beside the last reply of its Claude.
+func (m model) workPanel(r row, now time.Time) panelContent {
+	s := r.s
+	rec, hasRec := m.recordOf(s.Work)
+	polling := isPolling(s, rec)
+	c := panelContent{name: s.Work, head: m.workHead(s, rec, hasRec, polling), rightTitle: "LAST REPLY"}
+	if s.WorkTitle != "" {
+		// The title leads; the name follows, since it is what the CLI takes.
+		c.name = s.WorkTitle
+		c.head = "   " + s.Work + c.head
+	}
+	if rec.status.have {
+		c.status = statusLine(rec.status, polling, now.Unix())
+	}
+	if hasRec && rec.Summary != "" {
+		c.summary = fmt.Sprintf("summary (%s ago)  %s", humanAge(now.Unix()-rec.SummaryAt),
+			strings.Join(strings.Fields(rec.Summary), " "))
+	}
+	switch {
+	case s.LastPrompt != "":
+		c.prompt = "last prompt  " + s.LastPrompt
+	case hasRec && rec.Prompt != "":
+		c.prompt = "first prompt  " + rec.Prompt
+	default:
+		c.prompt = "no prompt recorded yet"
+	}
+	var entries []noteEntry
+	if hasRec {
+		entries = parseNotes(rec.notes)
+	}
+	today := now.Format("2006-01-02")
+	c.leftTitle = fmt.Sprintf("NOTES (%d)", len(entries))
+	c.left = func(w int) []string {
+		if len(entries) == 0 {
+			return []string{"none yet: Ctrl-T adds one"}
+		}
+		return noteLines(entries, w, today)
+	}
+	reply := m.replyText(s.Work)
+	c.right = func(w int) []string { return wrapAll(reply, w) }
+	return c
+}
+
+// workHead is what follows a work session's name on the panel's first
+// line: its directory, ticket, branch, tab, how it came to be and where it
+// sits, then what it is doing.
+func (m model) workHead(s session, rec workRecord, hasRec, polling bool) string {
+	head := "   " + tilde(s.Project, m.home)
+	if s.Ticket != "" {
+		head += "   " + linkify(s.Ticket, s)
+	}
+	if hasRec {
+		if rec.Branch != "" {
+			head += "   " + rec.Branch
+		}
+		if rec.TabID != "" {
+			head += "   tab " + rec.TabID
+		}
+		if rec.Adopted {
+			head += "   adopted"
+		}
+		if rec.Priority == prioLater {
+			head += "   later"
+		}
+	}
+	if polling {
+		return head + "   polling"
+	}
+	return head + "   " + sessionDetail(s)
+}
+
+// plainPanel is the panel for a plain tab: no record, so no notes and no
+// reply fetch, only what would give it them.
+func (m model) plainPanel(r row) panelContent {
+	s := r.s
+	c := panelContent{
+		name:       projectLabel(s.Project),
+		head:       "   " + tilde(s.Project, m.home) + "   " + sessionDetail(s),
+		prompt:     "no prompt recorded yet",
+		leftTitle:  "NOTES",
+		rightTitle: "LAST REPLY",
+		left: func(w int) []string {
+			return wrapWords("a plain tab has no notes: Ctrl-T names it, then takes one", w)
+		},
+		right: func(w int) []string {
+			return wrapWords("replies show once the tab is named (Ctrl-R; Ctrl-T names it and takes a note); Enter jumps to it", w)
+		},
+	}
+	if s.LastPrompt != "" {
+		c.prompt = "last prompt  " + s.LastPrompt
+	}
+	return c
+}
+
+// renderPanel lays a panel out in exactly h lines, w wide: the head lines,
+// then the columns side by side from twoColWidth on, else one under the
+// other; each column keeps its end (tailFit).
+func renderPanel(c panelContent, w, h int) []string {
 	out := []string{
-		headerStyle.Render(trunc(name, w)) + trunc(head, w-runeLen(trunc(name, w))),
-		trunc(prompt, w),
+		headerStyle.Render(trunc(c.name, w)) + trunc(c.head, w-runeLen(trunc(c.name, w))),
+		trunc(c.prompt, w),
 	}
-	if status != "" {
-		out = append(out, trunc(status, w))
+	if c.status != "" {
+		out = append(out, trunc(c.status, w))
 	}
-	if summary != "" {
-		out = append(out, trunc(summary, w))
+	if c.summary != "" {
+		out = append(out, trunc(c.summary, w))
 	}
 	body := h - len(out) - 1 // the lines so far, then the titles
-	if right == nil || w < twoColWidth {
-		out = append(out, colStyle.Render(trunc(leftTitle, w)))
-		cols := left(w)
-		if right != nil {
-			cols = append(cols, "", rightTitle)
-			cols = append(cols, right(w)...)
+	if c.right == nil || w < twoColWidth {
+		out = append(out, colStyle.Render(trunc(c.leftTitle, w)))
+		cols := c.left(w)
+		if c.right != nil {
+			cols = append(cols, "", c.rightTitle)
+			cols = append(cols, c.right(w)...)
 		}
 		out = append(out, tailFit(cols, body, w)...)
 	} else {
 		lw := (w - 3) * 45 / 100
 		rw := w - 3 - lw
-		lcol := tailFit(left(lw), body, lw)
-		rcol := tailFit(right(rw), body, rw)
-		out = append(out, colStyle.Render(padTo(leftTitle, lw))+" │ "+colStyle.Render(trunc(rightTitle, rw)))
+		lcol := tailFit(c.left(lw), body, lw)
+		rcol := tailFit(c.right(rw), body, rw)
+		out = append(out, colStyle.Render(padTo(c.leftTitle, lw))+" │ "+colStyle.Render(trunc(c.rightTitle, rw)))
 		for i := 0; i < body; i++ {
 			out = append(out, padTo(lcol[i], lw)+helpStyle.Render(" │ ")+rcol[i])
 		}

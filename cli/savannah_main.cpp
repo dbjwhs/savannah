@@ -34,6 +34,7 @@
 #include <song/song.hpp>
 #include <song/security.hpp>
 
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <csignal>
@@ -42,9 +43,11 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -99,6 +102,24 @@ int usage() {
     return 2;
 }
 
+struct Cli;
+
+// One `savannah task <sub>`: its name, the positionals it takes after the
+// node, and what runs it. kTaskVerbs below is the only list of them.
+struct TaskVerb {
+    std::string_view name;
+    bool needs_id;      // a positional task id follows the node
+    bool needs_prompt;  // ... and a positional prompt follows the id
+    int (*run)(sw::AgentNodeProxy&, const Cli&);
+};
+
+// One `savannah <verb> <node>`; kNodeVerbs below is the only list of them.
+struct NodeVerb {
+    std::string_view name;
+    bool needs_prompt;  // a positional prompt follows the node
+    int (*run)(sw::AgentNodeProxy&, const Cli&);
+};
+
 struct Cli {
     std::string cmd;
     std::string node;
@@ -108,8 +129,10 @@ struct Cli {
     std::string key_file;
     u32 timeout_ms = 0;
 
+    const NodeVerb* verb = nullptr;  // set for ask | info | status
+
     // `task` subcommands: `savannah task <sub> <node> [id] [prompt] [flags]`
-    std::string task_sub;      // new | ls | status | send | tail | cancel
+    const TaskVerb* task = nullptr;  // set when cmd is "task"
     std::string task_id;
     std::string task_title;    // --title (task new)
     std::string task_workdir;  // --workdir (task new)
@@ -197,77 +220,65 @@ bool parse_number(const char* text, unsigned long max, unsigned long& out) {
     return true;
 }
 
-bool task_sub_valid(const std::string& s) {
-    return s == "new" || s == "ls" || s == "status" || s == "send" ||
-           s == "tail" || s == "cancel" || s == "rm";
-}
+// The flags that take a value and store it as given. Every verb accepts
+// every flag; one that means nothing to a verb is ignored by it.
+struct ValueFlag {
+    const char* flag;
+    std::string Cli::*field;
+};
+constexpr ValueFlag kValueFlags[] = {
+    {"--config", &Cli::config},
+    {"--addr", &Cli::addr},
+    {"--key", &Cli::key_file},
+    {"--title", &Cli::task_title},
+    {"--prompt", &Cli::prompt},
+    {"--workdir", &Cli::task_workdir},
+};
 
-bool parse_cli(int argc, char** argv, Cli& c) {
-    if (argc < 2) return false;
-    c.cmd = argv[1];
-    int i;
-    if (c.cmd == "task") {
-        // task <sub> <node> [id] [prompt]
-        if (argc < 4) return false;
-        c.task_sub = argv[2];
-        c.node = argv[3];
-        i = 4;
-        // subcommands that operate on an existing task take a positional id
-        // (and `send` also a positional prompt).
-        bool needs_id = (c.task_sub == "status" || c.task_sub == "send" ||
-                         c.task_sub == "tail" || c.task_sub == "cancel" ||
-                         c.task_sub == "rm");
-        if (needs_id) {
-            if (i >= argc) return false;
-            c.task_id = argv[i++];
-            if (c.task_sub == "send") {
-                if (i >= argc) return false;
-                c.prompt = argv[i++];
-            }
-        }
-    } else {
-        i = 2;
-        if (c.cmd != "ls") {
-            if (argc < 3) return false;
-            c.node = argv[2];
-            i = 3;
-            if (c.cmd == "ask") {
-                if (argc < 4) return false;
-                c.prompt = argv[3];
-                i = 4;
-            }
-        }
-    }
+// The flags that take no value.
+struct SwitchFlag {
+    const char* flag;
+    bool Cli::*field;
+};
+constexpr SwitchFlag kSwitchFlags[] = {
+    {"--worktree", &Cli::task_worktree},
+    {"--watch", &Cli::task_watch},
+    {"--json", &Cli::json_out},
+};
+
+// Parse the flags in argv[i..] into c. False on an unknown flag, a stray
+// positional, a flag missing its value, or a --timeout-ms that is no number.
+bool parse_flags(int argc, char** argv, int i, Cli& c) {
     for (; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            c.config = argv[++i];
-        } else if (std::strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
+        const std::string_view arg = argv[i];
+        const bool has_value = i + 1 < argc;
+        if (arg == "--timeout-ms" && has_value) {
             unsigned long ms = 0;
             if (!parse_number(argv[++i], 0xFFFFFFFFul, ms)) return false;
             c.timeout_ms = static_cast<u32>(ms);
-        } else if (std::strcmp(argv[i], "--addr") == 0 && i + 1 < argc) {
-            c.addr = argv[++i];
-        } else if (std::strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
-            c.key_file = argv[++i];
-        } else if (std::strcmp(argv[i], "--title") == 0 && i + 1 < argc) {
-            c.task_title = argv[++i];
-        } else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) {
-            c.prompt = argv[++i];
-        } else if (std::strcmp(argv[i], "--workdir") == 0 && i + 1 < argc) {
-            c.task_workdir = argv[++i];
-        } else if (std::strcmp(argv[i], "--worktree") == 0) {
-            c.task_worktree = true;
-        } else if (std::strcmp(argv[i], "--watch") == 0) {
-            c.task_watch = true;
-        } else if (std::strcmp(argv[i], "--json") == 0) {
-            c.json_out = true;
-        } else {
-            return false;
+            continue;
         }
+        if (const auto* v = std::ranges::find(kValueFlags, arg, &ValueFlag::flag);
+            v != std::end(kValueFlags) && has_value) {
+            c.*(v->field) = argv[++i];
+            continue;
+        }
+        if (const auto* sw_flag =
+                std::ranges::find(kSwitchFlags, arg, &SwitchFlag::flag);
+            sw_flag != std::end(kSwitchFlags)) {
+            c.*(sw_flag->field) = true;
+            continue;
+        }
+        return false;
     }
-    if (c.cmd == "task") return task_sub_valid(c.task_sub);
-    return c.cmd == "ls" || c.cmd == "ask" || c.cmd == "info" ||
-           c.cmd == "status";
+    return true;
+}
+
+// The entry named `name` in a verb table, or null.
+template <typename Verb, std::size_t N>
+const Verb* find_verb(const Verb (&table)[N], std::string_view name) {
+    const auto* it = std::ranges::find(table, name, &Verb::name);
+    return it != std::end(table) ? it : nullptr;
 }
 
 int run_ls(const Cli& cli) {
@@ -489,87 +500,99 @@ int run_task_watch(sw::AgentNodeProxy& proxy, const std::string& node) {
     return 0;  // unreachable: a signal restores the terminal and exits
 }
 
-int run_task(ServiceConnection& conn, const Cli& cli) {
-    sw::AgentNodeProxy proxy(conn);
-    const std::string& sub = cli.task_sub;
+int task_new(sw::AgentNodeProxy& proxy, const Cli& cli) {
+    if (cli.task_title.empty()) {
+        std::cerr << "savannah task new: --title is required\n";
+        return 2;
+    }
+    sw::TaskSpec spec;
+    spec.title = cli.task_title;
+    spec.prompt = cli.prompt;  // --prompt; empty = create idle, drive later
+    spec.workdir = cli.task_workdir;
+    spec.make_worktree = cli.task_worktree;
+    spec.timeout_ms = cli.timeout_ms;
+    print_task(proxy.task_new(spec));
+    return 0;
+}
 
-    if (sub == "new") {
-        if (cli.task_title.empty()) {
-            std::cerr << "savannah task new: --title is required\n";
-            return 2;
-        }
-        sw::TaskSpec spec;
-        spec.title = cli.task_title;
-        spec.prompt = cli.prompt;  // --prompt; empty = create idle, drive later
-        spec.workdir = cli.task_workdir;
-        spec.make_worktree = cli.task_worktree;
-        spec.timeout_ms = cli.timeout_ms;
-        print_task(proxy.task_new(spec));
+int task_ls(sw::AgentNodeProxy& proxy, const Cli& cli) {
+    if (cli.task_watch) return run_task_watch(proxy, cli.node);
+    sw::TaskList list = proxy.task_list();
+    if (cli.json_out) {
+        std::cout << tasks_to_json(list) << "\n";
         return 0;
     }
-    if (sub == "ls") {
-        if (cli.task_watch) return run_task_watch(proxy, cli.node);
-        sw::TaskList list = proxy.task_list();
-        if (cli.json_out) {
-            std::cout << tasks_to_json(list) << "\n";
-            return 0;
-        }
-        if (list.tasks.empty()) {
-            std::cerr << "(no tasks)\n";
-            return 0;
-        }
-        for (const auto& t : list.tasks) print_task(t);
+    if (list.tasks.empty()) {
+        std::cerr << "(no tasks)\n";
         return 0;
     }
-    if (sub == "status") {
-        print_task(proxy.task_status(cli.task_id));
-        return 0;
-    }
-    if (sub == "send") {
-        return report(proxy.task_send(cli.task_id, cli.prompt), "sent\n",
-                      "not sent (task busy or gone)\n");
-    }
-    if (sub == "cancel") {
-        return report(proxy.task_cancel(cli.task_id), "cancelled\n",
-                      "no such task\n");
-    }
-    if (sub == "rm") {
-        return report(proxy.task_rm(cli.task_id), "removed\n",
-                      "no such task (a running task needs cancel first)\n");
-    }
-    // tail: replay the transcript, then follow the live turn to its RESULT.
+    for (const auto& t : list.tasks) print_task(t);
+    return 0;
+}
+
+int task_status(sw::AgentNodeProxy& proxy, const Cli& cli) {
+    print_task(proxy.task_status(cli.task_id));
+    return 0;
+}
+
+int task_send(sw::AgentNodeProxy& proxy, const Cli& cli) {
+    return report(proxy.task_send(cli.task_id, cli.prompt), "sent\n",
+                  "not sent (task busy or gone)\n");
+}
+
+// Replay the transcript, then follow the live turn to its RESULT.
+int task_tail(sw::AgentNodeProxy& proxy, const Cli& cli) {
     return run_stream(cli, [&](const auto& sink, int budget_ms) {
         proxy.task_output(cli.task_id, sink, budget_ms);
     });
 }
 
-int run_command(ServiceConnection& conn, const Cli& cli) {
-    if (cli.cmd == "task") return run_task(conn, cli);
+int task_cancel(sw::AgentNodeProxy& proxy, const Cli& cli) {
+    return report(proxy.task_cancel(cli.task_id), "cancelled\n",
+                  "no such task\n");
+}
 
-    sw::AgentNodeProxy proxy(conn);
+int task_rm(sw::AgentNodeProxy& proxy, const Cli& cli) {
+    return report(proxy.task_rm(cli.task_id), "removed\n",
+                  "no such task (a running task needs cancel first)\n");
+}
 
-    if (cli.cmd == "info") {
-        auto info = proxy.info();
-        std::cout << "name:      " << info.name << "\n"
-                  << "model:     " << info.model << "\n"
-                  << "workspace: " << info.workspace << "\n"
-                  << "tags:      ";
-        for (std::size_t i = 0; i < info.tags.size(); ++i) {
-            std::cout << (i ? "," : "") << info.tags[i];
-        }
-        std::cout << "\nprotocol:  v" << info.protocol_ver << "\n";
-        return 0;
+// Every task sub-verb: what is valid, what positionals it takes, what runs.
+// (The usage text above spells the same set out for people.)
+constexpr TaskVerb kTaskVerbs[] = {
+    //  name      id     prompt  run
+    {"new",    false, false, task_new},
+    {"ls",     false, false, task_ls},
+    {"status", true,  false, task_status},
+    {"send",   true,  true,  task_send},
+    {"tail",   true,  false, task_tail},
+    {"cancel", true,  false, task_cancel},
+    {"rm",     true,  false, task_rm},
+};
+
+int node_info(sw::AgentNodeProxy& proxy, const Cli&) {
+    auto info = proxy.info();
+    std::cout << "name:      " << info.name << "\n"
+              << "model:     " << info.model << "\n"
+              << "workspace: " << info.workspace << "\n"
+              << "tags:      ";
+    for (std::size_t i = 0; i < info.tags.size(); ++i) {
+        std::cout << (i ? "," : "") << info.tags[i];
     }
+    std::cout << "\nprotocol:  v" << info.protocol_ver << "\n";
+    return 0;
+}
 
-    if (cli.cmd == "status") {
-        std::cout << proxy.status() << "\n";
-        return 0;
-    }
+int node_status(sw::AgentNodeProxy& proxy, const Cli&) {
+    std::cout << proxy.status() << "\n";
+    return 0;
+}
 
-    // ask, streamed live: chunks print as they arrive (song's incremental
-    // call_streaming). The generated streaming proxy (song finding 6) encodes
-    // the args, calls over kService_AgentNode_Stream, and hands each chunk
-    // back already decoded.
+// ask, streamed live: chunks print as they arrive (song's incremental
+// call_streaming). The generated streaming proxy (song finding 6) encodes
+// the args, calls over kService_AgentNode_Stream, and hands each chunk
+// back already decoded.
+int node_ask(sw::AgentNodeProxy& proxy, const Cli& cli) {
     sw::AskOptions opts;
     opts.timeout_ms = cli.timeout_ms;
     opts.fresh_context = true;
@@ -577,6 +600,58 @@ int run_command(ServiceConnection& conn, const Cli& cli) {
     return run_stream(cli, [&](const auto& sink, int budget_ms) {
         proxy.ask(cli.prompt, opts, sink, budget_ms);
     });
+}
+
+// Every verb that talks to one node, besides `task`.
+constexpr NodeVerb kNodeVerbs[] = {
+    //  name      prompt  run
+    {"ask",    true,  node_ask},
+    {"info",   false, node_info},
+    {"status", false, node_status},
+};
+
+// argv -> Cli. False is a usage error: too few positionals for the verb, a
+// bad flag, or a verb (or task sub-verb) that does not exist.
+//   savannah ls [flags]
+//   savannah <ask|info|status> <node> [prompt] [flags]
+//   savannah task <sub> <node> [id] [prompt] [flags]
+bool parse_cli(int argc, char** argv, Cli& c) {
+    if (argc < 2) return false;
+    c.cmd = argv[1];
+    int i = 2;
+    // The next positional, or false when argv has run out.
+    auto take = [&](std::string& into) {
+        if (i >= argc) return false;
+        into = argv[i++];
+        return true;
+    };
+    bool needs_id = false;
+    bool needs_prompt = false;
+    if (c.cmd == "task") {
+        std::string sub;
+        if (argc < 4 || !take(sub) || !take(c.node)) return false;
+        c.task = find_verb(kTaskVerbs, sub);
+        if (c.task) {
+            needs_id = c.task->needs_id;
+            needs_prompt = c.task->needs_prompt;
+        }
+    } else if (c.cmd != "ls") {
+        if (!take(c.node)) return false;
+        c.verb = find_verb(kNodeVerbs, c.cmd);
+        // An unknown verb is refused below, after its flags are looked at;
+        // like the known ones, it never reads a missing prompt.
+        needs_prompt = c.verb && c.verb->needs_prompt;
+    }
+    if (needs_id && !take(c.task_id)) return false;
+    if (needs_prompt && !take(c.prompt)) return false;
+    if (!parse_flags(argc, argv, i, c)) return false;
+    return c.cmd == "ls" || c.task != nullptr || c.verb != nullptr;
+}
+
+// Run the parsed verb against a connected node.
+int run_command(ServiceConnection& conn, const Cli& cli) {
+    sw::AgentNodeProxy proxy(conn);
+    return cli.task ? cli.task->run(proxy, cli) : cli.verb->run(proxy, cli);
 }
 
 }  // namespace

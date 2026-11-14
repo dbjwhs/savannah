@@ -66,10 +66,7 @@ func (m model) rowMatches(r row, words []string, recs map[string]workRecord) boo
 // pressFind is Ctrl-K: the prompt line becomes the filter (prefilled with
 // the one in force), any note, name or title being typed is dropped.
 func (m model) pressFind() model {
-	m.finding = true
-	m.noteFor, m.titleFor, m.adoptFor, m.adoptProject = "", "", "", ""
-	m.input.SetValue(m.filter)
-	m.input.CursorEnd()
+	m.setPrompt(promptState{kind: promptFind}, m.filter)
 	m.status = "type to filter the rows (every word must match); Enter keeps the filter, Esc clears it"
 	return m
 }
@@ -83,11 +80,19 @@ func (m *model) applyFilter(text string) {
 	}
 }
 
+// toggleFind is Ctrl-K: the filter is taken up, or, while it is being
+// typed, kept as Enter keeps it.
+func (m model) toggleFind() model {
+	if m.finding() {
+		return m.acceptFind()
+	}
+	return m.pressFind()
+}
+
 // acceptFind is Enter (or Ctrl-K again) while finding: the filter stays,
 // the prompt line is the row's again.
 func (m model) acceptFind() model {
-	m.finding = false
-	m.input.SetValue("")
+	m.clearPrompt()
 	if m.filter == "" {
 		m.status = "no filter"
 		return m
@@ -102,9 +107,12 @@ func (m model) acceptFind() model {
 }
 
 // clearFind is Esc: no filter, every row back, the cursor on the row it
-// was on.
+// was on. A filter kept in force (Enter) may sit under a note, a name or a
+// title being typed: the box is emptied and that prompt stays.
 func (m model) clearFind() model {
-	m.finding = false
+	if m.finding() {
+		m.prompt = promptState{}
+	}
 	m.input.SetValue("")
 	m.applyFilter("")
 	m.status = "filter cleared"
