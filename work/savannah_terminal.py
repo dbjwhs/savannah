@@ -10,7 +10,11 @@
 # tools/fake_it2.py. A tmux implementation plugs in later behind the same
 # methods. make_terminal(kind) is how every caller gets one.
 #
-# Imports: the standard library, savannah_log and savannah_core. Every it2
+# One thing it2 cannot do, putting a tab into a window that already exists,
+# goes to iTerm2's API directly (savannah_iterm_api.py, stdlib too).
+#
+# Imports: the standard library, savannah_log, savannah_core and
+# savannah_iterm_api. Every it2
 # call goes through ITerm.run and this module's subprocess.run, which is
 # what a test patches (savannah_terminal.subprocess.run).
 
@@ -22,8 +26,9 @@ import shutil
 import subprocess
 import time
 
-from savannah_log import log_debug, log_verbose, log_warn
+from savannah_log import log_debug, log_info, log_verbose, log_warn
 from savannah_core import iterm_uuid, oserr, UserError
+import savannah_iterm_api
 
 IT2_DEFAULT = "/Applications/iTerm.app/Contents/Resources/utilities/it2"  # inside iTerm2 3.5+
 
@@ -45,8 +50,32 @@ class Terminal:
 
     kind = ""
 
-    def create_split_tab(self, name, upper_cmd, lower_cmd):
-        """-> {"tab_id", "claude_pane", "shell_pane"}; raises UserError."""
+    def create_split_tab(self, name, upper_cmd, lower_cmd, detached=False):
+        """-> {"tab_id", "claude_pane", "shell_pane"}; raises UserError.
+        detached: in a window of its own instead of a tab in the group."""
+        raise NotImplementedError
+
+    def tab_of(self, pane_id):
+        """Where a pane sits. -> {"tab_id", "window_id", "alone"} (alone:
+        its tab is the only one in its window), or None when the terminal
+        does not list the pane; raises UserError."""
+        raise NotImplementedError
+
+    def group_window(self):
+        """The window the tabs are grouped in: the one this process runs
+        in (the board's). "" when there is none; raises UserError."""
+        raise NotImplementedError
+
+    def attach_tab(self, pane_id, window=""):
+        """Move the pane's tab into window (default: group_window()), as
+        its last tab. -> {"tab_id", "window_id"}; raises UserError (pane
+        gone, already there, the terminal refused)."""
+        raise NotImplementedError
+
+    def detach_tab(self, pane_id):
+        """Move the pane's tab out into a new window of its own.
+        -> {"tab_id", "window_id"}; raises UserError (pane gone, already
+        alone in its window, the terminal refused)."""
         raise NotImplementedError
 
     def create_tab(self, name, cmd):
@@ -86,7 +115,8 @@ class ITerm(Terminal):
 
     kind = "iterm"
 
-    def run(self, args, timeout=60):
+    def run(self, args, timeout=60, secret=False):
+        """secret: the output is a credential, so it is never logged."""
         argv = it2_argv() + list(args)
         t0 = time.time()
         try:
@@ -106,7 +136,7 @@ class ITerm(Terminal):
         # DEBUG for every call (what, how it ended, how long), VERBOSE for what
         # it printed: `session list` JSON is big, so only its head.
         log_debug("it2", args=list(args), rc=p.returncode, ms=ms)
-        if p.stdout or p.stderr:
+        if (p.stdout or p.stderr) and not secret:
             log_verbose("it2 output", args=list(args)[:2], stdout=p.stdout[:300], stderr=p.stderr[:200])
         return p
 
@@ -121,9 +151,9 @@ class ITerm(Terminal):
         # (rc 3), "Set name failed: Object with identifier ... not found" (rc 1).
         return p.returncode != 0 and "not found" in p.stderr.lower()
 
-    def ok(self, args, what):
+    def ok(self, args, what, secret=False):
         """Run and insist on exit 0; anything else is a UserError."""
-        p = self.run(args)
+        p = self.run(args, secret=secret)
         if p.returncode != 0:
             raise UserError(f"it2 {what} failed: {self._err(p)}")
         return p
@@ -166,17 +196,18 @@ class ITerm(Terminal):
             raise UserError(f"it2 {what} printed no id ({p.stdout.strip()!r})")
         return m.group(1)
 
-    def _new_tab(self):
-        """A fresh tab in the window pick_window names. -> (tab id, the id of
-        the pane it opened with)."""
-        window = self.pick_window(self.sessions())
+    def _new_tab(self, detached=False):
+        """A fresh tab in the window pick_window names, or (detached) in a
+        new window of its own. -> (tab id, the id of the pane it opened
+        with)."""
+        window = "" if detached else self.pick_window(self.sessions())
         if window:
             tab = self._created(self.ok(["tab", "new", "--window", window], "tab new"), "tab new")
             fresh = [s for s in self.sessions()
                      if s.get("tab_id") == tab and s.get("window_id") == window]
         else:
-            # No window at all: the new window's own tab is the work tab, so no
-            # stray empty tab is left behind.
+            # No window at all, or a detached session: the new window's own
+            # tab is the work tab, so no stray empty tab is left behind.
             window = self._created(self.ok(["window", "new"], "window new"), "window new")
             fresh = [s for s in self.sessions() if s.get("window_id") == window]
             tab = fresh[0].get("tab_id", "") if fresh else ""
@@ -200,8 +231,8 @@ class ITerm(Terminal):
             raise
         return {"tab_id": tab, "pane": cs}
 
-    def create_split_tab(self, name, upper_cmd, lower_cmd):
-        tab, cs = self._new_tab()
+    def create_split_tab(self, name, upper_cmd, lower_cmd, detached=False):
+        tab, cs = self._new_tab(detached)
         ss = ""
         try:
             # The line is typed before the shell is up and waits in the tty
@@ -263,6 +294,81 @@ class ITerm(Terminal):
             elif not self._not_found(p):
                 raise UserError(f"it2 close failed: {self._err(p)}")
         return found
+
+    # -- the tab group: which window a tab sits in --
+
+    @staticmethod
+    def _window_tabs(sessions, window):
+        """The window's tab ids, in tab order (session list is in tab
+        order; a split tab lists once per pane)."""
+        tabs = []
+        for s in sessions:
+            tab = str(s.get("tab_id") or "")
+            if s.get("window_id") == window and tab and tab not in tabs:
+                tabs.append(tab)
+        return tabs
+
+    def _locate(self, sessions, pane_id):
+        for s in sessions:
+            if s.get("id") == pane_id and s.get("tab_id") and s.get("window_id"):
+                tab, window = str(s["tab_id"]), s["window_id"]
+                return {"tab_id": tab, "window_id": window,
+                        "alone": self._window_tabs(sessions, window) == [tab]}
+        return None
+
+    def tab_of(self, pane_id):
+        return self._locate(self.sessions(), pane_id)
+
+    def group_window(self):
+        return self.pick_window(self.sessions())
+
+    def _cookie(self):
+        """A single-use cookie and key for iTerm2's API, from it2 itself
+        ("ITERM2_COOKIE=... ITERM2_KEY=..."). No prompt appears in iTerm2
+        for it (live 11/14/2026, 3.7.7)."""
+        p = self.ok(["auth", "cookie", "--single-use"], "auth cookie", secret=True)
+        pairs = dict(tok.split("=", 1) for tok in p.stdout.split() if "=" in tok)
+        cookie, key = pairs.get("ITERM2_COOKIE", ""), pairs.get("ITERM2_KEY", "")
+        if not cookie or not key:
+            raise UserError("it2 auth cookie printed no cookie and key")
+        return cookie, key
+
+    def attach_tab(self, pane_id, window=""):
+        sessions = self.sessions()
+        here = self._locate(sessions, pane_id)
+        if here is None:
+            raise UserError("that pane is not in iTerm2 any more")
+        target = window or self.pick_window(sessions)
+        if not target:
+            raise UserError("there is no iTerm2 window to attach the tab to")
+        if here["window_id"] == target:
+            raise UserError("that tab is already in the group window")
+        tabs = self._window_tabs(sessions, target)
+        if not tabs:
+            raise UserError(f"iTerm2 has no window {target}")
+        # The window's own tabs first, in their order, then the newcomer: it
+        # lands last, where a new tab would.
+        cookie, key = self._cookie()
+        savannah_iterm_api.reorder_tabs(target, tabs + [here["tab_id"]], cookie, key)
+        now = self.tab_of(pane_id)
+        if now is None or now["window_id"] != target:
+            raise UserError("iTerm2 accepted the move but the tab is not in the group window")
+        log_info("tab attached", pane=pane_id, tab=now["tab_id"], window=target, was=here["window_id"])
+        return {"tab_id": now["tab_id"], "window_id": target}
+
+    def detach_tab(self, pane_id):
+        here = self.tab_of(pane_id)
+        if here is None:
+            raise UserError("that pane is not in iTerm2 any more")
+        if here["alone"]:
+            raise UserError("that tab is already alone in its own window")
+        self.ok(["tab", "move", here["tab_id"]], "tab move")
+        now = self.tab_of(pane_id)
+        if now is None or now["window_id"] == here["window_id"]:
+            raise UserError("it2 said the tab moved but it is still in the same window")
+        log_info("tab detached", pane=pane_id, tab=now["tab_id"], window=now["window_id"],
+                 was=here["window_id"])
+        return {"tab_id": now["tab_id"], "window_id": now["window_id"]}
 
 
 def make_terminal(kind):

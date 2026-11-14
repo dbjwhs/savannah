@@ -23,9 +23,12 @@
 //	Ctrl-O           work output <name> --last 5     the last replies, refetched
 //	(panel)          work output <name> --last 1     the highlighted row's last reply
 //	Ctrl-X, Ctrl-X   work rm <name>                  close tab, remove worktree
+//	Ctrl-D           work attach <name> --toggle --json  the tab into the board's
+//	                                                 window, or out into its own;
+//	                 work attach --session=<id> --toggle --json  on a plain tab
 //	Ctrl-N           work repos --json, then         the new-task dialog
 //	                 work new <name> --repo=<path> [--prompt=<text>]
-//	                          [--title=<words>] [--no-worktree] --json
+//	                          [--title=<words>] [--no-worktree] [--detach] --json
 //	Ctrl-S           work snapshots/snapshot/restore --json  save and restore
 //	                                                 (snapshot.go)
 //	Ctrl-L           (reads the log file itself)     the board's log (logview.go)
@@ -71,6 +74,11 @@ const (
 type workOpenMsg struct{ name, action, err string }
 type workNewMsg struct{ name, err string }
 type workAdoptMsg struct{ name, title, err string }
+
+// workAttachMsg is the result of Ctrl-D. what is how the board names the
+// tab (a work name, or "session <id>"); action is the CLI's word for which
+// way the toggle went, "attached" or "detached".
+type workAttachMsg struct{ what, action, err string }
 type reposMsg struct {
 	info reposInfo
 	err  string
@@ -223,6 +231,35 @@ func (m model) workAdoptCmd(name, sessionID, title string) tea.Cmd {
 	}
 }
 
+// attachArgs is the exact argv of Ctrl-D: a work session by name, a plain
+// tab by its hook session id in the `=` form.
+func attachArgs(name, sessionID string) []string {
+	if name != "" {
+		return workArgs("attach", name, "--toggle", "--json")
+	}
+	return workArgs("attach", "", "--session="+sessionID, "--toggle", "--json")
+}
+
+// workAttachCmd moves a tab into the board's window or out into its own,
+// whichever it is not already (`work attach --toggle`). Output that does
+// not say which is an error: the status line must not guess.
+func (m model) workAttachCmd(name, sessionID string) tea.Cmd {
+	bin, args := m.bin, attachArgs(name, sessionID)
+	what := name
+	if what == "" {
+		what = "session " + sessionID
+	}
+	return func() tea.Msg {
+		r, errText := runJSON[struct {
+			Action string `json:"action"`
+		}](run, bin, args, "work attach did not say what it did")
+		if errText == "" && r.Action != "attached" && r.Action != "detached" {
+			errText = "work attach did not say what it did"
+		}
+		return workAttachMsg{what: what, action: r.Action, err: errText}
+	}
+}
+
 func (m model) reposCmd() tea.Cmd {
 	bin, args := m.bin, workArgs("repos", "", "--json")
 	return func() tea.Msg {
@@ -259,6 +296,8 @@ func (m model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.workNewDone(msg)
 	case workAdoptMsg:
 		return m.workAdopted(msg)
+	case workAttachMsg:
+		return m.workAttached(msg)
 	case reposMsg:
 		if m.mode == modeNew {
 			m.nd.repos, m.nd.reposErr = msg.info, msg.err
@@ -288,6 +327,22 @@ func (m model) workOpened(msg workOpenMsg) (model, tea.Cmd) {
 	if msg.action == "reopened" {
 		return m, readSessionsCmd()
 	}
+	return m, nil
+}
+
+// workAttached is the result of Ctrl-D. The records do not change (a tab
+// keeps its ids across windows), so nothing is read again.
+func (m model) workAttached(msg workAttachMsg) (model, tea.Cmd) {
+	if msg.err != "" {
+		m.fail("attach failed", "move "+msg.what, msg.err, "what", msg.what)
+		return m, nil
+	}
+	slog.Info(msg.action, "what", msg.what)
+	where := " to this window"
+	if msg.action == "detached" {
+		where = " into its own window"
+	}
+	m.status = okStyle.Render(msg.action + " " + msg.what + where)
 	return m, nil
 }
 
@@ -432,12 +487,14 @@ const (
 	fieldRepo
 	fieldPrompt
 	fieldWorktree
+	fieldDetach
 	fieldCount
 )
 
 type newDialog struct {
 	name, repo, prompt textinput.Model
 	worktree           bool
+	detach             bool // the tab gets a window of its own; off by default
 	focus              int
 	err                string // validation or CLI error, shown under the fields
 	busy               bool   // `work new` is running; Enter waits, Esc leaves
@@ -501,8 +558,12 @@ func (m model) updateNewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m.submitNew()
 	case tea.KeySpace:
-		if d.focus == fieldWorktree {
+		switch d.focus {
+		case fieldWorktree:
 			d.worktree = !d.worktree
+			return m, nil
+		case fieldDetach:
+			d.detach = !d.detach
 			return m, nil
 		}
 	}
@@ -544,7 +605,7 @@ func (m model) submitNew() (tea.Model, tea.Cmd) {
 		d.setFocus(fieldRepo)
 		return m, nil
 	}
-	args := workNewArgs(name, title, repo, strings.TrimSpace(d.prompt.Value()), d.worktree, d.repos, m.home)
+	args := workNewArgs(name, title, repo, strings.TrimSpace(d.prompt.Value()), d.worktree, d.detach, d.repos, m.home)
 	action("new", "name", name, "title", title, "args", args)
 	d.busy, d.err = true, ""
 	return m, m.workNewCmd(name, args)
@@ -580,7 +641,7 @@ func resolveRepo(text string, repos reposInfo, home string) (path string, scratc
 }
 
 // workNewArgs is the pure half of submitNew: the exact argv for `work new`.
-func workNewArgs(name, title, repoText, prompt string, worktree bool, repos reposInfo, home string) []string {
+func workNewArgs(name, title, repoText, prompt string, worktree, detach bool, repos reposInfo, home string) []string {
 	path, scratch := resolveRepo(repoText, repos, home)
 	args := workArgs("new", name, "--repo="+path)
 	if title != "" {
@@ -591,6 +652,9 @@ func workNewArgs(name, title, repoText, prompt string, worktree bool, repos repo
 	}
 	if !worktree || scratch {
 		args = append(args, "--no-worktree")
+	}
+	if detach {
+		args = append(args, "--detach")
 	}
 	return append(args, "--json")
 }
@@ -662,7 +726,13 @@ func (m model) viewNew() string {
 		box = "[x]"
 	}
 	b.WriteString("  " + label(fieldWorktree, "Worktree") + box +
-		" fresh worktree on branch work/<name>  (Space toggles; off = run in the repo itself)\n\n")
+		" fresh worktree on branch work/<name>  (Space toggles; off = run in the repo itself)\n")
+	box = "[ ]"
+	if d.detach {
+		box = "[x]"
+	}
+	b.WriteString("  " + label(fieldDetach, "Detach") + box +
+		" a window of its own  (Space toggles; off = a tab in this window; Ctrl-D on the board moves it later)\n\n")
 	switch {
 	case d.busy:
 		b.WriteString("  opening " + strings.TrimSpace(d.name.Value()) + "...\n")
@@ -672,7 +742,7 @@ func (m model) viewNew() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n" + helpStyle.Render(
-		"Tab/Shift-Tab fields   Space toggles worktree   Enter opens the tab   Esc cancels"))
+		"Tab/Shift-Tab fields   Space toggles a checkbox   Enter opens the tab   Esc cancels"))
 	return b.String()
 }
 

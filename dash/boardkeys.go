@@ -77,6 +77,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.pressAsk()
 	case tea.KeyCtrlB:
 		return m.pressOpen()
+	case tea.KeyCtrlD:
+		return m.pressAttach()
 	case tea.KeyCtrlE:
 		return m.toggleHistory(), nil
 	case tea.KeyCtrlF:
@@ -232,6 +234,30 @@ func (m model) pressRm(pending string) (model, tea.Cmd) {
 	}
 	m.act("task rm", "removing "+r.node+"/"+r.t.ID+"...", "node", r.node, "task", r.t.ID)
 	return m, m.taskCmd("rm", r.node, r.t.ID)
+}
+
+// pressAttach is Ctrl-D, a toggle on the highlighted row's tab: a tab in a
+// window of its own joins the board's window as its last tab, and a tab
+// that shares a window is taken out into its own. Which of the two is the
+// CLI's to decide (`work attach --toggle`), since only it asks iTerm2 where
+// the tab is. A plain tab is addressed by its hook session id.
+func (m model) pressAttach() (model, tea.Cmd) {
+	r, ok := m.currentRow()
+	switch {
+	case !ok:
+		return m, nil
+	case r.kind != rowSession:
+		m.status = warnStyle.Render("Ctrl-D moves a local tab; a mesh worker has none")
+		return m, nil
+	case r.s.closed():
+		m.status = warnStyle.Render(r.s.Work + " has no tab to move (Enter reopens it)")
+		return m, nil
+	case r.isWork():
+		m.act("attach", "moving the tab of "+r.s.Work+"...", "name", r.s.Work)
+		return m, m.workAttachCmd(r.s.Work, "")
+	}
+	m.act("attach", "moving the tab of session "+r.s.ID+"...", "id", r.s.ID)
+	return m, m.workAttachCmd("", r.s.ID)
 }
 
 // submitPrompt is Enter: what the prompt line holds goes where its job

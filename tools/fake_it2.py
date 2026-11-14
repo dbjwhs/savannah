@@ -25,6 +25,12 @@
 #                                 -> exit 0, like it2; "not found" exit 3 when
 #                                    the id is in $FAKE_IT2_MISSING (comma list)
 #   session get-status --session  -> the all-null JSON a plain shell pane has
+#   tab move TAB                  -> "Moved tab to new window": every pane of
+#                                    TAB goes to a new window WD-<n> (n the
+#                                    tab's number), "Error: Tab not found"
+#                                    exit 3 for a tab the world does not have
+#   auth cookie [--single-use]    -> "ITERM2_COOKIE=fake-cookie ITERM2_KEY=fake-key"
+#                                    (what attach hands tools/fake_iterm_api.py)
 #   tab close ...                 -> "Tab closed" exit 0 WITHOUT closing anything,
 #                                    exactly the it2 1.0.0 bug; tests assert
 #                                    the module never calls it
@@ -133,6 +139,24 @@ def main():
         st["sessions"][f"PANE-C-{n}"] = {"tab_id": f"TAB-{n}", "window_id": w, "name": "login"}
         save_state(st)
         print(f"Created new tab: TAB-{n}")
+        return 0
+    if sub == "tab move":
+        tab = positional(argv[2:])
+        moved = [s for sid, s in st["sessions"].items() if s["tab_id"] == tab and not gone(sid)]
+        if not moved:
+            print("Error: Tab not found", file=sys.stderr)
+            return 3
+        w = "WD-" + tab.rsplit("-", 1)[-1]
+        while w in st["windows"]:
+            w += "b"
+        st["windows"].append(w)
+        for s in moved:
+            s["window_id"] = w
+        save_state(st)
+        print("Moved tab to new window")
+        return 0
+    if sub == "auth cookie":
+        print("ITERM2_COOKIE=fake-cookie ITERM2_KEY=fake-key")
         return 0
     if sub == "tab close":
         print("Tab closed")  # the real it2 1.0.0 says this and closes nothing

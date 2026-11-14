@@ -111,15 +111,26 @@ func TestWorkNewArgs(t *testing.T) {
 			[]string{"work", "new", "a", "--repo=song", "--prompt=fix it", "--json"}},
 	}
 	for _, c := range cases {
-		got := workNewArgs("a", "", c.repo, c.prompt, c.worktree, c.repos, home)
+		got := workNewArgs("a", "", c.repo, c.prompt, c.worktree, false, c.repos, home)
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: workNewArgs = %q, want %q", c.label, got, c.want)
 		}
 	}
-	got := workNewArgs("fix-the-parser", "Fix the parser", "song", "go", true, repos, home)
+	got := workNewArgs("fix-the-parser", "Fix the parser", "song", "go", true, false, repos, home)
 	want := []string{"work", "new", "fix-the-parser", "--repo=/hub/song", "--title=Fix the parser", "--prompt=go", "--json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("titled: workNewArgs = %q, want %q", got, want)
+	}
+	// Detach is the last option before --json, with or without a worktree.
+	got = workNewArgs("a", "", "song", "", true, true, repos, home)
+	want = []string{"work", "new", "a", "--repo=/hub/song", "--detach", "--json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("detached: workNewArgs = %q, want %q", got, want)
+	}
+	got = workNewArgs("a", "", "scratch", "", true, true, repos, home)
+	want = []string{"work", "new", "a", "--repo=/hub/.savannah-scratch", "--no-worktree", "--detach", "--json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("detached scratch: workNewArgs = %q, want %q", got, want)
 	}
 }
 
@@ -252,6 +263,49 @@ func TestCtrlXTwoPress(t *testing.T) {
 	}
 }
 
+// TestCtrlDAttach: Ctrl-D is one toggle command for the highlighted tab, by
+// name for a work session and by hook session id for a plain tab; a closed
+// session has no tab, and the status line says which way the CLI went.
+func TestCtrlDAttach(t *testing.T) {
+	if got, want := attachArgs("live", ""), []string{"work", "attach", "live", "--toggle", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("attachArgs by name = %q, want %q", got, want)
+	}
+	if got, want := attachArgs("", "-s2"), []string{"work", "attach", "--session=-s2", "--toggle", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("attachArgs by session = %q, want %q", got, want)
+	}
+	m := boardWith(t, true)
+	cursorTo(t, &m, workRow("live"))
+	m2, cmd := press(m, tea.KeyCtrlD)
+	if cmd == nil || !strings.Contains(m2.status, "live") {
+		t.Errorf("live work row: cmd=%v status=%q", cmd != nil, m2.status)
+	}
+	cursorTo(t, &m, hookRow("s2"))
+	if m2, cmd := press(m, tea.KeyCtrlD); cmd == nil || !strings.Contains(m2.status, "session s2") {
+		t.Errorf("plain tab: cmd=%v status=%q", cmd != nil, m2.status)
+	}
+	cursorTo(t, &m, workRow("parked"))
+	if m2, cmd := press(m, tea.KeyCtrlD); cmd != nil || !strings.Contains(m2.status, "no tab") {
+		t.Errorf("offline work row: cmd=%v status=%q", cmd != nil, m2.status)
+	}
+	// Ctrl-D is not Ctrl-X: it withdraws a pending removal like any key.
+	m, _ = press(m, tea.KeyCtrlX)
+	if m2, _ := press(m, tea.KeyCtrlD); m2.pendingRm != "" {
+		t.Error("Ctrl-D must withdraw the pending rm")
+	}
+	m, cmd = send(m, workAttachMsg{what: "live", action: "attached"})
+	if cmd != nil || !strings.Contains(m.status, "attached live to this window") {
+		t.Errorf("attached: cmd=%v status=%q", cmd != nil, m.status)
+	}
+	m, _ = send(m, workAttachMsg{what: "session s2", action: "detached"})
+	if !strings.Contains(m.status, "detached session s2 into its own window") {
+		t.Errorf("detached: status=%q", m.status)
+	}
+	m, _ = send(m, workAttachMsg{what: "live", err: "iTerm2 would not move the tab: INVALID_TAB_ID"})
+	if !strings.Contains(m.status, "move live") || !strings.Contains(m.status, "INVALID_TAB_ID") {
+		t.Errorf("refused: status=%q", m.status)
+	}
+}
+
 func TestCtrlNDialog(t *testing.T) {
 	m := boardWith(t, false)
 	m, cmd := press(m, tea.KeyCtrlN)
@@ -265,11 +319,27 @@ func TestCtrlNDialog(t *testing.T) {
 		t.Errorf("Esc should leave the dialog: mode=%d cmd=%v", back.mode, cmd != nil)
 	}
 	// Tab walks the fields and wraps; Shift-Tab walks back.
-	for _, want := range []int{fieldRepo, fieldPrompt, fieldWorktree, fieldName} {
+	for _, want := range []int{fieldRepo, fieldPrompt, fieldWorktree, fieldDetach, fieldName} {
 		m, _ = press(m, tea.KeyTab)
 		if m.nd.focus != want {
 			t.Fatalf("Tab: focus=%d want %d", m.nd.focus, want)
 		}
+	}
+	// Detach is the last field, unchecked until Space says otherwise.
+	m, _ = press(m, tea.KeyShiftTab)
+	if m.nd.focus != fieldDetach || m.nd.detach {
+		t.Fatalf("Shift-Tab: focus=%d want %d, detach=%v want false", m.nd.focus, fieldDetach, m.nd.detach)
+	}
+	if !strings.Contains(m.View(), "[ ] a window of its own") {
+		t.Errorf("the dialog should show Detach unchecked:\n%s", m.View())
+	}
+	m, _ = press(m, tea.KeySpace)
+	if !m.nd.detach || !m.nd.worktree || !strings.Contains(m.View(), "[x] a window of its own") {
+		t.Errorf("Space on Detach: detach=%v worktree=%v", m.nd.detach, m.nd.worktree)
+	}
+	m, _ = press(m, tea.KeySpace)
+	if m.nd.detach {
+		t.Error("Space again should uncheck Detach")
 	}
 	m, _ = press(m, tea.KeyShiftTab)
 	if m.nd.focus != fieldWorktree {

@@ -339,7 +339,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tailStartedMsg, tailDataMsg, tailExitMsg, tailRespawnMsg:
 		return m.updateTail(msg)
-	case workOpenMsg, workDoneMsg, workNewMsg, workAdoptMsg, reposMsg,
+	case workOpenMsg, workDoneMsg, workNewMsg, workAdoptMsg, workAttachMsg, reposMsg,
 		workOutputMsg, outputTick:
 		return m.updateWork(msg)
 	case workMovedMsg, titlesMsg, titleTick:

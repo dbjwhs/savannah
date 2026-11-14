@@ -77,6 +77,11 @@ gives you one key for each thing you used to do by hand:
   one run.
 - **Ctrl-X**, pressed twice, removes a finished session: closes the tab,
   removes a clean worktree, keeps the branch.
+- **Ctrl-D** moves the highlighted row's tab between windows: a tab in a
+  window of its own joins the board's window as its last tab, and a tab
+  that shares a window is taken out into its own. One key, a toggle; it
+  works on a tab you opened yourself too. Nothing else about the session
+  changes.
 - **Ctrl-S** is the snapshot screen: save every session's state before a
   reboot (`work snapshot`), and after iTerm2 is back bring the missing tabs
   back with their Claude conversations resumed (`work restore`); a dry run
@@ -380,7 +385,10 @@ Board:
   turns the prompt line into a note,
   then **Enter** saves it (`work note`) and **Esc** cancels it; **Ctrl-X**
   asks, and a second **Ctrl-X** removes the session (`work rm`); any other
-  key in between withdraws the question; **Ctrl-R** turns the prompt line
+  key in between withdraws the question; **Ctrl-D** attaches the tab to
+  the board's window, or detaches it into its own when it is already
+  there (`work attach --toggle`; a closed session has no tab and says so);
+  **Ctrl-R** turns the prompt line
   into the session's title (prefilled with the current one), **Enter**
   runs `work title` (an empty Enter clears it), **Esc** cancels
 - On a plain **session** row (an open tab with no work record): **Enter /
@@ -389,7 +397,9 @@ Board:
   name from its directory; **Enter** runs `work adopt`, which makes it a
   work session without opening anything, with the words as its title and
   a name derived from them; **Esc** cancels); **Ctrl-T** does the same and
-  then asks for the note; **Ctrl-X** dismisses a stale entry
+  then asks for the note; **Ctrl-D** attaches or detaches its tab like a
+  work session's (`work attach --session=<id> --toggle`); **Ctrl-X**
+  dismisses a stale entry
 - **Tab** on any session row is the raw jump (`it2 session focus`), even on
   a work session: no reopen, no CLI
 - On a **worker** row (`--mesh`): **type** a prompt then **Enter** sends it
@@ -434,6 +444,9 @@ New-task dialog (Ctrl-N):
 - **Prompt**: what that Claude should do first (optional, one line)
 - **Worktree**: `[x]` makes a fresh worktree on branch `work/<name>` (the
   default); **Space** turns it off to run in the repo itself
+- **Detach**: `[ ]` by default, so the session is a tab in the board's
+  window; **Space** checks it and the session opens in a window of its own
+  (`work new --detach`). Ctrl-D on the board changes your mind later.
 - **Tab / Shift-Tab** (or down / up) move between fields; **Enter** runs
   `work new` and closes the dialog once the tab is up; **Esc** cancels. A
   refusal from the CLI stays under the fields with what you typed, so a
@@ -538,7 +551,8 @@ The exact command behind each key, so the board and the shell agree:
 | Ctrl-A, Ctrl-A (or `a` on the replies screen) | `savannah work ask --all --json` (waits up to 120 s for the replies) |
 | (detail panel) | `savannah work output <name> --last 1` (on selection, and on each hook update of that row) |
 | Ctrl-X, Ctrl-X | `savannah work rm <name>` |
-| Ctrl-N | `savannah work repos --json`, then `savannah work new <name> --repo=<path> [--title=<words>] [--prompt=<text>] [--no-worktree] --json` |
+| Ctrl-D | `savannah work attach <name> --toggle --json`; on a plain tab `savannah work attach --session=<hook session id> --toggle --json` |
+| Ctrl-N | `savannah work repos --json`, then `savannah work new <name> --repo=<path> [--title=<words>] [--prompt=<text>] [--no-worktree] [--detach] --json` |
 | Ctrl-S | `savannah work snapshots --json` on entry; **s** `savannah work snapshot --json`; **d** `savannah work restore --dry-run --json`; **r** `savannah work restore --json` |
 | Ctrl-L | none: the dash reads `$SAVANNAH_LOG_DIR/savannah.log` itself (`savannah work log` is the shell's reader) |
 | Ctrl-G | none: the rows regroup in the dash; the choice is written to `$SAVANNAH_BOARD_FILE` (`~/.claude/savannah/board.json`) |

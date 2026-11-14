@@ -29,6 +29,8 @@
 #
 # Verbs:
 #   new <name> [--repo DIR] [--branch B] [--no-worktree] [--prompt T] [--note T]
+#       [--detach]            --detach: in a window of its own, not a tab in
+#                             the group
 #   ls [--json]
 #   note <name> <text...>     (or text on stdin)
 #   notes <name>
@@ -38,6 +40,13 @@
 #   open <name> [--shell]     focus the tab, or open it again when it is gone
 #                             (new tab + split, claude --continue): the way
 #                             back after an iTerm2 restart
+#   attach [<name>|--session ID] [--toggle] [--window W]
+#                             move that tab into the tab group: the window
+#                             this command runs in (the board's). A tab you
+#                             opened in another window joins the rest;
+#                             --toggle detaches it when it is already there
+#   detach [<name>|--session ID]
+#                             move that tab out into a window of its own
 #   repos [DIR]               the git repos in your folder of repos (DIR
 #                             remembers it, in the same file hub uses); the
 #                             board's new-task dialog reads this
@@ -72,8 +81,8 @@
 #                             (bare `savannah`), not this.
 #
 # Exit codes: 0 success, 1 user error (unknown name, git refused, pane gone),
-# 2 bad usage. --json on ls/new/open/repos/note/output/hub/move/rename/status
-# emits one JSON value on stdout.
+# 2 bad usage. --json on ls/new/open/attach/detach/repos/note/output/hub/move/
+# rename/status emits one JSON value on stdout.
 #
 # Reply channel: `say` types into the pane and gets nothing back. `output`
 # is the read side: it parses the transcript Claude Code itself writes
@@ -103,6 +112,7 @@
 #   savannah_log         the one log
 #   savannah_core        UserError, constants, paths, atomic writes, records,
 #                        notes, status, text and output helpers
+#   savannah_iterm_api   the one iTerm2 API request it2 lacks (attach)
 #   savannah_terminal    the Terminal seam and ITerm (it2)
 #   savannah_git         run_git, the repo root, a session's worktree
 #   savannah_sessions    hook sessions and the join with records
@@ -158,8 +168,8 @@ import savannah_terminal  # noqa: E402,F401
 from savannah_terminal import make_terminal  # noqa: E402
 import savannah_git  # noqa: E402
 from savannah_git import (add_worktree, copy_worktree_includes, remove_worktree, run_git, Worktree)  # noqa: E402
-from savannah_sessions import (claude_alive, hook_session_by_id, join_session, load_hook_sessions,  # noqa: E402
-                               sessions_dir)
+from savannah_sessions import (claude_alive, hook_pane, hook_session_by_id, join_session,  # noqa: E402
+                               load_hook_sessions, sessions_dir)
 from savannah_transcript import find_transcript, local_stamp, transcript_turns  # noqa: E402
 from savannah_tabs import adopt_session, claude_command, reclaim_pane, remake_tab  # noqa: E402
 from savannah_hub import cmd_hub, cmd_repos  # noqa: E402
@@ -249,7 +259,7 @@ def cmd_new(a):
         if wt.made:
             copied = copy_worktree_includes(wt.repo, wt.worktree)
         ids = term.create_split_tab(name, claude_command(wt.worktree, name, prompt),
-                                    f"cd {shlex.quote(wt.worktree)}")
+                                    f"cd {shlex.quote(wt.worktree)}", detached=getattr(a, "detach", False))
 
         rec = new_record(name, wt.repo, wt.worktree, wt.branch, term.kind, tab_id=ids.get("tab_id", ""),
                          claude_pane=ids.get("claude_pane", ""), shell_pane=ids.get("shell_pane", ""),
@@ -422,6 +432,67 @@ def cmd_adopt(a):
     rec = adopt_session(a.name, h, a.session, title=getattr(a, "title", ""), note=a.note)
     emit(a, rec,
          f"{a.name}: adopted {rec['worktree']} (tab {rec['tab_id'] or '-'}, claude {rec['claude_pane'] or '-'})")
+    return 0
+
+
+def tab_target(a):
+    """The tab attach and detach act on, named the way the board names a
+    row: a work session (its Claude pane, re-pointed first when claude was
+    started again by hand) or a plain tab's hook session id.
+    -> (label, key, pane, terminal); raises UserError."""
+    if a.session:
+        h = hook_session_by_id(a.session)
+        if h is None:
+            raise UserError(f"no live Claude session {a.session} (no hook file under {sessions_dir()})")
+        pane = hook_pane(h)
+        if not pane:
+            raise UserError(f"session {a.session} recorded no iTerm2 pane (not started in iTerm2?)")
+        return a.session, "session", pane, make_terminal("")
+    rec = load_record(a.name)
+    term = make_terminal(rec.get("terminal", ""))
+    live = term.live_ids()
+    if not claude_alive(rec, live) and not reclaim_pane(rec, live):
+        raise UserError(f"{a.name} has no open tab (savannah work open {a.name} brings it back)")
+    return a.name, "name", rec["claude_pane"], term
+
+
+def tab_verb_usage(a, verb):
+    if bool(a.name) == bool(a.session):
+        return usage_error(verb, "name one tab: a work session NAME, or --session ID for a plain tab")
+    return 0
+
+
+def emit_tab_move(a, label, key, action, where):
+    emit(a, {key: label, "action": action, "tab_id": where["tab_id"], "window_id": where["window_id"]},
+         f"{label}: {action} (tab {where['tab_id']}, window {where['window_id']})")
+
+
+def cmd_attach(a):
+    """Move a tab into the tab group: the window this command runs in,
+    which is the board's when the board runs it. The tab, its panes and
+    whatever runs in them are untouched; only the window changes, so no
+    record changes either. --toggle makes it the board's one key: a tab
+    already in the group is detached instead."""
+    bad = tab_verb_usage(a, "attach")
+    if bad:
+        return bad
+    label, key, pane, term = tab_target(a)
+    if a.toggle:
+        here = term.tab_of(pane)
+        if here is not None and here["window_id"] == (a.window or term.group_window()):
+            emit_tab_move(a, label, key, "detached", term.detach_tab(pane))
+            return 0
+    emit_tab_move(a, label, key, "attached", term.attach_tab(pane, a.window or ""))
+    return 0
+
+
+def cmd_detach(a):
+    """Move a tab out of its window into a new one of its own."""
+    bad = tab_verb_usage(a, "detach")
+    if bad:
+        return bad
+    label, key, pane, term = tab_target(a)
+    emit_tab_move(a, label, key, "detached", term.detach_tab(pane))
     return 0
 
 
@@ -869,7 +940,8 @@ def build_parser():
          arg("--prompt", help="initial prompt passed to claude"),
          note,
          arg("--title", help=f"free-text title the board shows {title_cut}; "
-                             "the name stays the identifier)"))
+                             "the name stays the identifier)"),
+         flag("--detach", "open it in a window of its own instead of a tab in the group"))
     verb("ls", cmd_ls, "list work sessions joined with live Claude sessions")
     verb("note", cmd_note, "append a note (text args or stdin)", name, arg("text", nargs="*"))
     verb("notes", cmd_notes, "print the notes file", name, json=False)
@@ -902,6 +974,17 @@ def build_parser():
                   "work ls --json claude_session_id)"),
          note,
          arg("--title", help=f"free-text title the board shows {title_cut})"))
+    tab_name = arg("name", nargs="?", help="the work session (omit with --session)")
+    tab_session = arg("--session", default="", metavar="ID",
+                      help="a plain tab instead: its Claude session id (the hook file's name)")
+    verb("attach", cmd_attach,
+         "move that tab into the tab group: the iTerm2 window this command "
+         "runs in (the board's), as its last tab",
+         tab_name, tab_session,
+         flag("--toggle", "detach instead when the tab is already in the group window"),
+         arg("--window", default="", metavar="W", help="that iTerm2 window instead (an id from it2 window list)"))
+    verb("detach", cmd_detach, "move that tab out into an iTerm2 window of its own",
+         tab_name, tab_session)
     verb("autoname", cmd_autoname,
          "name every Claude Code tab that is not a work session yet from "
          "what it is doing: a headless claude titles an excerpt of its "

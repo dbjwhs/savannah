@@ -41,6 +41,10 @@ work status fix-parser [--json]                    # read it; --clear removes it
 work title fix-parser Fix The Parser, Take Two     # the free-text title the board shows (the name stays the id)
 work title fix-parser [--json]                     # read it; --clear removes it
 work log [--level normal|debug|verbose] [--lines N] [--follow] [--path] [--json]   # savannah's log, see Logging
+work new own-window --detach                # the tab in a window of its own, not in the group window
+work attach fix-parser [--toggle] [--window W] [--json]   # move its tab into the group window (the board's), as the last tab
+work detach fix-parser [--json]             # move its tab out into a window of its own
+work attach --session ID                    # either verb on a plain tab, by its hook session id
 work rm fix-parser [--keep-worktree] [--force]
 work repos [DIR] [--json]                   # the folder of repos the board offers for new sessions (DIR is remembered)
 work snapshot [--note T] [--json]           # save the layout (every work session and open Claude Code tab) before a reboot
@@ -54,7 +58,8 @@ there is no shell function to define: `savannah work ls`, `savannah work new
 ...`. A bare `savannah` is the board (the dash in work mode: Ctrl-N opens a
 new session through `work new`, Enter opens or types into one, Ctrl-O reads
 its output, Ctrl-T takes a note (on a plain tab it first adopts it, see
-below), Ctrl-X twice removes it); `savannah mesh` is the mesh board. The dash binary is `dash/savannah-dash`, built with `cmake
+below), Ctrl-X twice removes it, Ctrl-D moves its tab into the board's
+window or out into its own); `savannah mesh` is the mesh board. The dash binary is `dash/savannah-dash`, built with `cmake
 --build build --target dash` (or `cd dash && go build -o savannah-dash .`);
 `$SAVANNAH_DASH_BIN` points the CLI elsewhere.
 
@@ -404,6 +409,39 @@ naming (`<session_id>.jsonl` under the encoded project dir) is observed,
 not promised. Nothing is restored for a tab that was not running Claude
 Code (a plain shell tab leaves no hook file).
 
+### Attaching and detaching tabs
+
+The group window is the iTerm2 window the command runs in (the board's,
+when the board runs it; `--window W` names another). A tab that sits in
+some other window joins it with `attach`, and a tab that shares a window
+leaves for one of its own with `detach`:
+
+```bash
+work attach fix-parser            # its tab becomes the last tab of this window
+work detach fix-parser            # its tab gets a window of its own
+work attach fix-parser --toggle   # whichever of the two it is not (the board's Ctrl-D)
+work attach --session 7c1f...     # a tab you opened yourself, by its hook session id
+work new big-review --detach      # born in its own window
+```
+
+Both panes, the shell's process, the Claude conversation and every id
+(tab, panes) survive the move, so the record is not touched and `say`,
+`open`, `output` and the board keep working. A window whose last tab is
+attached elsewhere closes by itself. `--toggle` detaches a tab that is in
+the group window and attaches one that is not. Each verb prints one line,
+or with `--json` `{"name" | "session", "action": "attached" | "detached",
+"tab_id", "window_id"}`. Refusals are exit 1 with the reason: the tab is
+already in the group window, it is already alone in its own window, the
+session's tab is gone. Exactly one of NAME and `--session` is required
+(exit 2).
+
+Detach is `it2 tab move`. Attach has no it2 command, so it is the one place
+the work tooling talks to iTerm2's API itself (`savannah_iterm_api.py`, the
+standard library only): a websocket on iTerm2's Unix socket, the cookie
+from `it2 auth cookie --single-use`, one `ReorderTabsRequest`. No dialog
+appears, and afterwards the tab is looked up again, so a move iTerm2
+accepted but did not make is an error and not a success.
+
 ## The hub (optional)
 
 An optional layer over the same verbs, not the front door (the board is):
@@ -599,11 +637,15 @@ PROMPT and the dash's WORK join stay empty.
 
 ## Terminal seam
 
-`Terminal` has six methods: `create_split_tab(name, upper_cmd, lower_cmd)`,
+`Terminal` has these methods: `create_split_tab(name, upper_cmd, lower_cmd,
+detached=False)` (`detached` = `window new` in place of `tab new`),
 `create_tab(name, cmd)` (one pane, no split: what `restore` makes for a
 plain tab; `tab new`, `session run`, `session set-name`, the same rollback),
-`write(pane_id, text)`, `focus(pane_id)`, `close_tab(tab_id, panes)` and
-`live_ids()`. `ITerm` is the only implementation and shells out to iTerm2's
+`write(pane_id, text)`, `focus(pane_id)`, `close_tab(tab_id, panes)`,
+`live_ids()`, and for attach and detach `tab_of(pane)` (its tab, its window
+and whether it is alone there), `group_window()`, `attach_tab(pane,
+window="")` (`auth cookie --single-use`, then the API request in
+`savannah_iterm_api.py`) and `detach_tab(pane)` (`tab move TAB`). `ITerm` is the only implementation and shells out to iTerm2's
 own command-line tool, `it2` (`$SAVANNAH_IT2` overrides the command and is
 split like a shell line; default `it2` on PATH, else the copy inside
 iTerm.app at `/Applications/iTerm.app/Contents/Resources/utilities/it2`).
@@ -650,6 +692,7 @@ only the ones listed before it and none of them `savannah_work.py`:
 |---|---|
 | `savannah_log.py` | the one log |
 | `savannah_core.py` | `UserError`, constants, paths, atomic writes, records, notes, status, text and output helpers |
+| `savannah_iterm_api.py` | the one iTerm2 API request it2 has no command for: tabs into an existing window (`attach`) |
 | `savannah_terminal.py` | the `Terminal` seam and `ITerm` (it2) |
 | `savannah_git.py` | `run_git`, the repo root, a session's worktree, `.worktreeinclude` |
 | `savannah_sessions.py` | hook sessions and the join with records |
@@ -684,7 +727,30 @@ single-pane plain tab), the skips, a failing `session split` (recorded,
 exit 1, the rest restored), `--no-plain`, restore by stamp, the reserved
 name and the log lines.
 
+`test/test_attach.py` (ctest `test_attach`) covers `attach`, `detach`,
+`--toggle` and `new --detach`: the fake it2 for `tab move` and `auth
+cookie`, and `tools/fake_iterm_api.py`, a Unix-socket websocket server
+that shares the fake's world and answers the one request like iTerm2
+(`$SAVANNAH_ITERM_SOCKET` points the code at it). It asserts the bytes of
+the request, the world after each move, the JSON, and each way the API can
+fail (a refused handshake, an error reply, each status, a hang-up, no
+answer, no socket), and that the cookie never reaches the log.
+
 ## What does NOT work (yet, or on purpose)
+
+- `attach` speaks iTerm2's API by hand, with the field numbers of its
+  `api.proto` written into `savannah_iterm_api.py` (checked live against
+  iTerm2 3.7.7 on 11/14/2026). An iTerm2 that changes them is reported as
+  an error ("would not move the tab", or "accepted the move but the tab is
+  not in the group window"), never as a silent success; `detach` is plain
+  it2 and does not depend on them.
+- Where a tab sits is not recorded. A session made with `--detach`, or
+  detached later, comes back from `open` and `restore` as a tab in the
+  group window like any other; Ctrl-D or `detach` moves it out again.
+- There is no key inside a tab for this: Ctrl-D is the board's. A key that
+  works in every tab would be an iTerm2 key binding on your machine that
+  runs `savannah work attach --session ... --toggle`, which is yours to
+  add and not something the install does.
 
 - `ask` knows a tab's state only as the hook recorded it: a Claude at a
   question of its own (AskUserQuestion, no Notification fires) reads as

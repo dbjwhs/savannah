@@ -165,6 +165,9 @@ if(Python3_Interpreter_FOUND)
             $<TARGET_FILE:savannah>)
     py_test(test_restore 120 ${SRC}/work/savannah_work.py
             ${SRC}/tools/fake_it2.py)
+    # attach/detach against the fake it2 and the fake iTerm2 API socket.
+    py_test(test_attach 120 ${SRC}/work/savannah_work.py
+            ${SRC}/tools/fake_it2.py)
 else()
     message(STATUS "Python3 not found - shim and hook tests disabled")
 endif()

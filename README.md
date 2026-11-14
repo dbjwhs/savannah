@@ -316,9 +316,10 @@ worktree path at read time: Enter opens or focuses the row's tab, typed text
 plus Enter goes into its Claude pane, Ctrl-O shows what that Claude said,
 Ctrl-T takes a note, Ctrl-R gives it a title (free text, capitals and
 spaces, shown in place of the name; the name stays the identifier and
-`work rename` changes that), Ctrl-X twice removes it, Ctrl-N opens the
-new-session dialog (name, repo from the remembered folder, prompt, worktree
-or not). Wherever a name is asked for you may type words: "Fix the parser"
+`work rename` changes that), Ctrl-X twice removes it, Ctrl-D moves its tab
+into the board's window or out into a window of its own (`work attach`,
+`work detach`), Ctrl-N opens the new-session dialog (name, repo from the
+remembered folder, prompt, worktree or not, its own window or not). Wherever a name is asked for you may type words: "Fix the parser"
 becomes the title and `fix-the-parser` the name. Rows sit in two sections you order yourself, ACTIVE and
 LATER: Shift-Up/Down moves a session one row, or over the line between the
 sections at the ends, and the order is kept in the records (`work move`), so
