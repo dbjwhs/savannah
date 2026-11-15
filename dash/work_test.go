@@ -111,23 +111,23 @@ func TestWorkNewArgs(t *testing.T) {
 			[]string{"work", "new", "a", "--repo=song", "--prompt=fix it", "--json"}},
 	}
 	for _, c := range cases {
-		got := workNewArgs("a", "", c.repo, c.prompt, c.worktree, false, c.repos, home)
+		got := workNewArgs("a", "", c.repo, c.prompt, c.worktree, false, false, c.repos, home)
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: workNewArgs = %q, want %q", c.label, got, c.want)
 		}
 	}
-	got := workNewArgs("fix-the-parser", "Fix the parser", "song", "go", true, false, repos, home)
+	got := workNewArgs("fix-the-parser", "Fix the parser", "song", "go", true, false, false, repos, home)
 	want := []string{"work", "new", "fix-the-parser", "--repo=/hub/song", "--title=Fix the parser", "--prompt=go", "--json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("titled: workNewArgs = %q, want %q", got, want)
 	}
 	// Detach is the last option before --json, with or without a worktree.
-	got = workNewArgs("a", "", "song", "", true, true, repos, home)
+	got = workNewArgs("a", "", "song", "", true, true, false, repos, home)
 	want = []string{"work", "new", "a", "--repo=/hub/song", "--detach", "--json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("detached: workNewArgs = %q, want %q", got, want)
 	}
-	got = workNewArgs("a", "", "scratch", "", true, true, repos, home)
+	got = workNewArgs("a", "", "scratch", "", true, true, false, repos, home)
 	want = []string{"work", "new", "a", "--repo=/hub/.savannah-scratch", "--no-worktree", "--detach", "--json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("detached scratch: workNewArgs = %q, want %q", got, want)
@@ -319,7 +319,7 @@ func TestCtrlNDialog(t *testing.T) {
 		t.Errorf("Esc should leave the dialog: mode=%d cmd=%v", back.mode, cmd != nil)
 	}
 	// Tab walks the fields and wraps; Shift-Tab walks back.
-	for _, want := range []int{fieldRepo, fieldPrompt, fieldWorktree, fieldDetach, fieldName} {
+	for _, want := range []int{fieldRepo, fieldMode, fieldPrompt, fieldWorktree, fieldDetach, fieldName} {
 		m, _ = press(m, tea.KeyTab)
 		if m.nd.focus != want {
 			t.Fatalf("Tab: focus=%d want %d", m.nd.focus, want)
@@ -355,9 +355,23 @@ func TestCtrlNDialog(t *testing.T) {
 	}
 	m, _ = press(m, tea.KeyUp)
 	m, _ = press(m, tea.KeyUp)
+	// Mode: coding until Space (or an arrow) says review, and then the
+	// prompt field is the review's target.
+	if m.nd.focus != fieldMode || m.nd.review || !strings.Contains(m.View(), "(coding)") {
+		t.Fatalf("Up x2: focus=%d want %d, review=%v", m.nd.focus, fieldMode, m.nd.review)
+	}
+	m, _ = press(m, tea.KeySpace)
+	if v := m.View(); !m.nd.review || !strings.Contains(v, "(review)") || !strings.Contains(v, "Target") {
+		t.Errorf("Space on Mode should make it a review with a Target field:\n%s", v)
+	}
+	m, _ = press(m, tea.KeyRight)
+	if v := m.View(); m.nd.review || !strings.Contains(v, "Prompt") {
+		t.Errorf("an arrow on Mode should switch it back to coding:\n%s", v)
+	}
+	m, _ = press(m, tea.KeyUp)
 	m, _ = press(m, tea.KeyUp)
 	if m.nd.focus != fieldName {
-		t.Fatalf("Up x3: focus=%d want %d", m.nd.focus, fieldName)
+		t.Fatalf("Up x4: focus=%d want %d", m.nd.focus, fieldName)
 	}
 	// Validation happens in the dialog, before anything runs.
 	m, cmd = press(m, tea.KeyEnter)

@@ -14,7 +14,8 @@
 #   task_output(name, id)           -> tail a worker (replay + follow)
 #   task_cancel(name, id)           -> kill a worker, prune its worktree
 #   task_rm(name, id)               -> forget a finished worker (cancel first if running)
-#   work_new(name, ...)             -> open a LOCAL interactive work tab (Phase 5d)
+#   work_new(name, ...)             -> open a LOCAL interactive work tab (Phase 5d); mode review
+#                                      with a target opens a code review of a PR or branch
 #   work_list()                     -> local work sessions joined with live hook state
 #   work_note(name, text)           -> append a plain-text note for the human
 #   work_notes(name)                -> read those notes
@@ -343,6 +344,8 @@ def tool_work_new(args):
     cli += work_opt(args, "prompt", "--prompt")
     cli += work_opt(args, "note", "--note")
     cli += work_opt(args, "title", "--title")
+    cli += work_opt(args, "mode", "--mode")
+    cli += work_opt(args, "target", "--target")
     return ok_text(run_work(cli), "")
 
 
@@ -674,6 +677,12 @@ tool(
         "note": prop("string", "First plain-text note for the human"),
         "title": prop("string", "Free-text title the board shows (first line, 120 chars); the name "
                                 "stays the identifier"),
+        "mode": prop("string", "coding (default) or review. A review's first prompt is /code-review "
+                               "on target, its worktree is detached at the code under review (no "
+                               "branch is made), and the board lists it under REVIEWS"),
+        "target": prop("string", "With mode review, what to review: a pull request (123, #123 or its "
+                                 "URL, fetched from origin) or a branch; omit to review the repo's "
+                                 "current changes in the repo itself"),
     },
     ["name"],
     tool_work_new,

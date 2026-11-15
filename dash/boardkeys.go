@@ -101,8 +101,13 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.enterSnapshot()
 	case tea.KeyCtrlT:
 		return m.pressNote()
+	case tea.KeyCtrlU:
+		m.act("scan", "scanning for Claude Code tabs the board does not show...")
+		return m, m.workScanCmd()
 	case tea.KeyCtrlX:
 		return m.pressRm(pending)
+	case tea.KeyCtrlY:
+		return m.pressMode()
 	case tea.KeyUp:
 		return m.pressArrow(-1, msg.Alt)
 	case tea.KeyDown:

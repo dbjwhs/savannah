@@ -38,11 +38,17 @@ import (
 )
 
 const (
-	secNow    = iota // what the owner is pushing on (now.go)
-	secActive        // what they are on, in the background
+	secNow     = iota // what the owner is pushing on (now.go)
+	secActive         // what they are on, in the background
+	secReviews        // sessions whose record says kind review (review.go), in their own order
 	secLater
 	secHistory // closed (offline) work sessions, at the bottom (history.go)
 )
+
+// dragSections are the sections a drag moves a row between, top first: the
+// ones a record's priority names. REVIEWS is not one of them (a review is
+// there by its kind), so it is skipped on the way from ACTIVE to LATER.
+var dragSections = []int{secNow, secActive, secLater}
 
 // A record's priority, as `work move --now|--active|--later` writes it.
 const (
@@ -84,6 +90,8 @@ func sectionName(sec int) string {
 		return "NOW"
 	case secActive:
 		return "ACTIVE"
+	case secReviews:
+		return "REVIEWS"
 	case secHistory:
 		return "HISTORY"
 	}
@@ -91,8 +99,9 @@ func sectionName(sec int) string {
 }
 
 // sectionOf is a session's section: HISTORY for a closed (offline) work
-// session, else its record's priority (an unknown or missing priority is
-// active), LATER for an unnamed tab.
+// session, REVIEWS for a review (whatever its priority), else its record's
+// priority (an unknown or missing priority is active), LATER for an
+// unnamed tab.
 func sectionOf(s session, recs map[string]workRecord) int {
 	if s.closed() {
 		return secHistory
@@ -101,6 +110,9 @@ func sectionOf(s session, recs map[string]workRecord) int {
 		return secLater
 	}
 	if r, ok := recs[s.Work]; ok {
+		if isReview(r) {
+			return secReviews
+		}
 		switch priorityOf(r) {
 		case prioNow:
 			return secNow
@@ -175,6 +187,9 @@ func orderSessions(sessions []session, work []workRecord) []session {
 func (m model) sectionLines(sec, n int) []string {
 	if sec == secHistory {
 		return historyLines(n, m.history || m.filter != "")
+	}
+	if sec == secReviews {
+		return reviewLines(n)
 	}
 	style := headerStyle
 	if sec == secNow {
@@ -262,8 +277,8 @@ func renumber(names []string, priority string, recs map[string]workRecord) []mov
 	return out
 }
 
-// sectionNames lists the named sessions of NOW, ACTIVE and LATER (indexed
-// by section) in rank order, from every session the board knows, shown or
+// sectionNames lists the named sessions of NOW, ACTIVE, REVIEWS and LATER
+// (indexed by section) in rank order, from every session the board knows, shown or
 // not: the order the records hold, whatever the grouping or filter hides.
 func (m model) sectionNames() [][]string {
 	out := make([][]string, secHistory)
@@ -325,12 +340,38 @@ func (m *model) adoptForMove(s session, priority string) (name string, cmd tea.C
 }
 
 // renumberAll is every record whose place changed across the sections.
+// REVIEWS orders its rows by rank alone: a review keeps the priority it
+// has, which is where it goes back to when it stops being a review.
 func renumberAll(secs [][]string, recs map[string]workRecord) []moveChange {
 	var changes []moveChange
 	for sec, names := range secs {
+		if sec == secReviews {
+			changes = append(changes, renumberReviews(names, recs)...)
+			continue
+		}
 		changes = append(changes, renumber(names, priorityName(sec), recs)...)
 	}
 	return changes
+}
+
+// dragPlan is planDrag over the board's sections: a review moves inside
+// REVIEWS only, any other row through NOW, ACTIVE and LATER.
+func dragPlan(secs [][]string, name string, delta int) (out [][]string, ok bool) {
+	out = append([][]string{}, secs...)
+	if indexOf(secs[secReviews], name) >= 0 {
+		moved, ok := planDrag([][]string{secs[secReviews]}, name, delta)
+		out[secReviews] = moved[0]
+		return out, ok
+	}
+	lists := make([][]string, len(dragSections))
+	for ndx, sec := range dragSections {
+		lists[ndx] = secs[sec]
+	}
+	moved, ok := planDrag(lists, name, delta)
+	for ndx, sec := range dragSections {
+		out[sec] = moved[ndx]
+	}
+	return out, ok
 }
 
 // dragRow is the Shift-Up/Down key: plans the move, applies it to the
@@ -368,11 +409,14 @@ func (m model) dragRow(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	name := r.s.Work
-	secs, can := planDrag(m.sectionNames(), name, delta)
+	secs, can := dragPlan(m.sectionNames(), name, delta)
 	if !can {
 		where := "top"
 		if delta > 0 {
 			where = "bottom"
+		}
+		if rec, ok := m.recordOf(name); ok && isReview(rec) {
+			where += " of REVIEWS (Ctrl-Y makes it a coding session, which can leave)"
 		}
 		m.status = helpStyle.Render(name + " is already at the " + where)
 		return m, nil
@@ -437,6 +481,7 @@ func (m model) startNaming() (model, tea.Cmd) {
 
 type titlesMsg struct {
 	titles map[string]string // iTerm2 pane id -> cleaned tab title
+	claude map[string]string // the panes whose foreground job is claude -> cleaned title
 	err    string
 }
 type titleTick time.Time
@@ -458,7 +503,7 @@ func titlesCmd() tea.Cmd {
 		if perr != nil {
 			return titlesMsg{err: perr.Error()}
 		}
-		return titlesMsg{titles: titles}
+		return titlesMsg{titles: titles, claude: claudePanes(out)}
 	}
 }
 
@@ -484,6 +529,55 @@ func parseTitles(b []byte) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// claudePanes is the panes iTerm2 says are running Claude Code: it closes
+// a pane's title with the foreground job, "... (claude)". -> pane id ->
+// the title without it. The board compares these with the hook files to
+// say which Claude tabs it is not showing (unreported).
+func claudePanes(b []byte) map[string]string {
+	var rows []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if json.Unmarshal(b, &rows) != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, r := range rows {
+		if t := strings.TrimSpace(r.Title); r.ID != "" && strings.HasSuffix(t, "(claude)") {
+			out[r.ID] = cleanTitle(t)
+		}
+	}
+	return out
+}
+
+// unreported lists the Claude Code tabs iTerm2 has that no hook file
+// accounts for, by title, sorted: a tab whose status file was lost (or
+// that started before the hook was installed) and that has had no event
+// since to write it. It is on no row, so the header names it; one prompt
+// typed into it brings it back.
+func (m model) unreported() []string {
+	if len(m.claudeTabs) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, s := range m.hooks {
+		if s.ITerm != "" {
+			seen[itermUUID(s.ITerm)] = true
+		}
+	}
+	var out []string
+	for id, title := range m.claudeTabs {
+		if !seen[id] {
+			if title == "" {
+				title = "untitled"
+			}
+			out = append(out, title)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // titleOf is the tab title for a session's pane, "" when unknown.
@@ -519,7 +613,7 @@ func (m model) updateOrder(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(titlesCmd(), titleTickCmd())
 	case titlesMsg:
 		if msg.err == "" {
-			m.titles = msg.titles
+			m.titles, m.claudeTabs = msg.titles, msg.claude
 		}
 		return m, nil
 	}

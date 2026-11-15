@@ -93,15 +93,16 @@ type model struct {
 	home   string // $HOME, for ~ in paths
 
 	// Work-row actions (work.go).
-	pendingRm string            // work session awaiting the second Ctrl-X
-	titles    map[string]string // iTerm2 pane id -> tab title (order.go), for unnamed tabs
-	out       outputState       // the output view (modeOutput)
-	nd        newDialog         // the new-task dialog (modeNew)
-	panel     panelState        // the detail panel's reply fetch (board.go)
-	lg        logState          // the log view (modeLog, logview.go)
-	snap      snapState         // the snapshot screen (modeSnapshot, snapshot.go)
-	ask       askState          // Ctrl-A: one question to every tab (modeAsk, ask.go)
-	sessTicks int               // sessions reads so far (the snapshot hint waits for the first)
+	pendingRm  string            // work session awaiting the second Ctrl-X
+	titles     map[string]string // iTerm2 pane id -> tab title (order.go), for unnamed tabs
+	claudeTabs map[string]string // iTerm2 panes running claude -> title (order.go unreported)
+	out        outputState       // the output view (modeOutput)
+	nd         newDialog         // the new-task dialog (modeNew)
+	panel      panelState        // the detail panel's reply fetch (board.go)
+	lg         logState          // the log view (modeLog, logview.go)
+	snap       snapState         // the snapshot screen (modeSnapshot, snapshot.go)
+	ask        askState          // Ctrl-A: one question to every tab (modeAsk, ask.go)
+	sessTicks  int               // sessions reads so far (the snapshot hint waits for the first)
 
 	// The screens (screens, below). vp is the one viewport the four
 	// scrolling screens share (the worker view, output, log, ask): only one
@@ -115,6 +116,7 @@ type model struct {
 var (
 	headerStyle   = lipgloss.NewStyle().Bold(true)
 	nowStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan: the NOW header, the eye's first stop
+	reviewStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")) // magenta: the REVIEWS header
 	colStyle      = lipgloss.NewStyle().Bold(true).Faint(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	helpStyle     = lipgloss.NewStyle().Faint(true)
@@ -339,7 +341,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tailStartedMsg, tailDataMsg, tailExitMsg, tailRespawnMsg:
 		return m.updateTail(msg)
-	case workOpenMsg, workDoneMsg, workNewMsg, workAdoptMsg, workAttachMsg, reposMsg,
+	case workOpenMsg, workDoneMsg, workNewMsg, workAdoptMsg, workAttachMsg, workScanMsg, reposMsg,
 		workOutputMsg, outputTick:
 		return m.updateWork(msg)
 	case workMovedMsg, titlesMsg, titleTick:

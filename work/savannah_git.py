@@ -15,6 +15,7 @@
 import collections
 import glob
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -169,6 +170,75 @@ def add_worktree(repo, name, branch):
     log_debug("worktree added", name=name, worktree=worktree, branch=branch,
               reattached=reattached, new_branch=made_branch)
     return Worktree(repo, worktree, branch, True, made_branch, reattached)
+
+
+PR_URL_RE = re.compile(r"/pull/(\d+)(?:[/?#]|$)")
+
+
+def review_target(text):
+    """What a review was asked to look at, from what the owner typed:
+    ("pr", "123") for a pull request (123, #123, or a URL with /pull/123 in
+    it), ("branch", name) for anything else, ("", "") for nothing (the
+    repo's own current changes)."""
+    text = (text or "").strip()
+    if not text:
+        return "", ""
+    if re.fullmatch(r"#?\d+", text):
+        return "pr", text.lstrip("#")
+    m = PR_URL_RE.search(text)
+    if m and "://" in text:
+        return "pr", m.group(1)
+    return "branch", text
+
+
+def review_prompt(text):
+    """The first prompt of a review session: Claude Code's own /code-review
+    on the target (a PR number or a branch; nothing = the current changes)."""
+    kind, value = review_target(text)
+    return "/code-review " + value if kind else "/code-review"
+
+
+def add_review_worktree(repo, name, target):
+    """The worktree of a review: <main root>/.savannah-worktrees/<name>,
+    DETACHED at the code under review, so the reviewer reads the files as the
+    author has them and no branch of ours is made. A pull request is fetched
+    from origin (pull/N/head, GitHub's ref for it); a branch is the local
+    one, else origin's, fetched first when this clone has not seen it.
+    -> Worktree with branch "". Raises UserError with nothing left behind."""
+    repo = resolve_repo_root(repo)
+    kind, value = review_target(target)
+    if kind == "pr":
+        p = run_git(["-C", repo, "fetch", "--quiet", "origin", f"pull/{value}/head"])
+        if p.returncode != 0:
+            raise UserError(f"cannot fetch pull request {value} from origin "
+                            f"({git_fail_message(p, 'git fetch')}); --no-worktree reviews it from the repo as it is")
+        p = run_git(["-C", repo, "rev-parse", "--verify", "-q", "FETCH_HEAD^{commit}"])
+        commit = p.stdout.strip()
+    else:
+        commit = ""
+        for attempt in (0, 1):
+            for ref in (f"refs/heads/{value}", f"refs/remotes/origin/{value}"):
+                p = run_git(["-C", repo, "rev-parse", "--verify", "-q", ref + "^{commit}"])
+                if p.returncode == 0:
+                    commit = p.stdout.strip()
+                    break
+            if commit or attempt:
+                break
+            run_git(["-C", repo, "fetch", "--quiet", "origin", f"{value}:refs/remotes/origin/{value}"])
+    if not commit:
+        what = f"pull request {value}" if kind == "pr" else f"branch {value}"
+        raise UserError(f"cannot find {what} to review (not local, not on origin)")
+    base = os.path.join(repo, savannah_core.WORKTREES_SUBDIR)
+    worktree = os.path.join(base, name)
+    try:
+        os.makedirs(base, exist_ok=True)
+    except OSError as e:
+        raise UserError(f"cannot create {base}: {oserr(e)}")
+    p = run_git(["-C", repo, "worktree", "add", "--detach", worktree, commit])
+    if p.returncode != 0:
+        raise UserError(git_fail_message(p, "git worktree add"))
+    log_debug("review worktree added", name=name, worktree=worktree, target=target, commit=commit)
+    return Worktree(repo, worktree, "", True, False, False)
 
 
 def current_branch(d):

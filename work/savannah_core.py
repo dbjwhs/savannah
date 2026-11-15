@@ -37,6 +37,8 @@ STATUS_TEXT_MAX = 200
 TITLE_MAX = 120                    # chars of a session's free-text title (first line, stripped)
 PRIORITIES = ("now", "active", "later")   # the board's sections, top first; rank orders rows within one
 DEFAULT_PRIORITY = "active"        # where a new session lands, and how a record that names none reads
+KINDS = ("coding", "review")       # what a session is for; a review sits in the board's REVIEWS section
+DEFAULT_KIND = "coding"            # how a record that names none reads (every record before kinds existed)
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +122,7 @@ class UserError(Exception):
 
 RECORD_FIELDS = (
     "name", "repo", "worktree", "branch", "created", "updated", "terminal",
-    "tab_id", "claude_pane", "shell_pane", "prompt", "title",
+    "tab_id", "claude_pane", "shell_pane", "prompt", "title", "target",
 )
 
 
@@ -167,19 +169,24 @@ def normalize_record(rec, name):
     read False. `priority` is "active" unless the file says "now" or "later", and
     `rank` is an int: the file's when it parses, else the creation time, so
     a record from before the board had sections keeps sorting by age.
-    `title` is always a str (title_text), "" for a record from before it."""
+    `title` is always a str (title_text), "" for a record from before it.
+    `kind` is "coding" unless the file says "review"; `target` (what a review
+    was opened on, as typed) is "" for everything else."""
     for key in RECORD_FIELDS:
         rec.setdefault(key, "")
     rec["adopted"] = bool(rec.get("adopted"))
     rec["priority"] = rec.get("priority") if rec.get("priority") in PRIORITIES else DEFAULT_PRIORITY
     rec["rank"] = coerce_int(rec.get("rank"), coerce_int(rec.get("created"), 0))
     rec["title"] = title_text(rec.get("title"))
+    rec["kind"] = rec.get("kind") if rec.get("kind") in KINDS else DEFAULT_KIND
+    if not isinstance(rec["target"], str):
+        rec["target"] = ""
     rec["name"] = name
     return rec
 
 
 def new_record(name, repo, worktree, branch, terminal, tab_id="", claude_pane="", shell_pane="",
-               prompt="", adopted=False, title=""):
+               prompt="", adopted=False, title="", kind=DEFAULT_KIND, target=""):
     """A fresh record as new and adopt write it: created, updated and rank
     stamped now (a new session ranks by its creation time), the default
     priority, the title through title_text."""
@@ -200,6 +207,8 @@ def new_record(name, repo, worktree, branch, terminal, tab_id="", claude_pane=""
         "priority": DEFAULT_PRIORITY,
         "rank": now,
         "title": title_text(title),
+        "kind": kind if kind in KINDS else DEFAULT_KIND,
+        "target": target,
     }
 
 

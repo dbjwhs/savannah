@@ -26,9 +26,15 @@
 //	Ctrl-D           work attach <name> --toggle --json  the tab into the board's
 //	                                                 window, or out into its own;
 //	                 work attach --session=<id> --toggle --json  on a plain tab
+//	Ctrl-U           work scan --json                running Claude Code tabs with no
+//	                                                 row are found and added
+//	Ctrl-Y           work mode <name> review|coding  a review (the REVIEWS section,
+//	                                                 review.go) or a coding session
 //	Ctrl-N           work repos --json, then         the new-task dialog
 //	                 work new <name> --repo=<path> [--prompt=<text>]
 //	                          [--title=<words>] [--no-worktree] [--detach] --json
+//	                 in review mode --mode=review [--target=<text>] where the
+//	                 prompt would be
 //	Ctrl-S           work snapshots/snapshot/restore --json  save and restore
 //	                                                 (snapshot.go)
 //	Ctrl-L           (reads the log file itself)     the board's log (logview.go)
@@ -79,6 +85,14 @@ type workAdoptMsg struct{ name, title, err string }
 // tab (a work name, or "session <id>"); action is the CLI's word for which
 // way the toggle went, "attached" or "detached".
 type workAttachMsg struct{ what, action, err string }
+
+// workScanMsg is the result of Ctrl-U (`work scan`): how many Claude Code
+// sessions run and what the scan put on the board, by project.
+type workScanMsg struct {
+	running int
+	found   []string
+	err     string
+}
 type reposMsg struct {
 	info reposInfo
 	err  string
@@ -143,6 +157,7 @@ const (
 	verbNote  = "note"
 	verbRm    = "rm"
 	verbTitle = "title"
+	verbMode  = "mode"
 )
 
 // workDoneMsg is the result of one of those verbs. text is what was said,
@@ -162,6 +177,7 @@ var workVerbs = map[string]struct {
 	verbNote:  {"note ", "noted", "noted ", false},
 	verbRm:    {"rm ", "removed", "removed ", true},
 	verbTitle: {"title ", "titled", "titled ", true},
+	verbMode:  {"mode ", "mode set", "", true},
 }
 
 // titleArgs is the argv that sets a work session's title, or clears it when
@@ -181,6 +197,8 @@ func workVerbArgs(verb, name, text string) []string {
 		return workArgs(verbRm, name)
 	case verbTitle:
 		return titleArgs(name, text)
+	case verbMode: // text is the kind, one of the CLI's two words
+		return workArgs(verbMode, name, text)
 	}
 	return workArgs(verb, name, "--", text)
 }
@@ -260,6 +278,30 @@ func (m model) workAttachCmd(name, sessionID string) tea.Cmd {
 	}
 }
 
+// workScanCmd asks the CLI to find the running Claude Code tabs the board
+// has no row for and to write their status files (savannah_scan.py).
+func (m model) workScanCmd() tea.Cmd {
+	bin, args := m.bin, workArgs("scan", "", "--json")
+	return func() tea.Msg {
+		r, errText := runJSON[struct {
+			Running int `json:"running"`
+			Found   []struct {
+				Name    string `json:"name"`
+				Project string `json:"project"`
+			} `json:"found"`
+		}](run, bin, args, "work scan printed no result")
+		msg := workScanMsg{running: r.Running, err: errText}
+		for _, f := range r.Found {
+			label := projectLabel(f.Project)
+			if f.Name != "" {
+				label = f.Name + " (" + label + ")"
+			}
+			msg.found = append(msg.found, label)
+		}
+		return msg
+	}
+}
+
 func (m model) reposCmd() tea.Cmd {
 	bin, args := m.bin, workArgs("repos", "", "--json")
 	return func() tea.Msg {
@@ -298,6 +340,8 @@ func (m model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.workAdopted(msg)
 	case workAttachMsg:
 		return m.workAttached(msg)
+	case workScanMsg:
+		return m.workScanned(msg)
 	case reposMsg:
 		if m.mode == modeNew {
 			m.nd.repos, m.nd.reposErr = msg.info, msg.err
@@ -346,6 +390,24 @@ func (m model) workAttached(msg workAttachMsg) (model, tea.Cmd) {
 	return m, nil
 }
 
+// workScanned is the result of Ctrl-U: what the scan added, and the
+// sessions read again so the new rows are there.
+func (m model) workScanned(msg workScanMsg) (model, tea.Cmd) {
+	switch {
+	case msg.err != "":
+		m.fail("scan failed", "scan", msg.err)
+		return m, nil
+	case len(msg.found) == 0 && msg.running == 0:
+		m.status = warnStyle.Render("scan: Claude Code lists no running session (its registry is empty or reads differently now)")
+	case len(msg.found) == 0:
+		m.status = okStyle.Render(fmt.Sprintf("scan: all %d running Claude Code session%s are on the board", msg.running, plural(msg.running)))
+	default:
+		m.status = okStyle.Render(fmt.Sprintf("scan: added %d tab%s: %s", len(msg.found), plural(len(msg.found)), strings.Join(msg.found, ", ")))
+	}
+	slog.Info("scan done", "running", msg.running, "found", len(msg.found))
+	return m, readSessionsCmd()
+}
+
 // workDone is the result of say, note, rm or title (workVerbs). A title
 // set or cleared ends the title prompt; refused, its text stays in the box
 // so it is a one-edit fix.
@@ -356,6 +418,12 @@ func (m model) workDone(msg workDoneMsg) (model, tea.Cmd) {
 		return m, nil
 	}
 	switch {
+	case msg.verb == verbMode && msg.text == kindReview:
+		slog.Info(v.done, "name", msg.name, "kind", msg.text)
+		m.status = okStyle.Render(msg.name + " is a review, in REVIEWS (Ctrl-Y again makes it a coding session)")
+	case msg.verb == verbMode:
+		slog.Info(v.done, "name", msg.name, "kind", msg.text)
+		m.status = okStyle.Render(msg.name + " is a coding session again")
 	case msg.verb != verbTitle:
 		slog.Info(v.done, "name", msg.name)
 		m.status = okStyle.Render(v.ok + msg.name)
@@ -485,6 +553,7 @@ func (m model) viewOutput() string {
 const (
 	fieldName = iota
 	fieldRepo
+	fieldMode
 	fieldPrompt
 	fieldWorktree
 	fieldDetach
@@ -495,6 +564,7 @@ type newDialog struct {
 	name, repo, prompt textinput.Model
 	worktree           bool
 	detach             bool // the tab gets a window of its own; off by default
+	review             bool // Mode: a review, not a coding session; the prompt field is its target
 	focus              int
 	err                string // validation or CLI error, shown under the fields
 	busy               bool   // `work new` is running; Enter waits, Esc leaves
@@ -518,7 +588,7 @@ func (m model) enterNew() (model, tea.Cmd) {
 	m.nd = newDialog{
 		name:     mk("fix-parser, or words: Fix the parser (the name is derived)", 120),
 		repo:     mk("a repo from the list, scratch, or a path", 512),
-		prompt:   mk("what that Claude should do first (optional)", 4000),
+		prompt:   mk(promptHint, 4000),
 		worktree: true,
 	}
 	m.nd.setFocus(fieldName)
@@ -537,6 +607,21 @@ func (d *newDialog) setFocus(i int) {
 		d.repo.Focus()
 	case fieldPrompt:
 		d.prompt.Focus()
+	}
+}
+
+// The prompt field's placeholder, by mode: in review mode it is the target.
+const (
+	promptHint = "what that Claude should do first (optional)"
+	targetHint = "a pull request (123 or its URL) or a branch; empty = the repo's current changes"
+)
+
+// setReview is the Mode field: a review's prompt field asks for its target.
+func (d *newDialog) setReview(on bool) {
+	d.review = on
+	d.prompt.Placeholder = promptHint
+	if on {
+		d.prompt.Placeholder = targetHint
 	}
 }
 
@@ -564,6 +649,14 @@ func (m model) updateNewKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case fieldDetach:
 			d.detach = !d.detach
+			return m, nil
+		case fieldMode:
+			d.setReview(!d.review)
+			return m, nil
+		}
+	case tea.KeyLeft, tea.KeyRight:
+		if d.focus == fieldMode {
+			d.setReview(!d.review)
 			return m, nil
 		}
 	}
@@ -605,7 +698,7 @@ func (m model) submitNew() (tea.Model, tea.Cmd) {
 		d.setFocus(fieldRepo)
 		return m, nil
 	}
-	args := workNewArgs(name, title, repo, strings.TrimSpace(d.prompt.Value()), d.worktree, d.detach, d.repos, m.home)
+	args := workNewArgs(name, title, repo, strings.TrimSpace(d.prompt.Value()), d.worktree, d.detach, d.review, d.repos, m.home)
 	action("new", "name", name, "title", title, "args", args)
 	d.busy, d.err = true, ""
 	return m, m.workNewCmd(name, args)
@@ -641,13 +734,20 @@ func resolveRepo(text string, repos reposInfo, home string) (path string, scratc
 }
 
 // workNewArgs is the pure half of submitNew: the exact argv for `work new`.
-func workNewArgs(name, title, repoText, prompt string, worktree, detach bool, repos reposInfo, home string) []string {
+// In review mode the prompt field's text is the review's target, and the
+// first prompt is the CLI's (/code-review on that target).
+func workNewArgs(name, title, repoText, prompt string, worktree, detach, review bool, repos reposInfo, home string) []string {
 	path, scratch := resolveRepo(repoText, repos, home)
 	args := workArgs("new", name, "--repo="+path)
 	if title != "" {
 		args = append(args, "--title="+title)
 	}
-	if prompt != "" {
+	switch {
+	case review && prompt != "":
+		args = append(args, "--mode=review", "--target="+prompt)
+	case review:
+		args = append(args, "--mode=review")
+	case prompt != "":
 		args = append(args, "--prompt="+prompt)
 	}
 	if !worktree || scratch {
@@ -720,13 +820,20 @@ func (m model) viewNew() string {
 		}
 	}
 	b.WriteString("  " + pad("", 10) + helpStyle.Render(fit(hint, m.width-14)) + "\n")
-	b.WriteString("  " + label(fieldPrompt, "Prompt") + d.prompt.View() + "\n")
+	mode := "(coding)  review    a coding session"
+	promptLabel, wtText := "Prompt", " fresh worktree on branch work/<name>  (Space toggles; off = run in the repo itself)"
+	if d.review {
+		mode = " coding  (review)   a review: /code-review on the target, listed under REVIEWS"
+		promptLabel = "Target"
+		wtText = " the target checked out in a worktree, no branch  (Space toggles; off = review from the repo as it is)"
+	}
+	b.WriteString("  " + label(fieldMode, "Mode") + mode + "  (Space switches)\n")
+	b.WriteString("  " + label(fieldPrompt, promptLabel) + d.prompt.View() + "\n")
 	box := "[ ]"
 	if d.worktree {
 		box = "[x]"
 	}
-	b.WriteString("  " + label(fieldWorktree, "Worktree") + box +
-		" fresh worktree on branch work/<name>  (Space toggles; off = run in the repo itself)\n")
+	b.WriteString("  " + label(fieldWorktree, "Worktree") + box + wtText + "\n")
 	box = "[ ]"
 	if d.detach {
 		box = "[x]"
@@ -742,7 +849,7 @@ func (m model) viewNew() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n" + helpStyle.Render(
-		"Tab/Shift-Tab fields   Space toggles a checkbox   Enter opens the tab   Esc cancels"))
+		"Tab/Shift-Tab fields   Space switches Mode or a checkbox   Enter opens the tab   Esc cancels"))
 	return b.String()
 }
 

@@ -31,6 +31,17 @@
 #   new <name> [--repo DIR] [--branch B] [--no-worktree] [--prompt T] [--note T]
 #       [--detach]            --detach: in a window of its own, not a tab in
 #                             the group
+#       [--mode review [--target T]]
+#                             a review, not a coding session: T is a pull
+#                             request (123, #123, its URL) or a branch, checked
+#                             out detached (no branch of ours) and handed to
+#                             /code-review; no T = the repo's current changes,
+#                             in the repo itself. The board lists reviews
+#                             under REVIEWS
+#   scan [--dry-run] [--json] put the running Claude Code tabs the board
+#                             does not show on it (savannah_scan.py)
+#   mode <name> [coding|review]
+#                             read or set what the session is for
 #   ls [--json]
 #   note <name> <text...>     (or text on stdin)
 #   notes <name>
@@ -167,7 +178,8 @@ from savannah_core import (append_note, archive_target, claim_record_dir, clip, 
 import savannah_terminal  # noqa: E402,F401
 from savannah_terminal import make_terminal  # noqa: E402
 import savannah_git  # noqa: E402
-from savannah_git import (add_worktree, copy_worktree_includes, remove_worktree, run_git, Worktree)  # noqa: E402
+from savannah_git import (add_review_worktree, add_worktree, copy_worktree_includes, remove_worktree,  # noqa: E402
+                          review_prompt, review_target, run_git, Worktree)
 from savannah_sessions import (claude_alive, hook_pane, hook_session_by_id, join_session,  # noqa: E402
                                load_hook_sessions, sessions_dir)
 from savannah_transcript import find_transcript, local_stamp, transcript_turns  # noqa: E402
@@ -177,6 +189,8 @@ from savannah_snapshot import cmd_restore, cmd_snapshot, cmd_snapshots  # noqa: 
 from savannah_autoname import cmd_autoname  # noqa: E402
 import savannah_ask  # noqa: E402
 from savannah_ask import cmd_ask  # noqa: E402
+import savannah_scan  # noqa: E402,F401
+from savannah_scan import cmd_scan  # noqa: E402
 
 # Re-exports: names this file does not use itself but the tests (and
 # test_shim's HUB_ALLOW check) reach as attributes of this module.
@@ -242,6 +256,12 @@ def cmd_new(a):
         return usage_error("new", "--branch needs a worktree to check it out in; drop --no-worktree")
     if a.branch is not None and not a.branch.strip():
         return usage_error("new", "--branch needs a branch name")
+    review = getattr(a, "mode", savannah_core.DEFAULT_KIND) == "review"
+    target = (getattr(a, "target", "") or "").strip()
+    if target and not review:
+        return usage_error("new", "--target is what a review looks at; add --mode review")
+    if review and a.branch:
+        return usage_error("new", "a review checks out its --target, not a --branch")
 
     repo = os.path.abspath(a.repo or os.getcwd())
     if not os.path.isdir(repo):
@@ -253,9 +273,15 @@ def cmd_new(a):
     term = make_terminal("")
     ids = None
     try:
-        if not a.no_worktree:
+        if review:
+            # A review reads code, it does not start a branch: with a target
+            # the worktree is detached at the code under review, and with
+            # none the review is of the repo's own changes, where they are.
+            if target and not a.no_worktree:
+                wt = add_review_worktree(repo, name, target)
+        elif not a.no_worktree:
             wt = add_worktree(repo, name, a.branch)
-        prompt = a.prompt or ""
+        prompt = a.prompt or (review_prompt(target) if review else "")
         if wt.made:
             copied = copy_worktree_includes(wt.repo, wt.worktree)
         ids = term.create_split_tab(name, claude_command(wt.worktree, name, prompt),
@@ -263,11 +289,12 @@ def cmd_new(a):
 
         rec = new_record(name, wt.repo, wt.worktree, wt.branch, term.kind, tab_id=ids.get("tab_id", ""),
                          claude_pane=ids.get("claude_pane", ""), shell_pane=ids.get("shell_pane", ""),
-                         prompt=prompt, title=getattr(a, "title", ""))
+                         prompt=prompt, title=getattr(a, "title", ""),
+                         kind="review" if review else savannah_core.DEFAULT_KIND, target=target)
         savannah_core.atomic_write(record_path(name), rec)
         log_info("new", name=name, repo=wt.repo, worktree=wt.worktree, branch=wt.branch, tab=rec["tab_id"],
                  claude_pane=rec["claude_pane"], shell_pane=rec["shell_pane"], reattached=wt.reattached,
-                 copied=len(copied), title=rec["title"])
+                 copied=len(copied), title=rec["title"], kind=rec["kind"], target=rec["target"])
         if a.note:
             append_note(name, a.note)
     except BaseException:
@@ -279,6 +306,8 @@ def cmd_new(a):
     if copied:
         print(f"new: copied {len(copied)} from {savannah_git.WORKTREE_INCLUDE}: {', '.join(copied)}", file=sys.stderr)
     where = f"{wt.worktree} on {wt.branch}" if wt.branch else wt.worktree
+    if review:
+        where += " reviewing " + (" ".join(review_target(target)) if target else "the current changes")
     tag = " (reattached)" if wt.reattached else ""
     emit(a, rec, f"{name}: {where}{tag} (tab {rec['tab_id']}, claude {rec['claude_pane']})")
     return 0
@@ -517,6 +546,23 @@ def cmd_move(a):
     log_info("moved", name=rec["name"], priority=rec["priority"], rank=rec["rank"])
     emit(a, {"name": rec["name"], "priority": rec["priority"], "rank": rec["rank"]},
          f"moved {rec['name']}: {rec['priority']}, rank {rec['rank']}")
+    return 0
+
+
+def cmd_mode(a):
+    """What the session is for: coding (the default) or review. A review
+    sits in the board's REVIEWS section, in its own order, whatever section
+    it would otherwise be in; nothing else differs. With a mode it is set
+    (a session you adopted, or opened as coding, becomes a review and back),
+    without one it is printed. Storage only: the tab is not touched."""
+    rec = load_record(a.name)
+    if a.kind:
+        rec["kind"] = a.kind
+        save_record(rec)
+        log_info("mode set", name=rec["name"], kind=rec["kind"])
+    else:
+        log_debug("mode read", name=rec["name"], kind=rec["kind"])
+    emit(a, {"name": rec["name"], "kind": rec["kind"]}, f"{rec['name']}: {rec['kind']}")
     return 0
 
 
@@ -941,7 +987,15 @@ def build_parser():
          note,
          arg("--title", help=f"free-text title the board shows {title_cut}; "
                              "the name stays the identifier)"),
-         flag("--detach", "open it in a window of its own instead of a tab in the group"))
+         flag("--detach", "open it in a window of its own instead of a tab in the group"),
+         arg("--mode", choices=savannah_core.KINDS, default=savannah_core.DEFAULT_KIND,
+             help="what the session is for (default coding). review: the first prompt is "
+                  "/code-review on --target, the worktree is detached at the code under "
+                  "review (no branch is made), and the board lists it under REVIEWS"),
+         arg("--target", default="", metavar="T",
+             help="with --mode review, what to review: a pull request (123, #123 or its URL; "
+                  "fetched from origin) or a branch. Without one the review is of the repo's "
+                  "current changes and runs in the repo itself"))
     verb("ls", cmd_ls, "list work sessions joined with live Claude sessions")
     verb("note", cmd_note, "append a note (text args or stdin)", name, arg("text", nargs="*"))
     verb("notes", cmd_notes, "print the notes file", name, json=False)
@@ -1002,6 +1056,10 @@ def build_parser():
                flag("--later", "the LATER section")),
          arg("--rank", type=int, metavar="N",
              help="order inside the section, lower first (a new session ranks by its creation time)"))
+    verb("mode", cmd_mode,
+         "what the session is for: coding or review (a review sits in the board's "
+         "REVIEWS section); no mode prints it",
+         name, arg("kind", nargs="?", choices=savannah_core.KINDS, metavar="coding|review"))
     verb("rename", cmd_rename,
          "a new name for the record (notes and status travel; the worktree, "
          "the branch and the tab keep the old name)",
@@ -1052,6 +1110,11 @@ def build_parser():
     verb("rm", cmd_rm,
          "close tab, remove worktree (never an adopted session's directory), archive notes",
          name, flag("--keep-worktree"), flag("--force", "discard a dirty worktree"), json=False)
+    verb("scan", cmd_scan,
+         "find the running Claude Code tabs the board does not show (no status "
+         "file from the hook: lost, or started before the hook) in Claude Code's "
+         "own session registry and put them on the board",
+         flag("--dry-run", "list them, write nothing"))
     verb("hub", cmd_hub,
          "register the peer shim in DIR/.mcp.json, add a starter "
          "CLAUDE.md, launch claude there (the coordinating session)",

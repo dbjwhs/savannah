@@ -230,6 +230,15 @@ def test_work_new(h):
                                       "no_worktree": True})
     check(r["result"]["isError"] is True, "work_new reserved name is error")
 
+    # mode and target reach the CLI (its own refusals prove it; nothing is made)
+    r = h.shim.call_tool("work_new", {"name": "shim-rev", "repo": h.repo, "target": "7"})
+    check(r["result"]["isError"] is True and "--mode review" in text_of(r),
+          f"work_new target without mode review is the CLI's usage error ({text_of(r)})")
+    r = h.shim.call_tool("work_new", {"name": "shim-rev", "repo": h.repo, "mode": "review",
+                                      "target": "7", "branch": "main"})
+    check(r["result"]["isError"] is True and "not a --branch" in text_of(r),
+          f"work_new review with a branch is the CLI's usage error ({text_of(r)})")
+
 
 def test_work_list(h):
     """work_list: offline (no hook session yet), then joined."""

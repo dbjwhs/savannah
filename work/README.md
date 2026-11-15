@@ -42,6 +42,9 @@ work title fix-parser Fix The Parser, Take Two     # the free-text title the boa
 work title fix-parser [--json]                     # read it; --clear removes it
 work log [--level normal|debug|verbose] [--lines N] [--follow] [--path] [--json]   # savannah's log, see Logging
 work new own-window --detach                # the tab in a window of its own, not in the group window
+work new pr-2353 --mode review --target 2353   # a code review: the PR checked out, /code-review 2353 as the first prompt
+work scan [--dry-run] [--json]              # find running Claude Code tabs the board does not show and add them
+work mode fix-parser [coding|review] [--json]  # read or set what a session is for (a review sits under REVIEWS on the board)
 work attach fix-parser [--toggle] [--window W] [--json]   # move its tab into the group window (the board's), as the last tab
 work detach fix-parser [--json]             # move its tab out into a window of its own
 work attach --session ID                    # either verb on a plain tab, by its hook session id
@@ -409,6 +412,70 @@ naming (`<session_id>.jsonl` under the encoded project dir) is observed,
 not promised. Nothing is restored for a tab that was not running Claude
 Code (a plain shell tab leaves no hook file).
 
+### Scanning for tabs the board lost
+
+The board knows a tab through the status file the hook writes on each
+Claude Code event. A tab whose file is gone (or that started before the
+hook was installed) and that has had no event since is on no row. `work
+scan` finds it another way and puts it back:
+
+```bash
+work scan --dry-run     # what it would add
+work scan               # add them; the board's Ctrl-U runs this
+```
+
+Claude Code keeps a registry of its own, one file per running process
+(`$CLAUDE_CONFIG_DIR/sessions/<pid>.json`: the session id, the directory,
+idle or busy). `scan` takes the interactive sessions there whose process
+really runs (the pid is alive and started when the file says), leaves out
+every one that already has a status file, finds each remaining one's
+iTerm2 pane by its tty, and writes the status file the hook would have
+written (marked `"scanned": true`, no last prompt). The tab is then a row
+like any other, and its next hook event takes the file over. It runs only
+when you ask, never on a timer.
+
+Two repairs went in with it. The hook's SessionEnd no longer deletes a
+status file that belongs to a different Claude Code process that is still
+running (the same conversation resumed in a second tab, then closed, used
+to take the first tab off the board), and the board's Ctrl-X refuses to
+dismiss a plain row whose Claude is still running.
+
+### Reviews
+
+A session is for coding (the default) or for a review. `--mode review`
+opens one:
+
+```bash
+work new pr-2353 --repo ~/ng/zfs --mode review --target 2353        # a pull request, by number or #number
+work new pr-77 --mode review --target https://github.com/o/r/pull/77   # or by its URL
+work new look-at-theirs --mode review --target their-branch         # a branch, local or only on origin
+work new my-diff --mode review                                      # no target: the repo's current changes
+```
+
+What differs from a coding session:
+
+- **The worktree is the code under review.** With a target, the worktree
+  (`<repo>/.savannah-worktrees/<name>`, as always) is checked out DETACHED
+  at the pull request's head (`git fetch origin pull/N/head`, the ref
+  GitHub publishes) or at the branch's tip (the local branch, else
+  origin's, fetched when this clone has not seen it). No `work/<name>`
+  branch is made and the branch under review stays free, so the author's
+  files are what the reviewer's Claude reads. With no target, or with
+  `--no-worktree`, the review runs in the repo itself.
+- **The first prompt is `/code-review <target>`**, Claude Code's own review
+  command (the PR number, or the branch; bare for the current changes).
+  `--prompt` replaces it with your own words; the target is still what is
+  checked out.
+- **The record says so**: `"kind": "review"` and `"target"` as typed
+  (`"coding"` and `""` otherwise, and for every record written before
+  kinds existed). The board draws every review in its own REVIEWS section.
+
+`work mode NAME review` turns an existing session into a review and `work
+mode NAME coding` back (a tab you opened yourself and adopted, say); only
+the kind changes, the tab and the worktree are not touched. `--target`
+without `--mode review`, and a review with `--branch`, are usage errors
+(exit 2); a target nobody has is exit 1 with nothing left behind.
+
 ### Attaching and detaching tabs
 
 The group window is the iTerm2 window the command runs in (the board's,
@@ -702,6 +769,7 @@ only the ones listed before it and none of them `savannah_work.py`:
 | `savannah_snapshot.py` | `snapshot`, `snapshots`, `restore` |
 | `savannah_autoname.py` | `autoname` |
 | `savannah_ask.py` | `ask` |
+| `savannah_scan.py` | `scan`: Claude Code's session registry, for tabs with no status file |
 
 ## Tests
 
@@ -727,6 +795,19 @@ single-pane plain tab), the skips, a failing `session split` (recorded,
 exit 1, the rest restored), `--no-plain`, restore by stamp, the reserved
 name and the log lines.
 
+`test/test_scan.py` (ctest `test_scan`) covers `scan` with a hand-written
+registry and sleeper processes as the "running Claude Code": which
+entries count (dead pid, reused pid, not interactive, damaged file), the
+join to a pane by tty, the file written, the dry run, and that a scanned
+tab can be adopted.
+
+`test/test_review.py` (ctest `test_review`) covers review mode with real
+git: a bare origin holding `refs/pull/7/head` and a branch of its own, and
+a clone of it. It asserts the detached worktree's commit for a PR number,
+a PR URL, a local branch and an origin-only branch, the exact line typed
+into the Claude pane, the in-place forms, that a refused review leaves no
+record and no worktree, `work mode`, and `rm`.
+
 `test/test_attach.py` (ctest `test_attach`) covers `attach`, `detach`,
 `--toggle` and `new --detach`: the fake it2 for `tab move` and `auth
 cookie`, and `tools/fake_iterm_api.py`, a Unix-socket websocket server
@@ -738,6 +819,22 @@ answer, no socket), and that the cookie never reaches the log.
 
 ## What does NOT work (yet, or on purpose)
 
+- `scan` reads Claude Code's own registry files, which are not a
+  documented interface (read live from Claude Code 2.1.325). If their
+  shape changes, the scan finds nothing and says so; the hook stays the
+  source of truth. A scanned row has no last prompt until its next event,
+  and a Claude whose tty is no iTerm2 pane gets a row that cannot jump.
+- A review's pull request is fetched as `pull/N/head` from the remote
+  named `origin`: GitHub's layout. Another host, or a fork that is not
+  `origin`, is a "cannot fetch" refusal; `--no-worktree` still opens the
+  review in the repo as it is, and a branch target works anywhere.
+- The review worktree is a snapshot: it does not follow the pull request
+  when the author pushes again (`git fetch origin pull/N/head && git
+  checkout --detach FETCH_HEAD` in the shell pane moves it).
+- `/code-review` is Claude Code's command, not ours: what it accepts and
+  does is the installed Claude Code's business, and that it runs when
+  given as the first prompt was not exercised against a real Claude by the
+  tests (they assert the line that is typed).
 - `attach` speaks iTerm2's API by hand, with the field numbers of its
   `api.proto` written into `savannah_iterm_api.py` (checked live against
   iTerm2 3.7.7 on 11/14/2026). An iTerm2 that changes them is reported as

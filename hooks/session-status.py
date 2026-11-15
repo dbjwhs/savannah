@@ -207,6 +207,21 @@ def read_event():
     return event if isinstance(event, dict) else {}
 
 
+def is_live_other(pid):
+    """True when pid (a session file's recorded Claude Code process) is a
+    running process that is not the one this hook runs under. Anything that
+    is not a positive int, or a process that is gone, is not."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1 or pid == os.getppid():
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True   # it exists and is not ours to signal
+    return True
+
+
 def load_record(path):
     """The session file already there, or {}: a state-less event (a
     heartbeat) starts from it and so preserves the message and identity
@@ -318,6 +333,16 @@ def run():
     path = os.path.join(directory, sid + ".json")
 
     if name == "SessionEnd":
+        # The file belongs to the Claude Code process that wrote it. A second
+        # process can carry the same session id (the conversation resumed in
+        # another tab while the first is still open: `claude --resume`, or
+        # savannah's own `work open`), and when THAT one exits its SessionEnd
+        # must not take the first one's file: an idle tab fires no event to
+        # write it again, so it would be gone from the board for good.
+        owner = load_record(path).get("pid")
+        if is_live_other(owner):
+            log_info("session end ignored", session=sid, file=path, owner=owner, ender=os.getppid())
+            return 0
         try:
             os.remove(path)
         except OSError:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -712,5 +713,96 @@ func TestRowStyle(t *testing.T) {
 	}
 	if got := rowStyle(session{State: "odd"}).Render("x"); got != "x" {
 		t.Errorf("unknown state should be plain: %q", got)
+	}
+}
+
+// TestUnreportedClaudeTabs: a pane iTerm2 says runs claude, with no hook
+// file for it, is named on the board; one that has a file is not.
+func TestUnreportedClaudeTabs(t *testing.T) {
+	list := []byte(`[
+		{"id":"UUID-L","title":"live work (claude)"},
+		{"id":"UUID-Z","title":"✳ ZFS shared slog takeover (claude)"},
+		{"id":"UUID-S","title":"~/ng (-zsh)"},
+		{"id":"","title":"nameless (claude)"}]`)
+	got := claudePanes(list)
+	want := map[string]string{"UUID-L": "live work", "UUID-Z": "✳ ZFS shared slog takeover"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("claudePanes = %v, want %v", got, want)
+	}
+	if claudePanes([]byte("not json")) != nil {
+		t.Error("claudePanes of garbage should be nil")
+	}
+	m := boardWith(t, true) // hook sessions in panes UUID-L and UUID-P
+	if out := m.View(); strings.Contains(out, "not on the board") {
+		t.Errorf("no title read yet: nothing to report\n%s", out)
+	}
+	m, _ = send(m, titlesMsg{titles: map[string]string{}, claude: got})
+	if u := m.unreported(); !reflect.DeepEqual(u, []string{"✳ ZFS shared slog takeover"}) {
+		t.Fatalf("unreported = %v", u)
+	}
+	if out := m.View(); !strings.Contains(out, "1 Claude tab not on the board") || !strings.Contains(out, "ZFS shared slog takeover") {
+		t.Errorf("the board should name the tab it is not showing:\n%s", out)
+	}
+	// Its hook file arrives (a prompt was typed there): the line goes.
+	m.hooks = append(m.hooks, session{ID: "sz", Project: "/z", State: "working", Updated: nowUnix(), ITerm: "w0t9p0:UUID-Z"})
+	if u := m.unreported(); u != nil {
+		t.Errorf("a reported tab is not unreported: %v", u)
+	}
+}
+
+// TestDismissRefusesLiveSession: Ctrl-X clears a plain row whose Claude is
+// gone, never one whose process still runs.
+func TestDismissRefusesLiveSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg := dismissSessionCmd(session{ID: "s", PID: os.Getpid(), file: path})().(dismissMsg)
+	if msg.ok || !msg.live {
+		t.Errorf("a live pid must be refused: %+v", msg)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the file of a live session must stay: %v", err)
+	}
+	m := boardWith(t, true)
+	m, cmd := send(m, msg)
+	if cmd != nil || !strings.Contains(m.status, "still running") {
+		t.Errorf("refusal: cmd=%v status=%q", cmd != nil, m.status)
+	}
+	// No pid in the file (an old hook), or a dead one: dismissed as before.
+	msg = dismissSessionCmd(session{ID: "s", file: path})().(dismissMsg)
+	if !msg.ok || msg.live {
+		t.Errorf("a session with no pid is dismissed: %+v", msg)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("the file should be gone")
+	}
+}
+
+// TestCtrlUScan: Ctrl-U runs the scan, the status line says what it added,
+// and the sessions are read again.
+func TestCtrlUScan(t *testing.T) {
+	m := boardWith(t, true)
+	m = typeText(m, "half a prompt")
+	m2, cmd := press(m, tea.KeyCtrlU)
+	if cmd == nil || !strings.Contains(m2.status, "scanning") || m2.input.Value() != "half a prompt" {
+		t.Errorf("Ctrl-U: cmd=%v status=%q input=%q", cmd != nil, m2.status, m2.input.Value())
+	}
+	m, cmd = send(m, workScanMsg{running: 3, found: []string{"zfs-a1 (delphix/zfs)"}})
+	if cmd == nil || !strings.Contains(m.status, "added 1 tab: zfs-a1 (delphix/zfs)") {
+		t.Errorf("found: reread=%v status=%q", cmd != nil, m.status)
+	}
+	m, _ = send(m, workScanMsg{running: 3})
+	if !strings.Contains(m.status, "all 3 running") {
+		t.Errorf("nothing to add: status=%q", m.status)
+	}
+	m, _ = send(m, workScanMsg{})
+	if !strings.Contains(m.status, "no running session") {
+		t.Errorf("empty registry: status=%q", m.status)
+	}
+	m, cmd = send(m, workScanMsg{err: "boom"})
+	if cmd != nil || !strings.Contains(m.status, "boom") {
+		t.Errorf("failure: cmd=%v status=%q", cmd != nil, m.status)
 	}
 }

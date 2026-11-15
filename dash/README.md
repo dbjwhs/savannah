@@ -77,6 +77,21 @@ gives you one key for each thing you used to do by hand:
   one run.
 - **Ctrl-X**, pressed twice, removes a finished session: closes the tab,
   removes a clean worktree, keeps the branch.
+- **Reviews have their own section.** A session opened in review mode
+  (Ctrl-N, Mode) or marked as one with **Ctrl-Y** sits under **REVIEWS**,
+  between ACTIVE and LATER, in an order of its own: Shift-Up/Down moves a
+  review inside the section and stops at its edges, a drag from ACTIVE to
+  LATER steps over it, and Ctrl-P leaves a review where it is. The header
+  counts "N reviews"; with no review the section is not drawn. A closed
+  review is in HISTORY like any closed session. A review opened on a pull
+  request shows it in the TICKET column.
+- **A Claude tab the board is not showing is named.** The board compares
+  iTerm2's panes that run `claude` with the status files the hook writes;
+  a tab with no file (lost, or started before the hook was installed, and
+  idle since) is on no row, so a yellow line under the table says "N
+  Claude tab not on the board: <its title>". **Ctrl-U** scans for such
+  tabs and adds them (`work scan`: Claude Code's own list of running
+  sessions, matched to iTerm2's panes); it runs only when you press it.
 - **Ctrl-D** moves the highlighted row's tab between windows: a tab in a
   window of its own joins the board's window as its last tab, and a tab
   that shares a window is taken out into its own. One key, a toggle; it
@@ -388,6 +403,8 @@ Board:
   key in between withdraws the question; **Ctrl-D** attaches the tab to
   the board's window, or detaches it into its own when it is already
   there (`work attach --toggle`; a closed session has no tab and says so);
+  **Ctrl-Y** makes it a review, or a review a coding session again (`work
+  mode`);
   **Ctrl-R** turns the prompt line
   into the session's title (prefilled with the current one), **Enter**
   runs `work title` (an empty Enter clears it), **Esc** cancels
@@ -399,7 +416,8 @@ Board:
   a name derived from them; **Esc** cancels); **Ctrl-T** does the same and
   then asks for the note; **Ctrl-D** attaches or detaches its tab like a
   work session's (`work attach --session=<id> --toggle`); **Ctrl-X**
-  dismisses a stale entry
+  dismisses a stale entry (one whose Claude is gone; a session whose
+  process still runs is refused, since an idle tab would not come back)
 - **Tab** on any session row is the raw jump (`it2 session focus`), even on
   a work session: no reopen, no CLI
 - On a **worker** row (`--mesh`): **type** a prompt then **Enter** sends it
@@ -441,6 +459,11 @@ New-task dialog (Ctrl-N):
   names the folder in the hint, or says it is using the cwd), typed in
   full or as a unique prefix; `scratch` for a task that belongs to no repo
   (no git, so no worktree); or a path (`~` expands)
+- **Mode**: `coding` (the default) or `review`; **Space** (or an arrow)
+  switches. In review mode the next field is the review's **Target**: a
+  pull request (`2353`, `#2353` or its URL) or a branch, empty for the
+  repo's current changes. The CLI checks the target out detached and
+  starts Claude on `/code-review <target>`.
 - **Prompt**: what that Claude should do first (optional, one line)
 - **Worktree**: `[x]` makes a fresh worktree on branch `work/<name>` (the
   default); **Space** turns it off to run in the repo itself
@@ -552,7 +575,9 @@ The exact command behind each key, so the board and the shell agree:
 | (detail panel) | `savannah work output <name> --last 1` (on selection, and on each hook update of that row) |
 | Ctrl-X, Ctrl-X | `savannah work rm <name>` |
 | Ctrl-D | `savannah work attach <name> --toggle --json`; on a plain tab `savannah work attach --session=<hook session id> --toggle --json` |
-| Ctrl-N | `savannah work repos --json`, then `savannah work new <name> --repo=<path> [--title=<words>] [--prompt=<text>] [--no-worktree] [--detach] --json` |
+| Ctrl-Y | `savannah work mode <name> review`, or `coding` on a review |
+| Ctrl-U | `savannah work scan --json` |
+| Ctrl-N | `savannah work repos --json`, then `savannah work new <name> --repo=<path> [--title=<words>] [--prompt=<text>] [--no-worktree] [--detach] --json`; in review mode `--mode=review [--target=<text>]` in place of `--prompt` |
 | Ctrl-S | `savannah work snapshots --json` on entry; **s** `savannah work snapshot --json`; **d** `savannah work restore --dry-run --json`; **r** `savannah work restore --json` |
 | Ctrl-L | none: the dash reads `$SAVANNAH_LOG_DIR/savannah.log` itself (`savannah work log` is the shell's reader) |
 | Ctrl-G | none: the rows regroup in the dash; the choice is written to `$SAVANNAH_BOARD_FILE` (`~/.claude/savannah/board.json`) |

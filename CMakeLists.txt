@@ -165,6 +165,12 @@ if(Python3_Interpreter_FOUND)
             $<TARGET_FILE:savannah>)
     py_test(test_restore 120 ${SRC}/work/savannah_work.py
             ${SRC}/tools/fake_it2.py)
+    # scan: Claude Code's session registry against sleeper processes.
+    py_test(test_scan 60 ${SRC}/work/savannah_work.py
+            ${SRC}/tools/fake_it2.py)
+    # review mode against the fake it2 and throwaway git repos.
+    py_test(test_review 120 ${SRC}/work/savannah_work.py
+            ${SRC}/tools/fake_it2.py)
     # attach/detach against the fake it2 and the fake iTerm2 API socket.
     py_test(test_attach 120 ${SRC}/work/savannah_work.py
             ${SRC}/tools/fake_it2.py)

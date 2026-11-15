@@ -150,6 +150,11 @@ func ticketFor(s session, rec workRecord, hasRec bool) (ticket, ticketURL, pr, p
 		sources = []ticketSource{sources[0], sources[1], sources[3], sources[4]}
 	}
 	if hasRec {
+		// A review names its pull request outright: that wins over any
+		// number met in passing.
+		pr, prURL = reviewPR(rec)
+	}
+	if hasRec && pr == "" {
 		if id, u := prURLIn(rec.Summary); id != "" {
 			pr, prURL = id, u
 		} else if id, u := prURLIn(rec.notes); id != "" {

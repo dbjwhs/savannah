@@ -211,6 +211,35 @@ def test_session_states(h):
     check(not h.exists("s1"), "second SessionEnd is harmless")
 
 
+def test_session_end_owner(h):
+    """SessionEnd from a second process with the same session id (the
+    conversation resumed in another tab) leaves the first one's file."""
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        h.fire({"session_id": "dup", "hook_event_name": "SessionStart", "cwd": "/tmp"})
+        rec = h.load("dup")
+        check(rec.get("pid") == os.getpid(), "the file records the process the hook ran under")
+        rec["pid"] = owner.pid       # as if another, still running, Claude Code wrote it
+        with open(os.path.join(h.workdir, "dup.json"), "w") as f:
+            json.dump(rec, f)
+        h.fire({"session_id": "dup", "hook_event_name": "SessionEnd"})
+        check(h.exists("dup"), "SessionEnd from another process keeps a live owner's file")
+        with open(os.path.join(h.log_root, "savannah.log")) as f:
+            check(any("session end ignored" in ln and f"owner={owner.pid}" in ln for ln in f),
+                  "and the log says whose file it kept")
+    finally:
+        owner.kill()
+        owner.wait()
+    h.fire({"session_id": "dup", "hook_event_name": "SessionEnd"})
+    check(not h.exists("dup"), "once that owner is gone, SessionEnd removes the file")
+    # A pid that is not a process id at all never blocks the removal.
+    for odd in (True, "12", 0, -5, None):
+        with open(os.path.join(h.workdir, "odd.json"), "w") as f:
+            json.dump({"session_id": "odd", "pid": odd}, f)
+        h.fire({"session_id": "odd", "hook_event_name": "SessionEnd"})
+        check(not h.exists("odd"), f"a file whose pid is {odd!r} is removed as before")
+
+
 def test_unusable_input(h):
     """Events and records the hook cannot use: nothing written, never a traceback."""
     # No session_id: do no harm, write nothing.
@@ -363,8 +392,9 @@ def test_log(h):
               for ln in lines), "SessionEnd is a DEBUG line with removed=True")
     check(any(' level=INFO msg="work context" src=hook session=' in ln and " name=fix-parser cmd=" in ln
               for ln in lines), "the SessionStart context is INFO with the work session's name and the command")
-    check(not any(" level=INFO " in ln and 'msg="work context"' not in ln for ln in lines),
-          "nothing but the context is INFO")
+    check(not any(" level=INFO " in ln and 'msg="work context"' not in ln
+                  and 'msg="session end ignored"' not in ln for ln in lines),
+          "nothing but the context and a kept file is INFO")
     # a log directory that cannot be made: exit 0, file written, nothing printed
     blocker = os.path.join(h.log_root, "blocker")
     open(blocker, "w").close()
@@ -382,6 +412,7 @@ def test_log(h):
 # The sections, in the order they must run (see HookHarness).
 SECTIONS = (
     test_session_states,
+    test_session_end_owner,
     test_unusable_input,
     test_session_start_context,
     test_log,

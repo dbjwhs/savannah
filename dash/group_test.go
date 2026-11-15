@@ -325,19 +325,20 @@ func TestFitHelp(t *testing.T) {
 	if got := fitHelp(parts, 10); got != "Shift-up/d" {
 		t.Errorf("10 columns = %q, want the first hint cut", got)
 	}
-	// The work board's help line is 160 columns whole, so at 100 it loses
-	// "^C quit" (Esc quits too), "^X rm", "^D attach", "^L log", "^S snap",
-	// "^T note" and "^A ask" and nothing else; from 160 on it is whole.
+	// The work board's help line is 180 columns whole, so at 100 it loses
+	// "^C quit" (Esc quits too), "^X rm", "^U scan", "^Y review", "^D attach",
+	// "^L log", "^S snap", "^T note" and "^A ask" and nothing else; from 180
+	// on it is whole.
 	m := boardWith(t, true)
 	for _, ln := range plainLines(m.View()) {
 		if strings.HasPrefix(ln, "Shift-up/down move") && !strings.HasSuffix(ln, "^O out") {
 			t.Errorf("work help at 100 columns should end with ^O out: %q", ln)
 		}
 	}
-	m.width = 160
+	m.width = 180
 	for _, ln := range plainLines(m.View()) {
 		if strings.HasPrefix(ln, "Shift-up/down move") && !strings.HasSuffix(ln, "^C quit") {
-			t.Errorf("work help at 160 columns should be whole: %q", ln)
+			t.Errorf("work help at 180 columns should be whole: %q", ln)
 		}
 	}
 }

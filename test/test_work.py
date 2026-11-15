@@ -218,7 +218,7 @@ def test_new_no_worktree(h):
     check(rec.get("prompt") == 'say hi "there"', "prompt recorded")
     check(set(rec) == {"name", "repo", "worktree", "branch", "created", "updated", "terminal",
                        "tab_id", "claude_pane", "shell_pane", "prompt", "adopted", "priority", "rank",
-                       "title"},
+                       "title", "kind", "target"},
           "record has exactly the contract fields")
     check(rec.get("priority") == "active" and rec.get("rank") == rec.get("created"),
           "a new session is active, ranked by its creation time")

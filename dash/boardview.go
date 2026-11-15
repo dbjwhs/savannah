@@ -50,6 +50,9 @@ func (m model) headerLine() string {
 	if n := m.countNow(); n > 0 {
 		counts += fmt.Sprintf("   %d now", n)
 	}
+	if n := m.countReviews(); n > 0 {
+		counts += fmt.Sprintf("   %d review%s", n, plural(n))
+	}
 	if m.group {
 		counts += "   by repository"
 	}
@@ -90,7 +93,8 @@ func (m model) topLines(width int, header string) ([]string, []lineHit) {
 func (m model) localLines(width int) hitLines {
 	var out hitLines
 	nSess, _ := m.sectionCounts()
-	if nSess == 0 && m.sessErr == "" && m.workErr == "" {
+	missing := m.unreported()
+	if nSess == 0 && m.sessErr == "" && m.workErr == "" && len(missing) == 0 {
 		return out
 	}
 	out.add(noHit, headerStyle.Render("LOCAL SESSIONS"))
@@ -102,6 +106,11 @@ func (m model) localLines(width int) hitLines {
 	}
 	if m.workErr != "" {
 		out.add(noHit, warnStyle.Render("  work: "+m.workErr+" (showing last good list)"))
+	}
+	if n := len(missing); n > 0 {
+		// A Claude tab iTerm2 has and no row shows: say so, by title.
+		out.add(noHit, warnStyle.Render(fit(fmt.Sprintf("  %d Claude tab%s not on the board: %s  (Ctrl-U scans for it and adds it)",
+			n, plural(n), strings.Join(missing, ", ")), width)))
 	}
 	out.add(noHit, "")
 	return out
@@ -172,7 +181,7 @@ func (m model) rowPrompt(width, room int) string {
 // anything else.
 func (m model) helpLine(width int) string {
 	parts := []string{"Shift-up/down move", "Enter say", "^P now", "^K find", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
-		"^A ask", "^T note", "^S snap", "^L log", "^D attach", "^X rm", "^C quit"}
+		"^A ask", "^T note", "^S snap", "^L log", "^D attach", "^Y review", "^U scan", "^X rm", "^C quit"}
 	if m.mesh.on {
 		parts[1] = "Enter say/send"
 		parts = append(parts[:2], append([]string{"Tab view"}, parts[2:]...)...)

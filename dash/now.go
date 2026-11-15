@@ -41,6 +41,10 @@ func (m model) pressNow() (model, tea.Cmd) {
 		m.status = warnStyle.Render("a closed session sits in HISTORY; Enter reopens it, then Ctrl-P")
 		return m, nil
 	}
+	if rec, ok := m.recordOf(r.s.Work); ok && isReview(rec) {
+		m.status = warnStyle.Render(r.s.Work + " is a review and sits in REVIEWS; Ctrl-Y makes it a coding session, then Ctrl-P")
+		return m, nil
+	}
 	name := r.s.Work
 	var adopt tea.Cmd
 	if name == "" {

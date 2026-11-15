@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -43,8 +44,9 @@ type jumpMsg struct {
 	how string
 }
 type dismissMsg struct {
-	id string
-	ok bool
+	id   string
+	ok   bool
+	live bool // refused: that session's Claude Code process is still running
 }
 
 // A session's state: the four the hook writes, and offline, which only the
@@ -102,6 +104,8 @@ type workRecord struct {
 	Priority   string     `json:"priority"` // "active" (the default) or "later": the board section
 	Rank       int64      `json:"rank"`     // order within the section; 0 = by creation time
 	Title      string     `json:"title"`    // free text shown instead of the name; the name stays the id
+	Kind       string     `json:"kind"`     // "coding" (the default) or "review": a review sits in REVIEWS
+	Target     string     `json:"target"`   // what a review was opened on, as typed: a PR, a branch, or ""
 	Summary    string     `json:"summary"`  // the tab's own answer to `work ask` (what it is doing)
 	SummaryAt  int64      `json:"summary_at"`
 	lastNote   string     // first line of the last note in notes.md, "" if none
@@ -651,6 +655,11 @@ func (m model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = okStyle.Render("dismissed session " + msg.id)
 			return m, readSessionsCmd()
 		}
+		if msg.live {
+			slog.Info("dismiss refused: live", "id", msg.id)
+			m.status = warnStyle.Render("session " + msg.id + " is still running: close its tab (Ctrl-X only clears an entry whose Claude is gone)")
+			return m, nil
+		}
 		slog.Warn("dismiss failed", "id", msg.id)
 		m.status = warnStyle.Render("could not dismiss " + msg.id)
 	}
@@ -658,15 +667,31 @@ func (m model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // dismissSessionCmd deletes a stale session file (a crashed session that
-// never fired SessionEnd). Live sessions rewrite it on their next event.
+// never fired SessionEnd). A session whose Claude Code process is still
+// running is not stale and is refused: its file would only come back on
+// its next event, and an idle tab has none, so it would be off the board
+// for as long as it sat there.
 func dismissSessionCmd(s session) tea.Cmd {
 	return func() tea.Msg {
+		if pidAlive(s.PID) {
+			return dismissMsg{id: s.ID, live: true}
+		}
 		var ok bool
 		if s.file != "" {
 			ok = os.Remove(s.file) == nil
 		}
 		return dismissMsg{id: s.ID, ok: ok}
 	}
+}
+
+// pidAlive reports whether a process with that id exists (signal 0); a pid
+// the file never had (0) is not alive.
+func pidAlive(pid int) bool {
+	if pid <= 1 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 // readSessionsCmd reads hook sessions and work records on one tick and hands
