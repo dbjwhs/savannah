@@ -545,11 +545,14 @@ mid-view keeps showing its "no such task" replay until you leave the view.
 Work sessions, the join rules: exactly one live session is tagged per work
 record and one record per session. Pane matches are settled first across every
 record (a session running in a record's recorded Claude pane always belongs to
-that record), then the remaining records each take the most recently updated
-still-unclaimed hook session in their worktree, in name order. Two records on
-one worktree (two `work new --no-worktree` in the same repo) therefore never
-share or steal a tab, and when every tab is closed each gets its own offline
-row; an offline row is never a join candidate. A directory under the work dir
+that record), then a remaining record takes the most recently updated
+still-unclaimed hook session in its worktree, but only when it is the one
+record left over on that directory. Two or more left over on one directory
+(several `work new --no-worktree` in the same place, their tabs closed) take
+nothing: which of them a session belongs to would be a guess, so they are
+closed rows and the session is a plain tab until Ctrl-R names it. Two records
+on one worktree therefore never share or steal a tab, and when every tab is
+closed each gets its own offline row; an offline row is never a join candidate. A directory under the work dir
 is only read when its name passes the CLI's rule (`^[a-z0-9][a-z0-9._-]{0,63}$`,
 not `t-<digits>`, not `..`, no trailing `.`, no `.lock` suffix), so the dash
 and `work ls` list the same records (both also skip a record with no

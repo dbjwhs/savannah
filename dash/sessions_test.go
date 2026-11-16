@@ -334,23 +334,65 @@ func TestJoinWorkTwoRecordsOneWorktreeLive(t *testing.T) {
 		t.Errorf("fallback should take the unclaimed session: sX.Work = %q", byID["sX"].Work)
 	}
 
-	// One live session, no pane match, two records: the first record (by
-	// order) gets it, the second gets its own offline row, never a steal.
+	// One live session, no pane match, two records: which record it belongs
+	// to is a guess (it used to go to the first by order, and to move with
+	// every event once a second session showed up). Nobody gets it: both
+	// records are closed rows and the session stays a plain tab.
 	one := []session{{ID: "s1", Project: wt, State: "working", Updated: 5}}
 	work2 := []workRecord{{Name: "first", Worktree: wt}, {Name: "second", Worktree: wt}}
 	got = joinWork(one, work2)
-	if len(got) != 2 {
-		t.Fatalf("rows = %d, want 2 (1 tagged + 1 offline): %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("rows = %d, want 3 (the plain tab + 2 offline): %+v", len(got), got)
 	}
 	byID = map[string]session{}
 	for _, s := range got {
 		byID[s.ID] = s
 	}
-	if byID["s1"].Work != "first" {
-		t.Errorf("s1.Work = %q, want first", byID["s1"].Work)
+	if byID["s1"].Work != "" {
+		t.Errorf("s1.Work = %q, want a plain tab", byID["s1"].Work)
 	}
-	if off, ok := byID["work:second"]; !ok || off.State != "offline" || off.Work != "second" {
-		t.Errorf("second record should get its own offline row: %+v", got)
+	for _, name := range []string{"first", "second"} {
+		if off, ok := byID["work:"+name]; !ok || off.State != "offline" || off.Work != name {
+			t.Errorf("%s should get its own offline row: %+v", name, got)
+		}
+	}
+}
+
+// The board a hub directory made: several --no-worktree sessions in one
+// place with their tabs long closed, one live tab there that a record in
+// ANOTHER directory holds by pane, and a session with no pane at all. The
+// stale records take nothing; the live tab is nobody's but its pane's.
+func TestJoinWorkStaleRecordsShareADirectory(t *testing.T) {
+	hub := "/r/hub"
+	sessions := []session{
+		{ID: "real", Project: hub, State: "waiting", Updated: 800, ITerm: "w2t0p0:LIVE"},
+		{ID: "ghost", Project: hub, State: "idle", Updated: 900},
+	}
+	work := []workRecord{
+		{Name: "david", Worktree: hub, ClaudePane: "GONE-1"},
+		{Name: "os-upgrade", Worktree: hub, ClaudePane: "GONE-2"},
+		{Name: "elsewhere", Worktree: "/r/hub/pkg", ClaudePane: "LIVE"},
+	}
+	byID := map[string]session{}
+	for _, s := range joinWork(sessions, work) {
+		byID[s.ID] = s
+	}
+	if byID["real"].Work != "" || byID["ghost"].Work != "" {
+		t.Errorf("a stale record took a session: real=%q ghost=%q", byID["real"].Work, byID["ghost"].Work)
+	}
+	for _, name := range []string{"david", "os-upgrade", "elsewhere"} {
+		if byID["work:"+name].State != "offline" {
+			t.Errorf("%s should be a closed row: %+v", name, byID["work:"+name])
+		}
+	}
+	// One of the two is removed: the survivor is alone on the directory and
+	// takes the newest session there, as a lone record always did.
+	byID = map[string]session{}
+	for _, s := range joinWork(sessions, work[1:]) {
+		byID[s.ID] = s
+	}
+	if byID["ghost"].Work != "os-upgrade" || byID["real"].Work != "" {
+		t.Errorf("lone record: ghost=%q real=%q", byID["ghost"].Work, byID["real"].Work)
 	}
 }
 

@@ -75,3 +75,7 @@ generated/
 
 # Python bytecode from the stdlib test suites
 __pycache__/
+
+# Logs and session files collected for debugging (they hold real work)
+debug-issues/
+.DS_Store

@@ -18,7 +18,7 @@ import json
 import os
 
 from savannah_log import log_debug
-from savannah_core import env_path, iterm_uuid
+from savannah_core import env_path, iterm_uuid, list_records
 
 
 def sessions_dir():
@@ -104,10 +104,36 @@ def join_session(rec, hooks):
             log_debug("join", name=name, session=h.get("session_id") or "", state=h.get("state") or "",
                       by="pane", matches=len(matches))
             return h
+    rivals = worktree_rivals(rec, hooks)
+    if rivals:
+        # Several records on one directory and none of them holds a live
+        # pane there: which one a session belongs to is a guess, and a wrong
+        # guess sends `say` and `output` to somebody else's tab.
+        log_debug("join", name=name, worktree=worktree, matches=len(matches), by="nobody",
+                  rivals=",".join(rivals))
+        return None
     h = max(matches, key=lambda h: h.get("updated") or 0)
     log_debug("join", name=name, session=h.get("session_id") or "", state=h.get("state") or "",
               by="newest", matches=len(matches))
     return h
+
+
+def worktree_rivals(rec, hooks):
+    """Names of the OTHER records on rec's directory whose own Claude pane
+    has no session there (so they too would fall back to "the newest session
+    in the directory"). The board's joinWork has the same rule."""
+    target = os.path.realpath(rec.get("worktree") or "")
+    panes = {hook_pane(h) for h in hooks_in(target, hooks)}
+    out = []
+    for other in list_records():
+        if other.get("name") == rec.get("name") or not other.get("worktree"):
+            continue
+        if os.path.realpath(other["worktree"]) != target:
+            continue
+        if other.get("claude_pane") and other["claude_pane"] in panes:
+            continue
+        out.append(other.get("name", ""))
+    return out
 
 
 def hook_session_by_id(session_id):

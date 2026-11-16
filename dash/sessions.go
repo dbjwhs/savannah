@@ -382,7 +382,12 @@ func (s session) closed() bool { return s.State == stateOffline }
 // most one session. Two passes: first every record whose Claude pane is live
 // claims that session (over all records, so a pane match is never stolen by
 // another record's fallback), then the remaining records take the most
-// recently updated UNCLAIMED session in their worktree, in record order.
+// recently updated UNCLAIMED session in their worktree, in record order,
+// but only a record that is the one such record on its worktree: with two
+// or more left over on one directory (several --no-worktree sessions in one
+// place, their tabs closed) which of them a session belongs to is a guess,
+// and the guess changed with every event. Those stay closed and the session
+// stays a plain tab (savannah_sessions.py join_session has the same rule).
 // Offline rows are synthesized after both passes and are never join
 // candidates, so when every tab is closed each record gets its own row.
 //
@@ -412,7 +417,7 @@ func joinWork(sessions []session, work []workRecord) []session {
 		if tagged[r] {
 			continue
 		}
-		if i := matchNewest(rec, out, claimed); i >= 0 {
+		if i := matchNewest(rec, out, claimed); i >= 0 && !sharedFallback(work, tagged, r) {
 			out[i].Work, out[i].WorkTitle = rec.Name, rec.Title
 			claimed[i] = true
 			continue
@@ -423,6 +428,17 @@ func joinWork(sessions []session, work []workRecord) []session {
 	fillTickets(out, work)
 	sortSessions(out)
 	return out
+}
+
+// sharedFallback reports whether another record that no pane tagged sits
+// on work[r]'s worktree.
+func sharedFallback(work []workRecord, tagged []bool, r int) bool {
+	for q, other := range work {
+		if q != r && !tagged[q] && other.Worktree != "" && samePath(other.Worktree, work[r].Worktree) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeSession reads a file the way today's hook writes it: an idle

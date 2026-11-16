@@ -705,7 +705,10 @@ def test_open(h):
     rec_now = h.record("flat")
     # with a transcript for the worktree, claude resumes it
     with open(os.path.join(h.sessions, "flat-old.json"), "w") as f:
-        json.dump({"session_id": "flat-old", "project": h.rq, "transcript_path": os.path.join(h.tmp, "flat.jsonl")}, f)
+        json.dump({"session_id": "flat-old", "project": h.rq, "transcript_path": os.path.join(h.tmp, "flat.jsonl"),
+                   # the tab's own hook file: other records live on this
+                   # directory too, so only the pane says the file is flat's
+                   "iterm_session_id": "w0t0p0:" + rec_now["claude_pane"]}, f)
     with open(os.path.join(h.tmp, "flat.jsonl"), "w") as f:
         f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "earlier"}}) + "\n")
     h.clear_log(keep_state=True)
@@ -830,8 +833,10 @@ def test_adopt(h):
     with open(os.path.join(h.logdir, "savannah.log")) as f:
         check("pane released" in f.read(), "the release is logged")
     entries = {e["name"]: e for e in h.run_json(["ls", "--json"])}
-    check(entries["mine"].get("claude_session_id") == "adopt-1" and entries["fresh"].get("claude_session_id") == "adopt-2",
-          f"each record still joins its own tab, mine by directory now ({entries['mine'].get('claude_session_id')}, {entries['fresh'].get('claude_session_id')})")
+    # mine has no pane now and shares its directory with other records, so
+    # the session there is nobody's by guesswork (join_session, worktree_rivals).
+    check(entries["mine"].get("claude_session_id") == "" and entries["fresh"].get("claude_session_id") == "adopt-2",
+          f"fresh joins by pane; mine, one of several records on its directory, takes no session by guess ({entries['mine'].get('claude_session_id')}, {entries['fresh'].get('claude_session_id')})")
     check(h.run(["rm", "fresh"]).returncode == 0, "rm fresh")
     os.remove(os.path.join(h.sessions, "adopt-2.json"))
     shutil.rmtree(elsewhere, ignore_errors=True)

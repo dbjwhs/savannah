@@ -687,9 +687,17 @@ never the branch.
 A work session finds its live Claude Code session through the hook files that
 `hooks/session-status.py` writes (`$SAVANNAH_SESSIONS_DIR`, default
 `~/.claude/savannah/sessions/`): a hook file belongs to a work session when
-`realpath(hook.project) == realpath(record.worktree)`. If several match, the
-one whose `iterm_session_id` (after the colon) equals `claude_pane` wins, else
-the most recently updated. A record with an empty `worktree` never joins. The
+`realpath(hook.project) == realpath(record.worktree)`. `project` is the
+directory the Claude Code process was in when the hook first saw it and stays
+that while the process lives (Claude changes directory as it works; where it
+is now is the file's `cwd`), so a tab does not leave its work session when
+Claude steps into another checkout. If several match, the one whose
+`iterm_session_id` (after the colon) equals `claude_pane` wins, else the most
+recently updated, unless another record sits on the same directory without a
+pane match of its own: then nobody takes a session by guess, the records are
+offline and the session is a plain tab. A session with no terminal at all
+(`claude` started by a script or an app: no terminal variable, no tty) gets no
+hook file and is never a row. A record with an empty `worktree` never joins. The
 join happens at read time (`ls`, the dash); nobody writes into the other
 side's file. `ls --json` adds `claude_session_id`, `state` (`"offline"` when
 no live session), `message`, `last_prompt`, `last_note` (first line of the
@@ -966,10 +974,10 @@ answer, no socket), and that the cookie never reaches the log.
   Claude is sitting at a trust or MCP prompt has no hook file yet.
 - Two tabs in one directory stay apart only through their pane ids: each
   adopted record names its own pane, so the join picks the right tab while
-  both are open. After an iTerm2 restart the recorded panes are gone, the
-  join falls back to the newest hook session in that directory, and two
-  such records can bind the wrong tab until you `open` one (which gives it
-  a fresh pane of its own).
+  both are open. After an iTerm2 restart the recorded panes are gone, and
+  with two or more such records on one directory none of them binds a tab
+  (each is offline, the tabs are plain tabs) until you `open` one (which
+  gives it a fresh pane of its own) or adopt the tab again.
 - No Linux or Windows support of any kind; the module imports fine there but
   every terminal verb fails at `it2`.
 - `status` is self-reported by that tab's Claude. Nothing verifies the text

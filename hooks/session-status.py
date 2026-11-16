@@ -32,6 +32,15 @@
 # last typed, capped at 200 chars). Both are kept across later events that do
 # not carry them. The hook does no joining of its own: work sessions (work/)
 # match a hook file to their worktree at read time by comparing "project".
+# So "project" has to hold still: it is the directory this Claude Code
+# process was in at the first event we saw from it, and it stays that while
+# the process lives. Claude changes directory as it works (every event
+# carries the cwd of that moment), and a project that followed it took the
+# tab away from its work session and handed it to whichever session lives in
+# the directory it wandered into. Where Claude is now is "cwd".
+# A session with no terminal at all (no terminal variable in the environment
+# and no tty on the Claude Code process: something started `claude` from a
+# script, an app or a scheduler) is not a tab, so it gets no file.
 # One thing besides the file: on SessionStart, when the cwd is a work
 # session's worktree, the hook prints one JSON object with additionalContext
 # (Claude Code adds it to that session's context) that tells the Claude in
@@ -222,6 +231,38 @@ def is_live_other(pid):
     return True
 
 
+def steady_project(record, cwd, pid):
+    """The directory the session is filed under: the one already recorded
+    while the same Claude Code process writes the file, else (a new file, a
+    file without one, or the conversation resumed by another process, maybe
+    somewhere else) where that process is now."""
+    kept = record.get("project")
+    if isinstance(kept, str) and kept and record.get("pid") == pid:
+        return kept
+    return cwd
+
+
+def claude_tty(pid):
+    """The controlling terminal of the Claude Code process as ps names it
+    ("ttys012"), "" when it has none or ps cannot say. $SAVANNAH_HOOK_TTY
+    answers instead when set (the tests have no terminal of their own)."""
+    forced = os.environ.get("SAVANNAH_HOOK_TTY")
+    if forced is not None:
+        return "" if forced in ("", "?", "??") else forced
+    try:
+        import subprocess
+        out = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return "?unknown"   # cannot tell: never drop a session on a guess
+    return "" if out in ("", "?", "??", "-") else out
+
+
+def is_headless(ident, pid):
+    """No terminal identity in the environment and no tty on the process."""
+    return not ident and not claude_tty(pid)
+
+
 def load_record(path):
     """The session file already there, or {}: a state-less event (a
     heartbeat) starts from it and so preserves the message and identity
@@ -353,12 +394,20 @@ def run():
     # What only this process knows (the clock, the directory, the Claude Code
     # pid, the terminal) is stamped here; what the event says is apply_event.
     record = load_record(path)
+    pid = os.getppid()  # the Claude Code process, not this hook
+    ident = terminal_identity()
+    if not record and is_headless(ident, pid):
+        log_info("headless session ignored", session=sid, event=name or "", pid=pid,
+                 cwd=event.get("cwd") or "")
+        return 0
+    cwd = event.get("cwd") or os.getcwd()
     record["session_id"] = sid
-    record["project"] = event.get("cwd") or os.getcwd()
+    record["project"] = steady_project(record, cwd, pid)
+    record["cwd"] = cwd
     record["updated"] = int(time.time())
-    record["pid"] = os.getppid()  # the Claude Code process, not this hook
+    record["pid"] = pid
     record["mode"] = event.get("permission_mode", record.get("mode", ""))
-    record.update(terminal_identity())
+    record.update(ident)
     apply_event(record, event, name)
 
     written = True
@@ -367,7 +416,8 @@ def run():
     except OSError as e:
         written = False
         log_warn("session file not written", session=sid, file=path, error=e.strerror or str(e))
-    log_debug("event", event=name or "", session=sid, state=record.get("state", ""), cwd=record["project"],
+    log_debug("event", event=name or "", session=sid, state=record.get("state", ""), cwd=cwd,
+              project=record["project"],
               iterm=record.get("iterm_session_id", ""), file=path, written=written)
 
     if name == "SessionStart":
