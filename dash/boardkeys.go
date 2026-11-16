@@ -15,6 +15,7 @@ package main
 import (
 	"log/slog"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -195,14 +196,38 @@ func (m model) pressOutput() (model, tea.Cmd) {
 	return m.enterOutput(r.s.Work)
 }
 
+// noteNow is the clock a note's prefill reads; tests pin it.
+var noteNow = time.Now
+
+// noteStampLayout is the date and time a note starts with, the same shape
+// as the heading `work note` writes above it.
+const noteStampLayout = "2006-01-02 15:04"
+
+// noteStamp is what the note prompt opens holding: "<date> <time>: ", the
+// cursor after it, so the note says when it was written wherever it is
+// shown (the NOTE column has no room for the heading). It is ordinary text:
+// it can be edited or deleted before Enter.
+func noteStamp() string { return noteNow().Format(noteStampLayout) + ": " }
+
+// noteIsBare reports a note that is nothing but its prefilled stamp (the
+// minute may have turned since it was filled in, so any stamp counts).
+func noteIsBare(text string) bool {
+	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), ":"))
+	if text == "" {
+		return true
+	}
+	_, err := time.Parse(noteStampLayout, text)
+	return err == nil
+}
+
 // pressNote is Ctrl-T: the prompt line becomes a note for the highlighted
-// work session. A plain tab has nowhere to keep a note until it is a work
+// work session, opened with the date and time (noteStamp). A plain tab has nowhere to keep a note until it is a work
 // session: it is named first (adopt), and the note follows (updateWork).
 func (m model) pressNote() (model, tea.Cmd) {
 	r, ok := m.currentRow()
 	switch {
 	case ok && r.isWork():
-		m.setPrompt(promptState{kind: promptNote, target: r.s.Work}, "")
+		m.setPrompt(promptState{kind: promptNote, target: r.s.Work}, noteStamp())
 	case ok && r.kind == rowSession:
 		m.setPrompt(promptState{kind: promptAdopt, target: r.s.ID, project: r.s.Project, thenNote: true},
 			nameSuggestion(r.s.Project, titleOf(r.s, m.titles), m.takenNames()))
@@ -317,10 +342,11 @@ func (m model) submitTitle(text string) (model, tea.Cmd) {
 	return m, nil
 }
 
-// submitNote appends the note to the work session's notes.
+// submitNote appends the note to the work session's notes. The prefilled
+// stamp alone is not a note.
 func (m model) submitNote(text string) (model, tea.Cmd) {
 	name := m.prompt.target
-	if text == "" {
+	if noteIsBare(text) {
 		m.status = warnStyle.Render("nothing to note for " + name + " (Esc cancels)")
 		return m, nil
 	}

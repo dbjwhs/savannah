@@ -27,7 +27,10 @@ gives you one key for each thing you used to do by hand:
   line the panel shows. Working and waiting tabs are never
   interrupted. One turn of each asked tab's context, hence the two
   presses.
-- **Ctrl-T** appends a note to the session's `notes.md`. On a plain tab (one
+- **Ctrl-T** appends a note to the session's `notes.md`. The note line opens
+  holding the date and time (`2026-11-16 09:05: `, the cursor after it), so
+  the NOTE column says when it was written; it is ordinary text, edit or
+  delete it, and Enter on the stamp alone saves nothing. On a plain tab (one
   you opened by hand, no work record) it first asks for a name, which makes
   that tab a work session without opening anything, then takes the note.
 - **Ctrl-R** names a session. A plain tab gets a name (prefilled from its

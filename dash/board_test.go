@@ -232,7 +232,7 @@ func TestCtrlTOnPlainRowNamesItFirst(t *testing.T) {
 	}
 	// It succeeds: straight into the note for the new name.
 	m, cmd = send(m, workAdoptMsg{name: "other"})
-	if cmd == nil || m.promptFor(promptAdopt) != "" || m.promptFor(promptNote) != "other" || m.input.Value() != "" || !strings.Contains(m.status, "named it other") {
+	if cmd == nil || m.promptFor(promptAdopt) != "" || m.promptFor(promptNote) != "other" || !noteIsBare(m.input.Value()) || m.input.Value() == "" || !strings.Contains(m.status, "named it other") {
 		t.Errorf("adopted: cmd=%v adoptFor=%q noteFor=%q input=%q status=%q", cmd != nil, m.promptFor(promptAdopt), m.promptFor(promptNote), m.input.Value(), m.status)
 	}
 	if out := m.View(); !strings.Contains(out, "note for other") {

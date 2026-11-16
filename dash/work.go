@@ -488,7 +488,7 @@ func (m model) workAdopted(msg workAdoptMsg) (model, tea.Cmd) {
 		named += " (" + msg.title + ")"
 	}
 	if thenNote {
-		m.setPrompt(promptState{kind: promptNote, target: msg.name}, "")
+		m.setPrompt(promptState{kind: promptNote, target: msg.name}, noteStamp())
 		m.status = okStyle.Render(named + "; now its note (Enter saves, Esc skips)")
 	} else {
 		m.status = okStyle.Render(named)

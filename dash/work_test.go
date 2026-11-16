@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -522,15 +523,35 @@ func TestNoteMode(t *testing.T) {
 		t.Errorf("Ctrl-T on a plain tab: cmd=%v noteFor=%q adoptFor=%q", cmd != nil, m.promptFor(promptNote), m.promptFor(promptAdopt))
 	}
 	cursorTo(t, &m, workRow("live"))
+	// The note opens holding the date and time, the cursor after it.
+	defer func(was func() time.Time) { noteNow = was }(noteNow)
+	noteNow = func() time.Time { return time.Date(2026, 11, 16, 9, 5, 0, 0, time.Local) }
 	m, _ = press(m, tea.KeyCtrlT)
 	if m.promptFor(promptNote) != "live" || m.promptFor(promptAdopt) != "" || !strings.Contains(m.View(), "note for live") {
 		t.Errorf("Ctrl-T on a work row: noteFor=%q adoptFor=%q\n%s", m.promptFor(promptNote), m.promptFor(promptAdopt), m.View())
 	}
+	if got := m.input.Value(); got != "2026-11-16 09:05: " || m.input.Position() != len(got) {
+		t.Errorf("note prefill = %q, cursor at %d", got, m.input.Position())
+	}
+	// The stamp alone is not a note, whatever minute it shows by now.
 	m, cmd = press(m, tea.KeyEnter)
-	if cmd != nil || m.promptFor(promptNote) != "live" {
-		t.Errorf("empty note: cmd=%v noteFor=%q", cmd != nil, m.promptFor(promptNote))
+	if cmd != nil || m.promptFor(promptNote) != "live" || !strings.Contains(m.status, "nothing to note") {
+		t.Errorf("empty note: cmd=%v noteFor=%q status=%q", cmd != nil, m.promptFor(promptNote), m.status)
+	}
+	for _, bare := range []string{"", "  ", "2026-11-16 09:05:", "2026-11-16 09:04: ", "2026-11-16 09:05"} {
+		if !noteIsBare(bare) {
+			t.Errorf("noteIsBare(%q) = false", bare)
+		}
+	}
+	for _, real := range []string{"2026-11-16 09:05: x", "decided", "09:05:"} {
+		if noteIsBare(real) {
+			t.Errorf("noteIsBare(%q) = true", real)
+		}
 	}
 	m = typeText(m, "decided: keep the branch")
+	if got := m.input.Value(); got != "2026-11-16 09:05: decided: keep the branch" {
+		t.Errorf("typed note = %q", got)
+	}
 	m, cmd = press(m, tea.KeyEnter)
 	if cmd == nil || m.promptFor(promptNote) != "" || m.input.Value() != "" || !strings.Contains(m.status, "noting live") {
 		t.Errorf("note Enter: cmd=%v noteFor=%q input=%q status=%q", cmd != nil, m.promptFor(promptNote), m.input.Value(), m.status)
