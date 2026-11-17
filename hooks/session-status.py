@@ -38,9 +38,11 @@
 # carries the cwd of that moment), and a project that followed it took the
 # tab away from its work session and handed it to whichever session lives in
 # the directory it wandered into. Where Claude is now is "cwd".
-# A session with no terminal at all (no terminal variable in the environment
-# and no tty on the Claude Code process: something started `claude` from a
-# script, an app or a scheduler) is not a tab, so it gets no file.
+# A session whose process has no terminal variable at all still gets its
+# file: Claude Code can carry a tab's conversation on in such a process (seen
+# 11/16/2026: the tab's own session id went quiet and the conversation went
+# on under a new id with no ITERM_SESSION_ID), so it is not safe to call it
+# "not a tab" and drop it.
 # One thing besides the file: on SessionStart, when the cwd is a work
 # session's worktree, the hook prints one JSON object with additionalContext
 # (Claude Code adds it to that session's context) that tells the Claude in
@@ -242,27 +244,6 @@ def steady_project(record, cwd, pid):
     return cwd
 
 
-def claude_tty(pid):
-    """The controlling terminal of the Claude Code process as ps names it
-    ("ttys012"), "" when it has none or ps cannot say. $SAVANNAH_HOOK_TTY
-    answers instead when set (the tests have no terminal of their own)."""
-    forced = os.environ.get("SAVANNAH_HOOK_TTY")
-    if forced is not None:
-        return "" if forced in ("", "?", "??") else forced
-    try:
-        import subprocess
-        out = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True,
-                             text=True, timeout=5).stdout.strip()
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return "?unknown"   # cannot tell: never drop a session on a guess
-    return "" if out in ("", "?", "??", "-") else out
-
-
-def is_headless(ident, pid):
-    """No terminal identity in the environment and no tty on the process."""
-    return not ident and not claude_tty(pid)
-
-
 def load_record(path):
     """The session file already there, or {}: a state-less event (a
     heartbeat) starts from it and so preserves the message and identity
@@ -396,10 +377,6 @@ def run():
     record = load_record(path)
     pid = os.getppid()  # the Claude Code process, not this hook
     ident = terminal_identity()
-    if not record and is_headless(ident, pid):
-        log_info("headless session ignored", session=sid, event=name or "", pid=pid,
-                 cwd=event.get("cwd") or "")
-        return 0
     cwd = event.get("cwd") or os.getcwd()
     record["session_id"] = sid
     record["project"] = steady_project(record, cwd, pid)

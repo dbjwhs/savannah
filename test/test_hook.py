@@ -39,9 +39,6 @@ class HookHarness:
         # savannah's one log: a temp dir, never the user's
         self.log_root = tempfile.mkdtemp(prefix="savannah-hook-log-")
         self.env["SAVANNAH_LOG_DIR"] = self.log_root
-        # ctest gives the hook no tty; the sessions these tests fire are tabs
-        # unless a test says otherwise (test_headless)
-        self.env["SAVANNAH_HOOK_TTY"] = "ttys000"
         self.wt = None    # a work session's worktree (test_session_start_context)
 
     def fire(self, event, extra_env=None):
@@ -327,29 +324,17 @@ def test_steady_project(h):
     h.fire({"session_id": "st1", "hook_event_name": "SessionEnd", "cwd": "/home/u/other"}, env)
 
 
-def test_headless(h):
-    """A Claude with no terminal at all is not a tab: no file."""
+def test_no_terminal(h):
+    """A Claude with no terminal variable still gets its file."""
+    # Claude Code can carry a tab's conversation on in a process that has
+    # none (hooks/session-status.py, the header), so the hook must not decide
+    # such a session is not a tab.
     bare = {"ITERM_SESSION_ID": "", "TERM_PROGRAM": "", "TMUX_PANE": "", "WEZTERM_PANE": "",
             "KITTY_WINDOW_ID": ""}
-    p = h.fire({"session_id": "hl1", "hook_event_name": "SessionStart", "cwd": "/home/u/hub"},
-               dict(bare, SAVANNAH_HOOK_TTY="??"))
-    check(not h.exists("hl1") and p.stdout == "", "no terminal variable and no tty: nothing written, nothing said")
-    h.fire({"session_id": "hl1", "hook_event_name": "Stop", "cwd": "/home/u/hub"},
-           dict(bare, SAVANNAH_HOOK_TTY="??"))
-    check(not h.exists("hl1"), "a later event of the same session writes nothing either")
-    with open(os.path.join(h.log_root, "savannah.log")) as f:
-        check("headless session ignored" in f.read(), "the skip is logged")
-    # A tty is a terminal even when nothing in the environment names one
-    # (ssh, a plain console).
-    h.fire({"session_id": "hl2", "hook_event_name": "SessionStart", "cwd": "/home/u/hub"},
-           dict(bare, SAVANNAH_HOOK_TTY="ttys004"))
-    check(h.exists("hl2"), "a tty and no terminal variable: a session like any other")
-    # A file that is already there is kept up whatever the environment says
-    # (`work scan` wrote it, or the terminal variable went missing).
-    h.fire({"session_id": "hl2", "hook_event_name": "Stop", "cwd": "/home/u/hub"},
-           dict(bare, SAVANNAH_HOOK_TTY="??"))
-    check(h.load("hl2")["state"] == "done", "an existing file is still updated")
-    h.fire({"session_id": "hl2", "hook_event_name": "SessionEnd", "cwd": "/home/u/hub"}, bare)
+    h.fire({"session_id": "hl1", "hook_event_name": "SessionStart", "cwd": "/home/u/hub"}, bare)
+    r = h.load("hl1")
+    check(r["state"] == "idle" and "iterm_session_id" not in r, f"written, with no pane ({r})")
+    h.fire({"session_id": "hl1", "hook_event_name": "SessionEnd", "cwd": "/home/u/hub"}, bare)
 
 
 def test_session_start_context(h):
@@ -446,9 +431,8 @@ def test_log(h):
     check(any(' level=INFO msg="work context" src=hook session=' in ln and " name=fix-parser cmd=" in ln
               for ln in lines), "the SessionStart context is INFO with the work session's name and the command")
     check(not any(" level=INFO " in ln and 'msg="work context"' not in ln
-                  and 'msg="session end ignored"' not in ln
-                  and 'msg="headless session ignored"' not in ln for ln in lines),
-          "nothing but the context, a kept file and a skipped headless session is INFO")
+                  and 'msg="session end ignored"' not in ln for ln in lines),
+          "nothing but the context and a kept file is INFO")
     # a log directory that cannot be made: exit 0, file written, nothing printed
     blocker = os.path.join(h.log_root, "blocker")
     open(blocker, "w").close()
@@ -469,7 +453,7 @@ SECTIONS = (
     test_session_end_owner,
     test_unusable_input,
     test_steady_project,
-    test_headless,
+    test_no_terminal,
     test_session_start_context,
     test_log,
 )

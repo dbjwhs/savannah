@@ -695,9 +695,7 @@ Claude steps into another checkout. If several match, the one whose
 `iterm_session_id` (after the colon) equals `claude_pane` wins, else the most
 recently updated, unless another record sits on the same directory without a
 pane match of its own: then nobody takes a session by guess, the records are
-offline and the session is a plain tab. A session with no terminal at all
-(`claude` started by a script or an app: no terminal variable, no tty) gets no
-hook file and is never a row. A record with an empty `worktree` never joins. The
+offline and the session is a plain tab. A record with an empty `worktree` never joins. The
 join happens at read time (`ls`, the dash); nobody writes into the other
 side's file. `ls --json` adds `claude_session_id`, `state` (`"offline"` when
 no live session), `message`, `last_prompt`, `last_note` (first line of the
