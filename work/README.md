@@ -440,6 +440,18 @@ running (the same conversation resumed in a second tab, then closed, used
 to take the first tab off the board), and the board's Ctrl-X refuses to
 dismiss a plain row whose Claude is still running.
 
+A parked session. Claude Code can move a tab's conversation into a
+background job: the tab's process stays as the viewer and fires no more hook
+events, and the conversation goes on under a new session id in a process
+with no `ITERM_SESSION_ID`. The registry links the two (the job's `jobId` is
+the viewer's `parkedJobId`). The hook follows that link on the job's next
+event: the job's status file takes the viewer's pane and the viewer's frozen
+file is removed, so the tab stays one live row. `scan` does the same for a
+job that has fired no event since (it finds the pane by the viewer's tty),
+and a background job nobody views is never a tab. Seen with Claude Code
+2.1.322 and 2.1.325 on 11/16/2026; like the rest of the registry this is not
+a documented interface, and when it reads differently nothing is followed.
+
 ### Reviews
 
 A session is for coding (the default) or for a review. `--mode review`

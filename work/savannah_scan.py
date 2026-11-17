@@ -23,6 +23,14 @@
 # the tab is a row like any other, and its next hook event takes the file
 # over.
 #
+# A parked session (hooks/session-status.py, the header): the tab's process
+# is only the viewer of a background job that carries the conversation under
+# another session id. The registry links them (the job's "jobId" is the
+# viewer's "parkedJobId"), so the job is the session and the viewer's tty is
+# where its pane is found; a status file the viewer left behind is removed,
+# and a file the job already has gets the pane it lacked. A background job
+# nobody views is not a tab and is left out.
+#
 # It runs when the owner asks (this verb, the board's Ctrl-U), never on a
 # timer: the registry is Claude Code's own file, not a documented interface
 # (read live from Claude Code 2.1.325 on 11/15/2026), so the hook stays the
@@ -68,12 +76,7 @@ def process_info(pid):
     return tty, " ".join(parts[1:])
 
 
-def read_registry(info=process_info):
-    """The interactive Claude Code sessions running now, from Claude Code's
-    registry: [{pid, session_id, project, name, state, updated, tty}].
-    A file that does not parse, names no session, is not interactive, or
-    whose process is gone (or is another process that took the pid: the
-    start time differs) is skipped."""
+def registry_entries():
     out = []
     for path in sorted(glob.glob(os.path.join(registry_dir(), "*.json"))):
         try:
@@ -81,21 +84,67 @@ def read_registry(info=process_info):
                 d = json.load(f)
         except (OSError, ValueError):
             continue
-        if not isinstance(d, dict) or d.get("kind", "interactive") != "interactive":
+        if isinstance(d, dict):
+            out.append((path, d))
+    return out
+
+
+def live_entry(path, d, info):
+    """(pid, tty) of a registry entry whose process runs, else None: no
+    usable pid, the process is gone, or another process took the pid (the
+    start time differs)."""
+    pid = d.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        return None
+    got = info(pid)
+    if got is None:
+        return None
+    tty, start = got
+    said = d.get("procStart")
+    if isinstance(said, str) and said and start and " ".join(said.split()) != start:
+        log_debug("scan: pid reused", pid=pid, file=path)
+        return None
+    return pid, tty
+
+
+def read_registry(info=process_info):
+    """The Claude Code sessions that are tabs now, from Claude Code's
+    registry: [{pid, session_id, project, name, state, updated, tty,
+    viewer_pid}]. An interactive session is one (viewer_pid 0). So is a
+    background job a live interactive process views (its "jobId" is that
+    process's "parkedJobId"): the job's session id and pid, the viewer's tty
+    and pid; the viewer's own entry is then not a session of its own. A file
+    that does not parse, names no session, is a job nobody views, or whose
+    process is gone is skipped."""
+    entries = registry_entries()
+    viewers = {}   # job id -> (viewer pid, viewer tty)
+    for path, d in entries:
+        job = d.get("parkedJobId")
+        if d.get("kind", "interactive") == "interactive" and isinstance(job, str) and job:
+            live = live_entry(path, d, info)
+            if live:
+                viewers[job] = live
+    jobs = {d.get("jobId") for _, d in entries if d.get("kind") == "bg" and isinstance(d.get("jobId"), str)}
+    out = []
+    for path, d in entries:
+        kind = d.get("kind", "interactive")
+        viewer_pid = 0
+        if kind == "interactive":
+            if d.get("parkedJobId") in jobs and d.get("parkedJobId") in viewers:
+                continue   # the job below is this tab's session
+        elif kind == "bg" and d.get("jobId") in viewers:
+            viewer_pid = viewers[d["jobId"]][0]
+        else:
             continue
-        pid, sid, cwd = d.get("pid"), d.get("sessionId"), d.get("cwd")
-        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
-            continue
+        sid, cwd = d.get("sessionId"), d.get("cwd")
         if not (isinstance(sid, str) and sid and os.sep not in sid) or not isinstance(cwd, str) or not cwd:
             continue
-        got = info(pid)
-        if got is None:
+        live = live_entry(path, d, info)
+        if live is None:
             continue
-        tty, start = got
-        said = d.get("procStart")
-        if isinstance(said, str) and said and start and " ".join(said.split()) != start:
-            log_debug("scan: pid reused", pid=pid, file=path)
-            continue
+        pid, tty = live
+        if viewer_pid:
+            tty = viewers[d["jobId"]][1]
         updated = d.get("updatedAt")
         out.append({
             "pid": pid, "session_id": sid, "project": cwd,
@@ -103,8 +152,50 @@ def read_registry(info=process_info):
             "state": STATES.get(d.get("status"), "idle"),
             "updated": int(updated / 1000) if isinstance(updated, (int, float)) and not isinstance(updated, bool)
             else 0,
-            "tty": tty,
+            "tty": tty, "viewer_pid": viewer_pid,
         })
+    return out
+
+
+def follow_parked(running, hooks, panes, directory, dry=False):
+    """For every parked session: the status file its viewer left behind is
+    removed, and the job's own file, when it has one with no pane, gets the
+    viewer's pane. -> [{session_id, was, pane}] of what changed (or would)."""
+    by_tty = {s.get("tty"): s.get("id", "") for s in panes if s.get("tty")}
+    out = []
+    for r in running:
+        if not r.get("viewer_pid"):
+            continue
+        pane = by_tty.get(r["tty"], "") if r["tty"] else ""
+        stale = [h for h in hooks if h.get("pid") == r["viewer_pid"] and h.get("session_id")
+                 and h.get("session_id") != r["session_id"]]
+        mine = next((h for h in hooks if h.get("session_id") == r["session_id"]), None)
+        needs_pane = mine is not None and pane and not hook_pane(mine)
+        if not stale and not needs_pane:
+            continue
+        out.append({"session_id": r["session_id"], "was": ",".join(h["session_id"] for h in stale), "pane": pane})
+        if dry:
+            continue
+        for h in stale:
+            try:
+                os.remove(os.path.join(directory, h["session_id"] + ".json"))
+            except OSError:
+                pass
+        if needs_pane:
+            path = os.path.join(directory, r["session_id"] + ".json")
+            try:
+                with open(path) as f:
+                    doc = json.load(f)
+                doc["iterm_session_id"] = "w0t0p0:" + pane
+                doc["term"] = "iTerm.app"
+                doc["viewer_pid"] = r["viewer_pid"]
+                tmp = path + ".scan.tmp"
+                with open(tmp, "w") as f:
+                    f.write(json.dumps(doc))
+                os.replace(tmp, path)
+            except (OSError, ValueError) as e:
+                log_warn("scan: parked session not re-pointed", session=r["session_id"], error=str(e))
+        log_info("scan: parked session followed", session=r["session_id"], was=out[-1]["was"], pane=pane)
     return out
 
 
@@ -165,8 +256,9 @@ def cmd_scan(a):
     except UserError as e:
         panes = []
         log_warn("scan: no pane list", error=str(e))
-    found = unknown_sessions(running, load_hook_sessions(), panes)
     directory = sessions_dir()
+    followed = follow_parked(running, load_hook_sessions(), panes, directory, dry=a.dry_run)
+    found = unknown_sessions(running, load_hook_sessions(), panes)
     added = []
     for f in found:
         if not a.dry_run:
@@ -180,8 +272,12 @@ def cmd_scan(a):
                       "name": f["name"], "state": f["state"], "pane": f["pane"]})
     log_info("scan", running=len(running), found=len(added), dry_run=a.dry_run, registry=registry_dir())
     if a.json:
-        print(json.dumps({"running": len(running), "found": added, "dry_run": a.dry_run}))
+        print(json.dumps({"running": len(running), "found": added, "followed": followed, "dry_run": a.dry_run}))
         return 0
+    for f in followed:
+        verb = "would follow" if a.dry_run else "followed"
+        print(f"scan: {verb} a parked session: {f['session_id']}"
+              + (f" (was {f['was']})" if f["was"] else "") + (f", pane {f['pane']}" if f["pane"] else ""))
     if not added:
         if running:
             print(f"scan: all {len(running)} running Claude Code session(s) are on the board")

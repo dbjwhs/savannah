@@ -337,6 +337,59 @@ def test_no_terminal(h):
     h.fire({"session_id": "hl1", "hook_event_name": "SessionEnd", "cwd": "/home/u/hub"}, bare)
 
 
+def test_parked_session(h):
+    """A conversation Claude Code moved into a background job keeps its tab."""
+    # The tab's process (the viewer) wrote st-old with the pane; the job runs
+    # under THIS test's pid (the hook's parent) with no terminal variable.
+    # Claude Code's registry links them: jobId == the viewer's parkedJobId.
+    config = tempfile.mkdtemp(prefix="savannah-hook-claude-")
+    os.makedirs(os.path.join(config, "sessions"))
+    viewer, me = 424242, os.getpid()
+
+    def reg(pid, doc):
+        with open(os.path.join(config, "sessions", f"{pid}.json"), "w") as f:
+            json.dump(dict(doc, pid=pid), f)
+
+    def old_file():
+        with open(os.path.join(h.workdir, "pk-old.json"), "w") as f:
+            json.dump({"session_id": "pk-old", "project": "/home/u/hub", "state": "waiting", "pid": viewer,
+                       "iterm_session_id": "w2t0p0:PANE-PARK", "term": "iTerm.app"}, f)
+
+    bare = {"ITERM_SESSION_ID": "", "TERM_PROGRAM": "", "TMUX_PANE": "", "WEZTERM_PANE": "",
+            "KITTY_WINDOW_ID": "", "CLAUDE_CONFIG_DIR": config}
+    old_file()
+    # No registry entry for this process: nothing to follow, both files stay.
+    h.fire({"session_id": "pk-new", "hook_event_name": "SessionStart", "cwd": "/home/u/hub"}, bare)
+    check(h.exists("pk-old") and "iterm_session_id" not in h.load("pk-new"), "no registry link: nothing changes")
+    # A job nobody views, and a viewer of another job: still nothing.
+    reg(me, {"sessionId": "pk-new", "kind": "bg", "jobId": "job-1"})
+    reg(viewer, {"sessionId": "pk-old", "kind": "interactive", "parkedJobId": "job-other"})
+    h.fire({"session_id": "pk-new", "hook_event_name": "Stop", "cwd": "/home/u/hub"}, bare)
+    check(h.exists("pk-old") and "iterm_session_id" not in h.load("pk-new"), "another job's viewer is not ours")
+    # The link: the job takes the viewer's pane and the frozen file goes.
+    reg(viewer, {"sessionId": "pk-old", "kind": "interactive", "parkedJobId": "job-1"})
+    h.fire({"session_id": "pk-new", "hook_event_name": "UserPromptSubmit", "cwd": "/home/u/hub", "prompt": "go"},
+           bare)
+    r = h.load("pk-new")
+    check(r.get("iterm_session_id") == "w2t0p0:PANE-PARK" and r.get("term") == "iTerm.app"
+          and r.get("viewer_pid") == viewer and r["state"] == "working", f"the job has the tab's pane ({r})")
+    check(not h.exists("pk-old"), "the viewer's frozen file is removed")
+    with open(os.path.join(h.log_root, "savannah.log")) as f:
+        check('msg="parked session followed"' in f.read(), "it is logged")
+    # Later events keep the pane (the old file is gone; the record has it).
+    h.fire({"session_id": "pk-new", "hook_event_name": "Stop", "cwd": "/home/u/hub"}, bare)
+    check(h.load("pk-new").get("iterm_session_id") == "w2t0p0:PANE-PARK", "the pane stays on later events")
+    # A session that has a terminal of its own never looks.
+    old_file()
+    h.fire({"session_id": "pk-own", "hook_event_name": "SessionStart", "cwd": "/home/u/hub"},
+           dict(bare, ITERM_SESSION_ID="w0t9p0:PANE-OWN"))
+    check(h.exists("pk-old") and h.load("pk-own")["iterm_session_id"] == "w0t9p0:PANE-OWN",
+          "a session with its own pane leaves the viewer's file alone")
+    for sid in ("pk-new", "pk-own"):
+        h.fire({"session_id": sid, "hook_event_name": "SessionEnd", "cwd": "/home/u/hub"}, bare)
+    os.remove(os.path.join(h.workdir, "pk-old.json"))
+
+
 def test_session_start_context(h):
     """SessionStart tells a work session's Claude how to report a poll."""
     # The hook finds the work record (work/) whose worktree is the event's cwd
@@ -431,8 +484,9 @@ def test_log(h):
     check(any(' level=INFO msg="work context" src=hook session=' in ln and " name=fix-parser cmd=" in ln
               for ln in lines), "the SessionStart context is INFO with the work session's name and the command")
     check(not any(" level=INFO " in ln and 'msg="work context"' not in ln
-                  and 'msg="session end ignored"' not in ln for ln in lines),
-          "nothing but the context and a kept file is INFO")
+                  and 'msg="session end ignored"' not in ln
+                  and 'msg="parked session followed"' not in ln for ln in lines),
+          "nothing but the context, a kept file and a followed parked session is INFO")
     # a log directory that cannot be made: exit 0, file written, nothing printed
     blocker = os.path.join(h.log_root, "blocker")
     open(blocker, "w").close()
@@ -454,6 +508,7 @@ SECTIONS = (
     test_unusable_input,
     test_steady_project,
     test_no_terminal,
+    test_parked_session,
     test_session_start_context,
     test_log,
 )

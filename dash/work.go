@@ -89,9 +89,10 @@ type workAttachMsg struct{ what, action, err string }
 // workScanMsg is the result of Ctrl-U (`work scan`): how many Claude Code
 // sessions run and what the scan put on the board, by project.
 type workScanMsg struct {
-	running int
-	found   []string
-	err     string
+	running  int
+	found    []string
+	followed int // rows re-pointed at a conversation moved to a background job
+	err      string
 }
 type reposMsg struct {
 	info reposInfo
@@ -289,8 +290,9 @@ func (m model) workScanCmd() tea.Cmd {
 				Name    string `json:"name"`
 				Project string `json:"project"`
 			} `json:"found"`
+			Followed []struct{} `json:"followed"`
 		}](run, bin, args, "work scan printed no result")
-		msg := workScanMsg{running: r.Running, err: errText}
+		msg := workScanMsg{running: r.Running, followed: len(r.Followed), err: errText}
 		for _, f := range r.Found {
 			label := projectLabel(f.Project)
 			if f.Name != "" {
@@ -397,6 +399,8 @@ func (m model) workScanned(msg workScanMsg) (model, tea.Cmd) {
 	case msg.err != "":
 		m.fail("scan failed", "scan", msg.err)
 		return m, nil
+	case len(msg.found) == 0 && msg.followed > 0:
+		m.status = okStyle.Render(fmt.Sprintf("scan: re-pointed %d row%s at a conversation Claude Code moved to the background", msg.followed, plural(msg.followed)))
 	case len(msg.found) == 0 && msg.running == 0:
 		m.status = warnStyle.Render("scan: Claude Code lists no running session (its registry is empty or reads differently now)")
 	case len(msg.found) == 0:

@@ -38,11 +38,20 @@
 # carries the cwd of that moment), and a project that followed it took the
 # tab away from its work session and handed it to whichever session lives in
 # the directory it wandered into. Where Claude is now is "cwd".
-# A session whose process has no terminal variable at all still gets its
-# file: Claude Code can carry a tab's conversation on in such a process (seen
-# 11/16/2026: the tab's own session id went quiet and the conversation went
-# on under a new id with no ITERM_SESSION_ID), so it is not safe to call it
-# "not a tab" and drop it.
+# A parked session. Claude Code can move a tab's conversation into a
+# background job (seen 11/16/2026, Claude Code 2.1.322 and 2.1.325): the tab's
+# own process stays, as the viewer, and fires no more events; the
+# conversation goes on under a NEW session id in a `claude bg-spare` process
+# whose environment has no ITERM_SESSION_ID. Left alone that is two wrong
+# rows: the tab's old file, frozen in its last state, and a new one that no
+# tab can be found for. Claude Code's own registry
+# ($CLAUDE_CONFIG_DIR/sessions/<pid>.json, not a documented interface) links
+# the two: the job's entry has "jobId", the viewer's has the same value as
+# "parkedJobId". So a process with no terminal identity looks itself up
+# there, and when a viewer holds its job it takes the terminal identity from
+# the viewer's status file and removes that file: one tab, one row, live.
+# A registry that no longer reads this way changes nothing: the session
+# keeps its file, without a pane.
 # One thing besides the file: on SessionStart, when the cwd is a work
 # session's worktree, the hook prints one JSON object with additionalContext
 # (Claude Code adds it to that session's context) that tells the Claude in
@@ -244,6 +253,75 @@ def steady_project(record, cwd, pid):
     return cwd
 
 
+IDENTITY_FIELDS = ("iterm_session_id", "term", "tmux_pane", "wezterm_pane", "kitty_window_id")
+
+
+def read_json_object(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def claude_registry_dir():
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "sessions")
+
+
+def parked_viewer(pid):
+    """The pid of the Claude Code process whose tab shows the background job
+    that process pid runs, 0 when pid runs no job or nothing views it."""
+    root = claude_registry_dir()
+    job = read_json_object(os.path.join(root, f"{pid}.json")).get("jobId")
+    if not isinstance(job, str) or not job:
+        return 0
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return 0
+    for fn in names:
+        if not fn.endswith(".json"):
+            continue
+        d = read_json_object(os.path.join(root, fn))
+        viewer = d.get("pid")
+        if d.get("parkedJobId") == job and isinstance(viewer, int) and not isinstance(viewer, bool) \
+                and viewer > 1 and viewer != pid:
+            return viewer
+    return 0
+
+
+def follow_viewer(record, directory, sid, pid):
+    """A job with no terminal identity of its own takes its viewer's (the
+    header, "A parked session"): the identity fields of the status file the
+    viewer's process wrote go into record, and that file, which nothing
+    updates any more, is removed."""
+    viewer = parked_viewer(pid)
+    if not viewer:
+        return
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return
+    for fn in names:
+        if not fn.endswith(".json") or fn == sid + ".json":
+            continue
+        path = os.path.join(directory, fn)
+        old = read_json_object(path)
+        ident = {k: old[k] for k in IDENTITY_FIELDS if isinstance(old.get(k), str) and old[k]}
+        if old.get("pid") != viewer or not ident:
+            continue
+        record.update(ident)
+        record["viewer_pid"] = viewer
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        log_info("parked session followed", session=sid, was=old.get("session_id") or "", viewer=viewer,
+                 iterm=ident.get("iterm_session_id", ""))
+        return
+
+
 def load_record(path):
     """The session file already there, or {}: a state-less event (a
     heartbeat) starts from it and so preserves the message and identity
@@ -385,6 +463,8 @@ def run():
     record["pid"] = pid
     record["mode"] = event.get("permission_mode", record.get("mode", ""))
     record.update(ident)
+    if not any(record.get(k) for k in IDENTITY_FIELDS):
+        follow_viewer(record, directory, sid, pid)
     apply_event(record, event, name)
 
     written = True

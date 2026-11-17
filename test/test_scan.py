@@ -129,6 +129,53 @@ def test_scan(h):
 
     p = h.run(["scan"])
     check(p.returncode == 0 and "all 2 running" in p.stdout, f"a second scan has nothing to add ({p.stdout!r})")
+    # A parked session: the tab's process (viewer) left a frozen file with
+    # the pane; the conversation runs on in a background job that has a file
+    # with no pane. The scan removes the first and gives the second the pane
+    # of the viewer's tty; a job nobody views is not a tab.
+    viewer, job, orphan = h.sleeper(), h.sleeper(), h.sleeper()
+    h.register(viewer, "s-frozen", parkedJobId="job-9")
+    h.register(job, "s-job", kind="bg", jobId="job-9")
+    h.register(orphan, "s-orphan", kind="bg", jobId="job-none")
+    with open(os.path.join(h.sessions, "s-frozen.json"), "w") as f:
+        json.dump({"session_id": "s-frozen", "project": h.repo, "state": "waiting", "updated": 6, "pid": viewer,
+                   "iterm_session_id": "w0t0p0:PANE-V"}, f)
+    with open(os.path.join(h.sessions, "s-job.json"), "w") as f:
+        json.dump({"session_id": "s-job", "project": h.repo, "state": "done", "updated": 9, "pid": job,
+                   "last_prompt": "go ahead"}, f)
+    j = h.run_json(["scan", "--dry-run", "--json"])
+    check([f["session_id"] for f in j.get("followed", [])] == ["s-job"] and j["followed"][0]["was"] == "s-frozen"
+          and h.status_file("s-frozen") is not None, f"dry run names the parked session and changes nothing ({j})")
+    p = h.run(["scan"])
+    check(p.returncode == 0 and "followed a parked session: s-job (was s-frozen)" in p.stdout,
+          f"scan says it followed the conversation ({p.stdout!r} {p.stderr!r})")
+    check(h.status_file("s-frozen") is None, "the viewer's frozen file is gone")
+    rec = h.status_file("s-job")
+    check(rec is not None and rec.get("last_prompt") == "go ahead" and rec.get("pid") == job,
+          f"the job's file is kept as the hook wrote it ({rec})")
+    # With a pane on the viewer's tty (these sleepers have none), the job's
+    # file gets it: the function itself, on a file of its own.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "work"))
+    import savannah_scan
+    with open(os.path.join(h.sessions, "s-bare.json"), "w") as f:
+        json.dump({"session_id": "s-bare", "project": h.repo, "state": "done", "pid": 7}, f)
+    got = savannah_scan.follow_parked(
+        [{"session_id": "s-bare", "pid": 7, "viewer_pid": 8, "tty": "/dev/ttys009"}],
+        [{"session_id": "s-bare", "pid": 7}], [{"tty": "/dev/ttys009", "id": "PANE-9"}], h.sessions)
+    bare = h.status_file("s-bare")
+    check(got == [{"session_id": "s-bare", "was": "", "pane": "PANE-9"}]
+          and bare.get("iterm_session_id") == "w0t0p0:PANE-9" and bare.get("viewer_pid") == 8
+          and bare.get("state") == "done", f"a job's file with no pane gets the viewer's ({got} {bare})")
+    os.remove(os.path.join(h.sessions, "s-bare.json"))
+    check(h.status_file("s-orphan") is None, "a background job nobody views is not a tab")
+    j = h.run_json(["scan", "--json"])
+    check(j.get("followed") == [] and j.get("found") == [] and j.get("running") == 3,
+          f"a second scan finds it settled: the job counts, its viewer does not ({j})")
+    for sid in ("s-job",):
+        os.remove(os.path.join(h.sessions, sid + ".json"))
+    for pid in (viewer, job, orphan):
+        os.remove(os.path.join(h.registry, f"{pid}.json"))
+
     # The row is real for every other verb: adopt takes it by its id.
     j = h.run_json(["adopt", "found-again", "--session", "s-lost", "--json"])
     check(j.get("name") == "found-again" and j.get("worktree") == h.repo, f"a scanned tab can be adopted ({j})")
