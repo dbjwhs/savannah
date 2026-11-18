@@ -117,7 +117,24 @@ NAME_HELP = ("want ^[a-z0-9][a-z0-9._-]{0,63}$ (no '..', no trailing '.' or '.lo
 
 
 class UserError(Exception):
-    """A problem the human caused or can fix: exit 1 with a one-line message."""
+    """A problem the human caused or can fix: exit 1 with a one-line message.
+    code is the word a script branches on (--json prints it beside the
+    message): "error" unless the raise, or coded() around it, says more."""
+
+    def __init__(self, message="", code="error"):
+        super().__init__(message)
+        self.code = code
+
+
+def coded(code, fn, *args, **kw):
+    """fn(*args, **kw), a UserError out of it marked with code unless the
+    raise already chose one."""
+    try:
+        return fn(*args, **kw)
+    except UserError as e:
+        if e.code == "error":
+            e.code = code
+        raise
 
 
 RECORD_FIELDS = (
@@ -390,14 +407,14 @@ def claim_record_dir(name):
             return rdir
         except FileExistsError:
             if os.path.exists(record_path(name)):
-                raise UserError(f"work session already exists: {name}")
+                raise UserError(f"work session already exists: {name}", code="exists")
             try:
                 shutil.rmtree(rdir)
             except OSError as e:
                 raise UserError(f"cannot reclaim stale {rdir}: {oserr(e)}")
         except OSError as e:
             raise UserError(f"cannot create {rdir}: {oserr(e)}")
-    raise UserError(f"work session already exists: {name}")
+    raise UserError(f"work session already exists: {name}", code="exists")
 
 
 def claude_argv():

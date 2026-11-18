@@ -31,6 +31,11 @@
 #   new <name> [--repo DIR] [--branch B] [--no-worktree] [--prompt T] [--note T]
 #       [--detach]            --detach: in a window of its own, not a tab in
 #                             the group
+#       [--background] [--if-absent]
+#                             for a script: --background leaves the tab you
+#                             are on selected; --if-absent exits 0 with the
+#                             session already there (this name, or a review
+#                             of the same target in the same repo)
 #       [--mode review [--target T]]
 #                             a review, not a coding session: T is a pull
 #                             request (123, #123, its URL) or a branch, checked
@@ -93,7 +98,9 @@
 #
 # Exit codes: 0 success, 1 user error (unknown name, git refused, pane gone),
 # 2 bad usage. --json on ls/new/open/attach/detach/repos/note/output/hub/move/
-# rename/status emits one JSON value on stdout.
+# rename/status emits one JSON value on stdout; on exit 1 that value is
+# {"error": <the stderr message>, "code": <word>} (codes: exists, repo,
+# target, git, terminal, else error). Exit 2 prints usage on stderr only.
 #
 # Reply channel: `say` types into the pane and gets nothing back. `output`
 # is the read side: it parses the transcript Claude Code itself writes
@@ -169,7 +176,7 @@ from savannah_log import (VERBOSE, log_dir, log_path, log_verbose, log_debug,  #
 savannah_log.configure("work")
 
 import savannah_core  # noqa: E402
-from savannah_core import (append_note, archive_target, claim_record_dir, clip, emit, first_line,  # noqa: E402
+from savannah_core import (append_note, archive_target, claim_record_dir, clip, coded, emit, first_line,  # noqa: E402
                            is_direct_child, is_inside, last_note_line, list_records, load_record,
                            new_record, normalize_record, note_stamp, notes_path, oserr, print_table,
                            read_notes, read_status, record_dir, record_path, save_record, session_here,
@@ -179,7 +186,7 @@ import savannah_terminal  # noqa: E402,F401
 from savannah_terminal import make_terminal  # noqa: E402
 import savannah_git  # noqa: E402
 from savannah_git import (add_review_worktree, add_worktree, copy_worktree_includes, remove_worktree,  # noqa: E402
-                          review_prompt, review_target, run_git, Worktree)
+                          resolve_repo_root, review_prompt, review_target, run_git, Worktree)
 from savannah_sessions import (claude_alive, hook_pane, hook_session_by_id, join_session,  # noqa: E402
                                load_hook_sessions, sessions_dir)
 from savannah_transcript import find_transcript, local_stamp, transcript_turns  # noqa: E402
@@ -248,6 +255,42 @@ def rollback_new(name, rdir, term, ids, wt):
         shutil.rmtree(rdir, ignore_errors=True)
 
 
+def same_repo(a, b):
+    """Do two paths name one repository (its main root, symlinks resolved)?
+    A path git does not know is compared as it stands."""
+    roots = []
+    for d in (a, b):
+        try:
+            d = resolve_repo_root(d)
+        except UserError:
+            pass
+        roots.append(os.path.realpath(d))
+    return roots[0] == roots[1]
+
+
+def existing_session(name, repo, review, target):
+    """What --if-absent finds instead of making a session: the record
+    called name, else (a review with a target) the review some other name
+    already runs of that same pull request or branch in that repository.
+    None when there is neither."""
+    if os.path.exists(record_path(name)):
+        return load_record(name)
+    want = review_target(target) if review else ("", "")
+    if not want[0]:
+        return None
+    for rec in list_records():
+        if (rec.get("kind") == "review" and review_target(rec.get("target", "")) == want
+                and same_repo(rec.get("repo", ""), repo)):
+            return rec
+    return None
+
+
+def emit_existing(a, rec):
+    log_info("new: already there", name=a.name, existing=rec["name"], target=rec.get("target", ""))
+    emit(a, dict(rec, existed=True), f"{rec['name']}: already exists ({rec.get('worktree', '')})")
+    return 0
+
+
 def cmd_new(a):
     name = a.name
     if not valid_name(name):
@@ -262,12 +305,27 @@ def cmd_new(a):
         return usage_error("new", "--target is what a review looks at; add --mode review")
     if review and a.branch:
         return usage_error("new", "a review checks out its --target, not a --branch")
+    background = getattr(a, "background", False)
+    if background and getattr(a, "detach", False):
+        return usage_error("new", "--background keeps the tab you are on selected; a --detach "
+                                  "window has no such tab to go back to")
 
     repo = os.path.abspath(a.repo or os.getcwd())
     if not os.path.isdir(repo):
-        raise UserError(f"repo is not a directory: {repo}")
+        raise UserError(f"repo is not a directory: {repo}", code="repo")
 
-    rdir = claim_record_dir(name)
+    if_absent = getattr(a, "if_absent", False)
+    if if_absent:
+        found = existing_session(name, repo, review, target)
+        if found:
+            return emit_existing(a, found)
+    try:
+        rdir = claim_record_dir(name)
+    except UserError as e:
+        # Another `new` of the same name finished between the look and the claim.
+        if if_absent and e.code == "exists" and os.path.exists(record_path(name)):
+            return emit_existing(a, load_record(name))
+        raise
     wt = Worktree(repo, repo, "", False, False, False)  # --no-worktree: the repo itself
     copied = []
     term = make_terminal("")
@@ -278,14 +336,15 @@ def cmd_new(a):
             # the worktree is detached at the code under review, and with
             # none the review is of the repo's own changes, where they are.
             if target and not a.no_worktree:
-                wt = add_review_worktree(repo, name, target)
+                wt = coded("target", add_review_worktree, repo, name, target)
         elif not a.no_worktree:
-            wt = add_worktree(repo, name, a.branch)
+            wt = coded("git", add_worktree, repo, name, a.branch)
         prompt = a.prompt or (review_prompt(target) if review else "")
         if wt.made:
             copied = copy_worktree_includes(wt.repo, wt.worktree)
-        ids = term.create_split_tab(name, claude_command(wt.worktree, name, prompt),
-                                    f"cd {shlex.quote(wt.worktree)}", detached=getattr(a, "detach", False))
+        ids = coded("terminal", term.create_split_tab, name, claude_command(wt.worktree, name, prompt),
+                    f"cd {shlex.quote(wt.worktree)}", detached=getattr(a, "detach", False),
+                    background=background)
 
         rec = new_record(name, wt.repo, wt.worktree, wt.branch, term.kind, tab_id=ids.get("tab_id", ""),
                          claude_pane=ids.get("claude_pane", ""), shell_pane=ids.get("shell_pane", ""),
@@ -309,7 +368,8 @@ def cmd_new(a):
     if review:
         where += " reviewing " + (" ".join(review_target(target)) if target else "the current changes")
     tag = " (reattached)" if wt.reattached else ""
-    emit(a, rec, f"{name}: {where}{tag} (tab {rec['tab_id']}, claude {rec['claude_pane']})")
+    # "existed" answers --if-absent; without it the record is printed as it is.
+    emit(a, dict(rec, existed=False) if if_absent else rec, f"{name}: {where}{tag} (tab {rec['tab_id']}, claude {rec['claude_pane']})")
     return 0
 
 
@@ -988,6 +1048,12 @@ def build_parser():
          arg("--title", help=f"free-text title the board shows {title_cut}; "
                              "the name stays the identifier)"),
          flag("--detach", "open it in a window of its own instead of a tab in the group"),
+         flag("--background", "leave the tab you are looking at selected (for a script: the "
+                              "new tab never takes the keyboard)"),
+         flag("--if-absent", "exit 0 with the session that is already there instead of failing: "
+                             "one of this name, or (a review with a --target) a review of the "
+                             "same pull request or branch in the same repo under any name; "
+                             "--json says which with \"existed\""),
          arg("--mode", choices=savannah_core.KINDS, default=savannah_core.DEFAULT_KIND,
              help="what the session is for (default coding). review: the first prompt is "
                   "/code-review on --target, the worktree is detached at the code under "
@@ -1137,6 +1203,9 @@ def main(argv=None):
         rc = a.fn(a)
     except UserError as e:
         print(f"{a.verb}: {e}", file=sys.stderr)
+        if getattr(a, "json", False):
+            # A script reads one JSON value on stdout whatever happened.
+            print(json.dumps({"error": str(e), "code": e.code}))
         log_warn("verb refused", verb=a.verb, error=str(e), ms=int((time.time() - t0) * 1000))
         return 1
     except Exception as e:  # noqa: BLE001 - logged, then raised as before

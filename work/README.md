@@ -43,6 +43,7 @@ work title fix-parser [--json]                     # read it; --clear removes it
 work log [--level normal|debug|verbose] [--lines N] [--follow] [--path] [--json]   # savannah's log, see Logging
 work new own-window --detach                # the tab in a window of its own, not in the group window
 work new pr-2353 --mode review --target 2353   # a code review: the PR checked out, /code-review 2353 as the first prompt
+work new pr-2353 --mode review --target 2353 --if-absent --background --json   # the same from a script: repeatable, takes no focus (see "Opening sessions from a script")
 work scan [--dry-run] [--json]              # find running Claude Code tabs the board does not show and add them
 work mode fix-parser [coding|review] [--json]  # read or set what a session is for (a review sits under REVIEWS on the board)
 work attach fix-parser [--toggle] [--window W] [--json]   # move its tab into the group window (the board's), as the last tab
@@ -488,6 +489,59 @@ the kind changes, the tab and the worktree are not touched. `--target`
 without `--mode review`, and a review with `--branch`, are usage errors
 (exit 2); a target nobody has is exit 1 with nothing left behind.
 
+### Opening sessions from a script
+
+`work new` is the interface a script uses; nothing listens on a port. Three
+things make it safe to call unattended:
+
+```bash
+savannah work new pr-2353 --repo ~/ng/zfs --mode review --target 2353 \
+    --if-absent --background --json
+```
+
+- **`--if-absent`** makes the call repeatable. When a session of that name
+  exists, or (a review with a `--target`) some review of the same pull
+  request or branch in the same repository exists under any name, nothing is
+  made: the existing record is printed and the exit code is 0. `2353`,
+  `#2353` and the pull request's URL are the same target. A review with no
+  target, and a coding session, are matched by name only.
+- **`--background`** leaves the tab and pane you are looking at selected.
+  iTerm2 selects a tab it has just made (it does not come to the front by
+  itself); with this flag the pane the window showed before is selected
+  again once the new tab is built, so the keyboard is away from it for the
+  second or so that takes. It cannot be combined with `--detach`.
+- **`--json`** prints one JSON value on stdout whatever happened. Exit 0:
+  the record, and with `--if-absent` also `"existed"` (`true` when it was
+  found, `false` when this call made it). Exit 1: `{"error": "<the message stderr also
+  has>", "code": "<word>"}`, the code being `exists` (the name is taken),
+  `repo` (not a directory, not a git repository), `target` (the pull
+  request or branch of a review could not be fetched or checked out), `git`
+  (the worktree of a coding session), `terminal` (iTerm2 or `it2`), or
+  `error` for anything else. Exit 2 (bad usage) prints to stderr only.
+  Every other verb's `--json` reports an exit 1 the same way.
+
+A minimal caller, one review per open pull request that asks for you:
+
+```bash
+repo=~/ng/zfs
+gh pr list -R owner/zfs --search "review-requested:@me" --json number -q '.[].number' |
+while read -r n; do
+    out=$(savannah work new "pr-$n" --repo "$repo" --mode review --target "$n" \
+              --if-absent --background --json) || {
+        echo "pr $n: $(jq -r '.code + ": " + .error' <<<"$out")" >&2
+        continue
+    }
+    jq -e '.existed' <<<"$out" >/dev/null || echo "opened a review of pr $n"
+done
+```
+
+The review starts at once (`/code-review <n>` is typed into the new tab;
+`--prompt` replaces it, `--note` and `--title` set what the board shows).
+`work ls --json` reads every session's `state` back and `work output NAME`
+the review itself. Nothing is refreshed or removed for you: a review is a
+snapshot of the pull request when it was opened, and it stays until you
+`work rm` it (the board's Ctrl-X).
+
 ### Attaching and detaching tabs
 
 The group window is the iTerm2 window the command runs in (the board's,
@@ -584,7 +638,8 @@ editing repos from the hub, one tab per work item, `say` is a request and
 `output` the result, `waiting` and `offline` rows go to the owner).
 
 Exit codes: 0 success, 1 user error (unknown name, git refused, pane gone),
-2 bad usage.
+2 bad usage. Under `--json` an exit 1 also prints `{"error", "code"}` on
+stdout (see "Opening sessions from a script").
 
 ## Logging
 

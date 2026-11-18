@@ -17,10 +17,16 @@
 #   window new                    -> "Created new window: W<n>" + a session in it
 #   tab new --window W            -> "Created new tab: TAB-<n>", session PANE-C-<n>
 #   session list --json           -> [{id, tab_id, window_id, name}] minus the
-#                                    ids in $FAKE_IT2_MISSING
+#                                    ids in $FAKE_IT2_MISSING; with --format
+#                                    each also has "formatted": "id|tab|the
+#                                    tab's current pane|the window's shown
+#                                    tab" (the one format the module asks for)
 #   session split --session ID    -> "Created new pane: PANE-S-<n>", n being the
 #                                    tab's number, so the nth tab is always
 #                                    TAB-n / PANE-C-n / PANE-S-n
+#   tab new, session split and session focus move what a window shows, as
+#   iTerm2 does: the new tab is shown, the new pane is its tab's current one,
+#   a focused pane is current in its tab and its tab is shown
 #   session set-name/run/focus/close, app activate
 #                                 -> exit 0, like it2; "not found" exit 3 when
 #                                    the id is in $FAKE_IT2_MISSING (comma list)
@@ -115,6 +121,8 @@ def main():
         print("Error: boom", file=sys.stderr)
         return 1
     st = load_state()
+    shown = st.setdefault("shown", {})      # window -> the tab it shows
+    current = st.setdefault("current", {})  # tab -> the pane with the keyboard
     sub = " ".join(argv[:2])
 
     if sub == "window list":
@@ -137,6 +145,8 @@ def main():
         st["n"] += 1
         n = st["n"]
         st["sessions"][f"PANE-C-{n}"] = {"tab_id": f"TAB-{n}", "window_id": w, "name": "login"}
+        shown[w] = f"TAB-{n}"
+        current[f"TAB-{n}"] = f"PANE-C-{n}"
         save_state(st)
         print(f"Created new tab: TAB-{n}")
         return 0
@@ -165,6 +175,10 @@ def main():
         out = [{"id": sid, "tab_id": s["tab_id"], "window_id": s["window_id"],
                 "name": s.get("name", ""), "title": s.get("name", ""), "tty": "/dev/ttys9"}
                for sid, s in st["sessions"].items() if not gone(sid)]
+        if "--format" in argv:
+            for o in out:
+                o["formatted"] = "|".join((o["id"], o["tab_id"], current.get(o["tab_id"], ""),
+                                           shown.get(o["window_id"], "")))
         print(json.dumps(out))
         return 0
     if sub == "session split":
@@ -183,6 +197,7 @@ def main():
         while new_id in st["sessions"]:
             new_id += "b"  # a second split of the same tab (never done today)
         st["sessions"][new_id] = {"tab_id": src["tab_id"], "window_id": src["window_id"], "name": ""}
+        current[src["tab_id"]] = new_id
         save_state(st)
         print(f"Created new pane: {new_id}")
         return 0
@@ -207,6 +222,11 @@ def main():
         if gone(sid):
             print(f"Error: Session '{sid}' not found", file=sys.stderr)
             return 3
+        s = st["sessions"].get(sid)
+        if s:
+            shown[s["window_id"]] = s["tab_id"]
+            current[s["tab_id"]] = sid
+            save_state(st)
         print(f"Focused session: {sid}")
         return 0
     if sub == "session close":

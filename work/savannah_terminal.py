@@ -50,9 +50,11 @@ class Terminal:
 
     kind = ""
 
-    def create_split_tab(self, name, upper_cmd, lower_cmd, detached=False):
+    def create_split_tab(self, name, upper_cmd, lower_cmd, detached=False, background=False):
         """-> {"tab_id", "claude_pane", "shell_pane"}; raises UserError.
-        detached: in a window of its own instead of a tab in the group."""
+        detached: in a window of its own instead of a tab in the group.
+        background: the tab (and pane) the window showed before stays the
+        one it shows, so a script making tabs never takes the keyboard."""
         raise NotImplementedError
 
     def tab_of(self, pane_id):
@@ -196,11 +198,42 @@ class ITerm(Terminal):
             raise UserError(f"it2 {what} printed no id ({p.stdout.strip()!r})")
         return m.group(1)
 
-    def _new_tab(self, detached=False):
+    # One line per pane: its id, its tab, the pane that tab has the keyboard
+    # in, and the tab its window shows (iTerm2's own variables, pinned live
+    # on 11/17/2026 against iTerm2 3.7.7).
+    SHOWN_FORMAT = "\\(id)|\\(tab.id)|\\(tab.currentSession.id)|\\(tab.window.currentTab.id)"
+
+    def shown_pane(self, window):
+        """The pane the window's selected tab has the keyboard in, "" when
+        it cannot be told (never raises: this only serves background)."""
+        try:
+            p = self.run(["session", "list", "--json", "--format", self.SHOWN_FORMAT])
+            if p.returncode != 0:
+                return ""
+            for s in self._json(p, "session list"):
+                parts = str(s.get("formatted") or "").split("|")
+                if s.get("window_id") == window and len(parts) == 4 and parts[1] and parts[1] == parts[3]:
+                    return parts[2]
+        except UserError:
+            pass
+        return ""
+
+    def reshow(self, pane_id):
+        """Select the pane's tab again without bringing iTerm2 forward.
+        Best effort: a tab left selected is a nuisance, not a failure."""
+        if not pane_id:
+            return False
+        try:
+            return self.run(["session", "focus", pane_id]).returncode == 0
+        except UserError:
+            return False
+
+    def _new_tab(self, detached=False, background=False):
         """A fresh tab in the window pick_window names, or (detached) in a
         new window of its own. -> (tab id, the id of the pane it opened
-        with)."""
+        with, the pane to show again afterwards: "" unless background)."""
         window = "" if detached else self.pick_window(self.sessions())
+        shown = self.shown_pane(window) if background and window else ""
         if window:
             tab = self._created(self.ok(["tab", "new", "--window", window], "tab new"), "tab new")
             fresh = [s for s in self.sessions()
@@ -213,13 +246,13 @@ class ITerm(Terminal):
             tab = fresh[0].get("tab_id", "") if fresh else ""
         if not fresh:
             raise UserError("it2 created the tab but session list does not show it")
-        return tab, fresh[0]["id"]
+        return tab, fresh[0]["id"], shown
 
     def create_tab(self, name, cmd):
         # One pane, no split: the shape of a tab the owner opened by hand,
         # which is what restore puts back. The leading space and the
         # best-effort set-name are explained in create_split_tab.
-        tab, cs = self._new_tab()
+        tab, cs, _shown = self._new_tab()
         try:
             self.ok(["session", "run", "--session", cs, "--", " " + cmd], "run")
             self.ok(["session", "set-name", "--session", cs, "--", name], "set-name")
@@ -231,8 +264,8 @@ class ITerm(Terminal):
             raise
         return {"tab_id": tab, "pane": cs}
 
-    def create_split_tab(self, name, upper_cmd, lower_cmd, detached=False):
-        tab, cs = self._new_tab(detached)
+    def create_split_tab(self, name, upper_cmd, lower_cmd, detached=False, background=False):
+        tab, cs, shown = self._new_tab(detached, background)
         ss = ""
         try:
             # The line is typed before the shell is up and waits in the tty
@@ -253,7 +286,9 @@ class ITerm(Terminal):
                 self.close_tab(tab, (cs, ss))
             except Exception:
                 pass
+            self.reshow(shown)
             raise
+        self.reshow(shown)
         return {"tab_id": tab, "claude_pane": cs, "shell_pane": ss}
 
     def write(self, pane_id, text):

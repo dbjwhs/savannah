@@ -258,7 +258,12 @@ def test_api_failures(h):
     h.refused(["attach", "gamma"], "auth cookie", "it2 failing to hand out a cookie", {"FAKE_IT2_FAIL": "auth cookie"})
     still_out("no cookie")
     p = h.run(["attach", "gamma", "--json"], {"SAVANNAH_ITERM_SOCKET": os.path.join(h.tmp, "no-such-socket")})
-    check(p.stdout == "" and "Traceback" not in p.stderr, "a failed attach prints no JSON and no traceback")
+    try:
+        err = json.loads(p.stdout)
+    except ValueError:
+        err = {}
+    check(p.returncode == 1 and err.get("code") == "error" and "cannot reach" in err.get("error", "")
+          and "Traceback" not in p.stderr, f"a failed attach --json prints the error as JSON, no traceback ({p.stdout!r})")
 
     # A server that takes the request and never answers: in process, with the
     # timeout cut down, so the suite does not wait ten seconds.

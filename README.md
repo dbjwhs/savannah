@@ -369,6 +369,22 @@ that belong to no repo). The hub is optional and no longer the front door;
 the board is. Details and the storage layout are in `work/README.md` and
 `dash/README.md`.
 
+Your own scripts can open sessions too, review sessions included. There is
+no server to talk to: the interface is the `work new` command, made safe to
+call unattended.
+
+```bash
+savannah work new pr-2353 --repo ~/ng/zfs --mode review --target 2353 \
+    --if-absent --background --json
+```
+
+`--if-absent` makes the call repeatable (exit 0 with the session already
+there, matched by name or, for a review, by the same pull request or branch
+in the same repo), `--background` leaves the tab you are on selected, and
+`--json` prints one JSON value whether it worked or not (the record, or
+`{"error", "code"}` on exit 1). "Opening sessions from a script" in
+`work/README.md` has the details and a `gh pr list` loop to start from.
+
 What does not work: iTerm2 on macOS only, 3.5 or newer with its Python API
 enabled (`it2` is iTerm2's own tool; the Terminal seam exists, a tmux
 implementation does not), and `it2` costs 200 to 500 ms per call, so a new

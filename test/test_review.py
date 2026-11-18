@@ -11,6 +11,7 @@
 # user's config. Without git on PATH the test says so and exits 0. Usage:
 #   test_review.py <path/to/savannah_work.py> <path/to/fake_it2.py>
 
+import json
 import os
 import shlex
 import shutil
@@ -204,6 +205,63 @@ def test_rm(h):
     check(not os.path.exists(os.path.join(h.workroot, "rev-pr", "record.json")), "and its record")
 
 
+def test_automation(h):
+    """What a script needs of `new`: --if-absent, --background, and one
+    JSON value on stdout whether it worked or not."""
+    # The reviews the sections before left would be found as "already there".
+    for rec in h.run_json(["ls", "--json"]):
+        check(h.run(["rm", rec["name"], "--force"]).returncode == 0, f"rm {rec['name']}")
+    args = ["new", "auto-pr", "--repo", h.repo, "--mode", "review", "--target", "7", "--json"]
+    first = h.run_json(args + ["--if-absent"])
+    check(first.get("existed") is False and first.get("name") == "auto-pr", f"nothing there: made ({first})")
+    tabs = sum(1 for c in h.calls() if c[:2] == ["tab", "new"])
+    again = h.run_json(args + ["--if-absent"])
+    check(again.get("existed") is True and again.get("claude_pane") == first.get("claude_pane"),
+          f"the same name again is the session already there ({again})")
+    other = h.run_json(["new", "auto-pr-again", "--repo", h.repo, "--mode", "review",
+                        "--target", "https://github.com/o/r/pull/7", "--if-absent", "--json"])
+    check(other.get("existed") is True and other.get("name") == "auto-pr",
+          f"another name for the same pull request finds the review of it ({other})")
+    check(not os.path.exists(os.path.join(h.workroot, "auto-pr-again")), "and claims no record of its own")
+    check(sum(1 for c in h.calls() if c[:2] == ["tab", "new"]) == tabs, "neither opened a tab")
+    p = h.run(["new", "auto-pr", "--repo", h.repo, "--mode", "review", "--target", "7", "--if-absent"])
+    check(p.returncode == 0 and p.stdout.startswith("auto-pr: already exists"), f"said in words too ({p.stdout!r})")
+    fresh = h.run_json(["new", "auto-branch", "--repo", h.repo, "--mode", "review", "--target", "mine",
+                        "--if-absent", "--json"])
+    check(fresh.get("existed") is False and fresh.get("name") == "auto-branch",
+          f"a different target is a different review ({fresh})")
+
+    # Errors: one JSON value on stdout, the message on stderr as before.
+    err = h.run_json(args, rc=1)
+    check(err.get("code") == "exists" and "already exists" in err.get("error", ""), f"a taken name ({err})")
+    err = h.run_json(["new", "auto-none", "--repo", os.path.join(h.tmp, "nowhere"), "--json"], rc=1)
+    check(err.get("code") == "repo", f"a repo that is not there ({err})")
+    err = h.run_json(["new", "auto-nopr", "--repo", h.repo, "--mode", "review", "--target", "99", "--json"], rc=1)
+    check(err.get("code") == "target", f"a pull request origin does not have ({err})")
+    err = h.run_json(["new", "auto-boom", "--repo", h.repo, "--mode", "review", "--target", "mine", "--json"],
+                     {"FAKE_IT2_FAIL": "session split"}, rc=1)
+    check(err.get("code") == "terminal", f"the terminal refusing ({err})")
+    for gone in ("auto-none", "auto-nopr", "auto-boom"):
+        check(not os.path.exists(os.path.join(h.workroot, gone)), f"{gone} left no record")
+    p = h.run(["new", "auto-pr", "--repo", h.repo])
+    check(p.returncode == 1 and p.stdout == "" and "already exists" in p.stderr, "without --json stdout stays empty")
+    p = h.run(["new", "auto-bg", "--repo", h.repo, "--background", "--detach"])
+    check(p.returncode == 2, "--background with --detach is a usage error")
+
+    # --background: the tab and pane the window showed are shown again.
+    def showing():
+        out = h.it2("session", "list", "--json", "--format", "x")
+        rows = [s["formatted"].split("|") for s in json.loads(out)]
+        return next((r[2] for r in rows if r[1] == r[3]), "")
+    h.it2("session", "focus", first["shell_pane"])
+    bg = h.run_json(["new", "auto-bg", "--repo", h.repo, "--mode", "review", "--target", "theirs",
+                     "--background", "--json"])
+    check(showing() == first["shell_pane"], f"the pane that was shown is shown again ({showing()})")
+    check(h.called(["app", "activate"]) < 0, "and iTerm2 is not brought forward")
+    fg = h.run_json(["new", "auto-fg", "--repo", h.repo, "--no-worktree", "--json"])
+    check(showing() == fg["shell_pane"] != bg["shell_pane"], "without --background the new tab is the one shown")
+
+
 SECTIONS = (
     test_units,
     test_review_pr,
@@ -212,6 +270,7 @@ SECTIONS = (
     test_refusals,
     test_mode_verb,
     test_rm,
+    test_automation,
 )
 
 

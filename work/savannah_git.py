@@ -74,7 +74,7 @@ def resolve_repo_root(d):
     """
     p = run_git(["-C", d, "rev-parse", "--git-common-dir"])
     if p.returncode != 0:
-        raise UserError(f"not a git repository: {d}")
+        raise UserError(f"not a git repository: {d}", code="repo")
     common = p.stdout.strip()
     if common and not os.path.isabs(common):
         common = os.path.join(d, common)
