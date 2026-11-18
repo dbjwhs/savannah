@@ -17,6 +17,11 @@ Claude Code (A)                          Claude Code (B)
                     (song wire)
 ```
 
+**See it as pictures:** [`how-savannah-works.html`](how-savannah-works.html)
+is a one-page visual tour (the board on one machine, the mesh over song, and
+what running across machines still needs). GitHub shows an HTML file as
+source, so open it from a checkout: `open how-savannah-works.html`.
+
 `DESIGN.md` is the source of truth for architecture and rationale.
 `CLAUDE.md` holds the working conventions and the pinned wire contracts.
 
@@ -265,109 +270,164 @@ plist would be the analog); the daemon there is started by hand.
 
 ## Work sessions (local)
 
-Not part of the mesh. This is the uber terminal: one named iTerm2 tab per
-work item, your ordinary interactive `claude` in a git worktree in the upper
-pane, a shell cd'd into the same worktree below, a plain-text notes file, and
-one board to see them all. `work/savannah_work.py` (stdlib Python, Phase 5d)
-owns the records and drives iTerm2 through its own `it2` command; the dash in
-work mode is the board (Phase 5f). No savannahd, no song, no tokens spent by
-the tool; the brain in the upper pane is your own interactive Claude Code,
-not a headless worker.
+Not part of the mesh. This is the uber terminal: one board for every task
+you have open.
 
-```bash
-savannah                               # the board: every work session and its state; Ctrl-N makes a new one (build/savannah on your PATH)
-savannah work repos ~/ng/dbjwhs        # once: the folder of repos the new-session dialog offers
-savannah work new fix-parser --repo ~/ng/dbjwhs/savannah --prompt "look at src/json.cpp"   # worktree + named tab + record
-savannah work note fix-parser "flaky on nested arrays, suspect the depth check"
-savannah work say fix-parser "run ctest -R test_json and summarize"   # types into the Claude pane
-savannah work output fix-parser --last 2   # what that Claude said: the last two turns, prompt + reply
-savannah work open fix-parser          # focus the tab, or make it again (claude --continue) after an iTerm2 restart
-savannah work adopt old-tab --session <claude session id>   # a tab you opened by hand becomes a work session (the board does this from Ctrl-R or Ctrl-T)
-savannah work move fix-parser --later  # the board's LATER section (Shift-Down on the board does this); --active, --rank N order it
-savannah work rename fix-parser parser # a new name; the worktree and branch keep theirs
-savannah work title parser -- "Parser: nested arrays"   # free text the board shows instead of the name (Ctrl-R on the board); --clear drops it
-savannah work status fix-parser -- "waiting for ctest (run 2 of 3)"   # from inside the tab: the board shows that row as polling
-savannah work ls                       # NAME  TITLE  BRANCH  STATE  STATUS  LAST PROMPT  LAST NOTE
-savannah work snapshot --note "before reboot"   # every session's tab, worktree and Claude conversation id to a file (Ctrl-S on the board)
-savannah work restore                  # after the relaunch: the missing tabs back, each Claude resumed (--dry-run shows the plan)
-savannah work log --level debug        # savannah's log at normal, debug or verbose (Ctrl-L on the board); --follow tails it
-savannah mesh                          # the mesh board (workers on every node), what a bare savannah used to be
-```
+- **A work session** is one named iTerm2 tab per work item: your ordinary
+  interactive `claude` in a git worktree in the upper pane, a shell cd'd
+  into the same worktree below, and a plain-text notes file.
+- **The board** (bare `savannah`) lists them all with the state of each
+  Claude.
+- **No savannahd, no song, no tokens spent by the tool.** The brain in the
+  upper pane is your own interactive Claude Code, not a headless worker.
+- `work/savannah_work.py` (stdlib Python, Phase 5d) owns the records and
+  drives iTerm2 through iTerm2's own `it2` command; the dash in work mode
+  is the board (Phase 5f).
 
-`new` creates `<repo>/.savannah-worktrees/<name>` on branch `work/<name>`
-(or `--branch B` for an existing local branch, `--no-worktree` for the repo
-itself), opens the split tab in your current iTerm2 window with the session
-named after the work item (`claude -n <name>`, so the tab title and
-`/resume` agree), and writes `~/.claude/savannah/work/<name>/record.json`.
-`--repo` may point anywhere inside the repository; it is resolved to the
-main worktree root. A `.worktreeinclude` file in the repository lists the
-gitignored files a fresh worktree needs (`.env`, local config); `new` copies
-them in. `notes`, `sh` (type into the shell pane), `jump` (focus a pane),
-`open` (focus the tab, or make it again when it is gone, resuming that
-worktree's conversation with `claude --continue` when one exists) and `rm`
-(close the tab, remove the worktree, archive the notes; the branch stays, it
-is your work) complete the set. `new` of a name whose `work/<name>` branch
-survived an earlier `rm` reattaches to that branch and says so.
+Details and the storage layout are in `work/README.md` and `dash/README.md`.
 
-The board (`savannah`, the dash in work mode) shows each work session with
-the state of its Claude (`idle`, `working`, `waiting`, `done`, `offline`),
-joined to its live Claude Code session through the hook files (`hooks/`) by
-worktree path at read time: Enter opens or focuses the row's tab, typed text
-plus Enter goes into its Claude pane, Ctrl-O shows what that Claude said,
-Ctrl-T takes a note, Ctrl-R gives it a title (free text, capitals and
-spaces, shown in place of the name; the name stays the identifier and
-`work rename` changes that), Ctrl-X twice removes it, Ctrl-D moves its tab
-into the board's window or out into a window of its own (`work attach`,
-`work detach`), Ctrl-N opens the new-session dialog (name, repo from the
-remembered folder, prompt, worktree or not, its own window or not; Mode
-`review` opens a code review of a pull request or a branch instead,
-checked out and handed to `/code-review`, and reviews sit in their own
-REVIEWS section; Ctrl-Y marks an existing session as one). Wherever a name is asked for you may type words: "Fix the parser"
-becomes the title and `fix-the-parser` the name. Rows sit in two sections you order yourself, ACTIVE and
-LATER: Shift-Up/Down moves a session one row, or over the line between the
-sections at the ends, and the order is kept in the records (`work move`), so
-the CLI and a restarted board see the same. Plain tabs (ones you opened by
-hand) are on the board too, at the bottom of LATER with their iTerm2 tab
-title in parentheses; Ctrl-R on one names it (`work adopt`: the tab becomes
-a work session, nothing new opens), Ctrl-T names it and then takes a note.
-A session's Claude can report what it is waiting on (`work status <name> --
-"waiting for ctest (run 2 of 3)"`; the SessionStart hook tells it the
-command), and while that turn is open the board shows the row as polling,
-with the text, the poll count and its age, and counts such rows in the
-header. The board uses the whole terminal: from 120 columns the table adds
-TAB and NOTE columns and shows full paths, and the rest of the height is a
-panel for the highlighted row with its notes beside the end of its Claude's
-last reply. Ctrl-S is the snapshot screen: before a reboot it saves every
-session's tab, worktree and Claude conversation id (`work snapshot`), and
-once iTerm2 is back it remakes the tabs that are gone with each Claude
-resumed on its conversation (`work restore`; a dry run first if you like).
-Ctrl-L reads savannah's log. Every key is a `savannah work ...` subprocess,
-so the board and the CLI never disagree. The dash is a Go program: `cmake
---build build --target dash` (or `cd dash && go build -o savannah-dash .`)
-puts it where the CLI looks.
+### Commands
+
+`build/savannah` on your PATH is assumed.
+
+| Command | What it does |
+|---------|--------------|
+| `savannah` | The board: every work session and its state. Ctrl-N makes a new one. |
+| `savannah work repos ~/ng/dbjwhs` | Once: the folder of repos the new-session dialog offers. |
+| `savannah work new fix-parser --repo ~/ng/dbjwhs/savannah --prompt "look at src/json.cpp"` | Worktree, named tab and record. |
+| `savannah work note fix-parser "flaky on nested arrays"` | Append a note. |
+| `savannah work say fix-parser "run ctest -R test_json and summarize"` | Type into the Claude pane. |
+| `savannah work output fix-parser --last 2` | What that Claude said: the last two turns, prompt and reply. |
+| `savannah work open fix-parser` | Focus the tab, or make it again (`claude --continue`) after an iTerm2 restart. |
+| `savannah work adopt old-tab --session <claude session id>` | A tab you opened by hand becomes a work session (the board does this from Ctrl-R or Ctrl-T). |
+| `savannah work move fix-parser --later` | The board's LATER section (Shift-Down on the board); `--active` and `--rank N` order it. |
+| `savannah work rename fix-parser parser` | A new name; the worktree and branch keep theirs. |
+| `savannah work title parser -- "Parser: nested arrays"` | Free text the board shows instead of the name (Ctrl-R on the board); `--clear` drops it. |
+| `savannah work status fix-parser -- "waiting for ctest (run 2 of 3)"` | From inside the tab: the board shows that row as polling. |
+| `savannah work ls` | NAME, TITLE, BRANCH, STATE, STATUS, LAST PROMPT, LAST NOTE. |
+| `savannah work snapshot --note "before reboot"` | Every session's tab, worktree and Claude conversation id to a file (Ctrl-S on the board). |
+| `savannah work restore` | After the relaunch: the missing tabs back, each Claude resumed (`--dry-run` shows the plan). |
+| `savannah work log --level debug` | Savannah's log at normal, debug or verbose (Ctrl-L on the board); `--follow` tails it. |
+| `savannah mesh` | The mesh board (workers on every node), what a bare `savannah` used to be. |
+
+The rest of the set: `notes` (print the notes), `sh` (type into the shell
+pane), `jump` (focus a pane) and `rm` (close the tab, remove the worktree,
+archive the notes; the branch stays, it is your work).
+
+### What `new` sets up
+
+- **A worktree**: `<repo>/.savannah-worktrees/<name>` on branch
+  `work/<name>`. `--branch B` checks out an existing local branch instead,
+  and `--no-worktree` runs in the repo itself.
+- **A split tab** in your current iTerm2 window, with the session named
+  after the work item (`claude -n <name>`, so the tab title and `/resume`
+  agree).
+- **A record**: `~/.claude/savannah/work/<name>/record.json`.
+
+Worth knowing:
+
+- `--repo` may point anywhere inside the repository; it is resolved to the
+  main worktree root.
+- A `.worktreeinclude` file in the repository lists the gitignored files a
+  fresh worktree needs (`.env`, local config); `new` copies them in.
+- `new` of a name whose `work/<name>` branch survived an earlier `rm`
+  reattaches to that branch and says so.
+- `open` on a tab that is gone makes it again, resuming that worktree's
+  conversation with `claude --continue` when one exists.
+
+### The board
+
+`savannah` (the dash in work mode) shows each work session with the state
+of its Claude: idle, working, waiting, done or offline. A row is joined to
+its live Claude Code session through the hook files (`hooks/`) by worktree
+path at read time.
+
+| Key | What it does |
+|-----|--------------|
+| Enter | Open or focus the row's tab. With text typed, send that text to its Claude pane. |
+| Ctrl-N | The new-session dialog: name, repo from the remembered folder, prompt, worktree or not, its own window or not. Mode `review` opens a code review instead (see below). |
+| Ctrl-O | Show what that Claude said. |
+| Ctrl-T | Take a note. |
+| Ctrl-R | Give it a title: free text, capitals and spaces, shown in place of the name. The name stays the identifier; `work rename` changes that. |
+| Ctrl-X twice | Remove it. |
+| Ctrl-D | Move its tab into the board's window, or out into a window of its own (`work attach`, `work detach`). |
+| Ctrl-Y | Mark an existing session as a review. |
+| Shift-Up, Shift-Down | Move a session one row, or over the line between sections at the ends. |
+| Ctrl-S | The snapshot screen. |
+| Ctrl-L | Read savannah's log. |
+
+**Names.** Wherever a name is asked for you may type words: "Fix the
+parser" becomes the title and `fix-the-parser` the name.
+
+**Sections.** Rows sit in sections you order yourself: NOW, ACTIVE and
+LATER. The order is kept in the records (`work move`), so the CLI and a
+restarted board see the same.
+
+**Reviews.** Mode `review` in the dialog opens a code review of a pull
+request or a branch, checked out and handed to `/code-review`. Reviews sit
+in their own REVIEWS section.
+
+**Plain tabs.** Tabs you opened by hand are on the board too, at the bottom
+of LATER with their iTerm2 tab title in parentheses. Ctrl-R on one names it
+(`work adopt`: the tab becomes a work session, nothing new opens); Ctrl-T
+names it and then takes a note.
+
+**Polling.** A session's Claude can report what it is waiting on (`work
+status <name> -- "waiting for ctest (run 2 of 3)"`; the SessionStart hook
+tells it the command). While that turn is open the board shows the row as
+polling, with the text, the poll count and its age, and counts such rows in
+the header.
+
+**Layout.** The board uses the whole terminal. From 120 columns the table
+adds TAB and NOTE columns and shows full paths; the rest of the height is a
+panel for the highlighted row, with its notes beside the end of its
+Claude's last reply.
+
+**Snapshot and restore.** Before a reboot, Ctrl-S saves every session's
+tab, worktree and Claude conversation id (`work snapshot`). Once iTerm2 is
+back it remakes the tabs that are gone, with each Claude resumed on its
+conversation (`work restore`; a dry run first if you like).
+
+Every key is a `savannah work ...` subprocess, so the board and the CLI
+never disagree. The dash is a Go program: `cmake --build build --target
+dash` (or `cd dash && go build -o savannah-dash .`) puts it where the CLI
+looks.
+
+### The log
 
 Everything local logs to one file, `~/.claude/savannah/log/savannah.log`
-(`$SAVANNAH_LOG_DIR`): the board, the work CLI, the hook and the shim, one
-`key=value` line per record with a `level=` stamp (VERBOSE, DEBUG, INFO,
-WARN, ERROR) and a `src=` (dash, work, hook, shim). The file is always
-verbose; the readers filter: `savannah work log --level normal|debug|
-verbose` (`--follow` tails) and the board's Ctrl-L view. Normal is what you
-did and what came of it, debug adds every subprocess and every it2 call
-with its timing, verbose adds payloads. 10 MiB rotation, three old files
-kept; Go's `log/slog` on one side and Python's `logging` on the other, no
-dependency added.
+(`$SAVANNAH_LOG_DIR`): the board, the work CLI, the hook and the shim.
 
-The same verbs are MCP tools in the shim (`work_new`, `work_adopt`,
-`work_list`, `work_note`, `work_notes`, `work_say`, `work_output`,
-`work_shell`, `work_jump`, `work_open`, `work_move`, `work_rename`,
-`work_title`, `work_status`, `work_rm`), so a Claude Code session can open a tab
-for you, type a line into it, and read the reply back; `savannah hub DIR`
-sets such a coordinating session up (the shim registered in `DIR/.mcp.json`
-with absolute paths, a starter `CLAUDE.md` from `work/hub_CLAUDE.md` that
-tells it to delegate every task to a tab, `DIR/.savannah-scratch/` for tasks
-that belong to no repo). The hub is optional and no longer the front door;
-the board is. Details and the storage layout are in `work/README.md` and
-`dash/README.md`.
+- **Format**: one `key=value` line per record, with a `level=` stamp
+  (VERBOSE, DEBUG, INFO, WARN, ERROR) and a `src=` (dash, work, hook, shim).
+- **Reading it**: the file is always verbose and the readers filter:
+  `savannah work log --level normal|debug|verbose` (`--follow` tails) and
+  the board's Ctrl-L view.
+- **Levels**: normal is what you did and what came of it, debug adds every
+  subprocess and every it2 call with its timing, verbose adds payloads.
+- **Rotation**: at 10 MiB, three old files kept.
+- **No dependency added**: Go's log/slog on one side, Python's logging on
+  the other.
+
+### From a Claude: MCP tools and the hub
+
+The same verbs are MCP tools in the shim, so a Claude Code session can open
+a tab for you, type a line into it, and read the reply back:
+
+`work_new`, `work_adopt`, `work_list`, `work_note`, `work_notes`,
+`work_say`, `work_output`, `work_shell`, `work_jump`, `work_open`,
+`work_move`, `work_rename`, `work_title`, `work_status`, `work_rm`.
+
+`savannah hub DIR` sets such a coordinating session up:
+
+- the shim registered in `DIR/.mcp.json` with absolute paths;
+- a starter `CLAUDE.md` from `work/hub_CLAUDE.md` that tells it to delegate
+  every task to a tab;
+- `DIR/.savannah-scratch/` for tasks that belong to no repo.
+
+The hub is optional and no longer the front door; the board is.
+
+### From a script
 
 Your own scripts can open sessions too, review sessions included. There is
 no server to talk to: the interface is the `work new` command, made safe to
@@ -378,41 +438,67 @@ savannah work new pr-2353 --repo ~/ng/zfs --mode review --target 2353 \
     --if-absent --background --json
 ```
 
-`--if-absent` makes the call repeatable (exit 0 with the session already
-there, matched by name or, for a review, by the same pull request or branch
-in the same repo), `--background` leaves the tab you are on selected, and
-`--json` prints one JSON value whether it worked or not (the record, or
-`{"error", "code"}` on exit 1). "Opening sessions from a script" in
-`work/README.md` has the details and a `gh pr list` loop to start from.
+- `--if-absent` makes the call repeatable: exit 0 with the session already
+  there, matched by name or, for a review, by the same pull request or
+  branch in the same repo.
+- `--background` leaves the tab you are on selected.
+- `--json` prints one JSON value whether it worked or not: the record, or
+  `{"error", "code"}` on exit 1.
 
-What does not work: iTerm2 on macOS only, 3.5 or newer with its Python API
-enabled (`it2` is iTerm2's own tool; the Terminal seam exists, a tmux
-implementation does not), and `it2` costs 200 to 500 ms per call, so a new
-session takes about two seconds to appear. STATE, LAST PROMPT and the join
-need the hook installed (`python3 hooks/install.py`); without it every
-session reads `offline`. Typing into a pane is the only input channel into
-an interactive Claude Code session, and it is blind: `say` presses Enter and
-never checks that Claude was ready (it does refuse empty text, exit 2).
-`output` is the read side, but it reads the transcript file Claude Code
-writes, not the pane: the subset of that file it relies on is pinned by a
-test fixture, not by any published contract, and a reply is only final once
-`ls` reports the tab `done` or `waiting`. Nothing watches the panes: `ls`
-reports whether the Claude pane still exists and `open` brings a gone tab
-back, but a tab closed by hand stays an `offline` row until you do. `rm`
-refuses a dirty worktree without `--force`, `--force` discards uncommitted
-changes there, and `rm` refuses when another work session's worktree lies
-inside the one it is about to remove (`--keep-worktree` skips both the
-removal and that check). `--branch B` must already exist locally (no DWIM
-from remotes), and cannot be combined with `--no-worktree`.
-`.savannah-worktrees/` lives inside your repo and shows up as untracked
-unless you exclude it. A snapshot is the layout and the conversation ids,
-not the terminals' contents: a turn that was running when the machine went
-down is lost, restore never closes anything (tabs iTerm2 restored on its own
-sit next to the remade ones), and plain tabs come back as single panes. The
-log is best effort: a directory that cannot be written means no log, not no
-board, and two writers rotating in the same instant can lose a few lines.
-Tests drive a fake `it2` and a throwaway git repo; the real it2 is
-exercised by hand on a Mac, not in CI.
+"Opening sessions from a script" in `work/README.md` has the details and a
+`gh pr list` loop to start from.
+
+### What does not work
+
+**Platform**
+
+- iTerm2 on macOS only, 3.5 or newer with its Python API enabled. `it2` is
+  iTerm2's own tool; the Terminal seam exists, a tmux implementation does
+  not.
+- `it2` costs 200 to 500 ms per call, so a new session takes about two
+  seconds to appear.
+- STATE, LAST PROMPT and the join need the hook installed (`python3
+  hooks/install.py`); without it every session reads offline.
+
+**Talking to a tab**
+
+- Typing into a pane is the only input channel into an interactive Claude
+  Code session, and it is blind: `say` presses Enter and never checks that
+  Claude was ready (it does refuse empty text, exit 2).
+- `output` is the read side, but it reads the transcript file Claude Code
+  writes, not the pane. The subset of that file it relies on is pinned by a
+  test fixture, not by any published contract, and a reply is only final
+  once `ls` reports the tab done or waiting.
+- Nothing watches the panes: `ls` reports whether the Claude pane still
+  exists and `open` brings a gone tab back, but a tab closed by hand stays
+  an offline row until you do.
+
+**Worktrees and branches**
+
+- `rm` refuses a dirty worktree without `--force`, and `--force` discards
+  uncommitted changes there.
+- `rm` refuses when another work session's worktree lies inside the one it
+  is about to remove (`--keep-worktree` skips both the removal and that
+  check).
+- `--branch B` must already exist locally (no DWIM from remotes), and
+  cannot be combined with `--no-worktree`.
+- `.savannah-worktrees/` lives inside your repo and shows up as untracked
+  unless you exclude it.
+
+**Snapshots**
+
+- A snapshot is the layout and the conversation ids, not the terminals'
+  contents: a turn that was running when the machine went down is lost.
+- `restore` never closes anything (tabs iTerm2 restored on its own sit next
+  to the remade ones), and plain tabs come back as single panes.
+
+**Log and tests**
+
+- The log is best effort: a directory that cannot be written means no log,
+  not no board, and two writers rotating in the same instant can lose a few
+  lines.
+- Tests drive a fake `it2` and a throwaway git repo; the real `it2` is
+  exercised by hand on a Mac, not in CI.
 
 ## Layout
 
