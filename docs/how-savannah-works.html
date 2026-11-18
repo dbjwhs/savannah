@@ -1,0 +1,492 @@
+<!doctype html>
+<!--
+MIT License
+Copyright (c) 2026 Dennis B Jones
+
+How savannah works, as pictures. Every statement here is taken from this
+repository's README.md, DESIGN.md, work/README.md and dash/README.md, and
+from song's README.md. When those change, change this.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How savannah works</title>
+<style>
+  :root {
+    --bg: #0e1113;
+    --panel: #161b1f;
+    --panel-2: #1c2328;
+    --line: #2b353c;
+    --text: #e4e9ec;
+    --muted: #94a3ad;
+    --grass: #d9a441;      /* savannah */
+    --song: #5fb3d9;       /* song */
+    --ok: #6cc17a;
+    --work: #e3c84b;
+    --wait: #e2675f;
+    --future: #b08be0;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 var(--sans);
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 0 16px 80px; }
+  header.hero { padding: 64px 0 28px; border-bottom: 1px solid var(--line); }
+  .eyebrow { font: 600 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--grass); }
+  h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.12; margin: 14px 0 14px; letter-spacing: -.02em; }
+  h2 { font-size: 26px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.01em; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  p { margin: 0 0 14px; }
+  .lede { font-size: 19px; color: var(--muted); max-width: 46em; }
+  section { padding: 52px 0 8px; }
+  .num { font: 600 12px/1 var(--mono); color: var(--muted); letter-spacing: .12em; display: block; margin-bottom: 10px; }
+  .sub { color: var(--muted); max-width: 48em; }
+  code, .mono { font-family: var(--mono); font-size: .88em; }
+  code { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font: 13px/1.55 var(--mono); color: #cfd8dd; margin: 0 0 14px;
+  }
+  .grid { display: grid; gap: 14px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+  .card ul { margin: 0; padding-left: 18px; color: var(--muted); }
+  .card li { margin-bottom: 4px; }
+  .card.today { border-top: 3px solid var(--ok); }
+  .card.song { border-top: 3px solid var(--song); }
+  .card.future { border-top: 3px solid var(--future); }
+  .tag { display: inline-block; font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+         padding: 4px 7px; border-radius: 4px; margin-bottom: 10px; }
+  .tag.today { color: var(--ok); background: rgba(108,193,122,.12); }
+  .tag.song { color: var(--song); background: rgba(95,179,217,.12); }
+  .tag.future { color: var(--future); background: rgba(176,139,224,.14); }
+  .stat { font: 600 26px/1.1 var(--mono); color: var(--text); }
+  .stat small { display: block; font: 13px/1.4 var(--sans); color: var(--muted); margin-top: 6px; font-weight: 400; }
+  .figure { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 18px 0 14px; overflow-x: auto; }
+  .figure svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  .caption { color: var(--muted); font-size: 14px; margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 600 12px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td.n { font-family: var(--mono); white-space: nowrap; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: baseline; }
+  .note { border-left: 3px solid var(--grass); background: var(--panel); padding: 12px 16px; border-radius: 0 8px 8px 0; color: var(--muted); }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  a { color: var(--song); }
+  /* svg text */
+  svg text { font-family: var(--sans); fill: var(--text); }
+  svg .m { font-family: var(--mono); }
+  svg .dim { fill: var(--muted); }
+  svg .box { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+  svg .zone { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 6 5; }
+  svg .wire { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+</style>
+</head>
+<body>
+<main>
+
+<header class="hero">
+  <div class="eyebrow">savannah / how it works</div>
+  <h1>One board for every Claude Code session you have open.</h1>
+  <p class="lede">Savannah is two things that share a name and a repository. The first is a
+  terminal board that keeps your own interactive Claude Code tabs in order on one machine.
+  The second is a mesh that lets Claude on one machine ask Claude on another, carried by
+  <a href="https://github.com/dbjwhs/song">song</a>. This page shows each as it works today,
+  and then what joining them across machines would take.</p>
+</header>
+
+<!-- ------------------------------------------------------------ 1 -->
+<section>
+  <span class="num">01 / THE TWO LAYERS</span>
+  <h2>What exists today</h2>
+  <p class="sub">Both layers work now. They are separate: the board does not use song, and the
+  mesh does not manage your tabs.</p>
+  <div class="grid g2" style="margin-top:18px">
+    <div class="card today">
+      <span class="tag today">Works today / one machine</span>
+      <h3>The board and work sessions</h3>
+      <p>Bare <code>savannah</code> opens the board. Each task is a work session: one named
+      iTerm2 tab with your ordinary interactive <code>claude</code> in a git worktree above
+      and a shell in the same worktree below, plus a plain-text notes file.</p>
+      <ul>
+        <li>No daemon, no song, and the tool itself spends no tokens.</li>
+        <li>macOS and iTerm2 only (3.5 or newer, Python API on).</li>
+      </ul>
+    </div>
+    <div class="card song">
+      <span class="tag song">Works today / one LAN</span>
+      <h3>The mesh</h3>
+      <p>Every machine runs <code>savannahd</code>, a small C++20 daemon that exposes that
+      machine's headless Claude as a typed, streamed, supervised song service. Nodes find
+      each other by mDNS and authenticate with a shared key.</p>
+      <ul>
+        <li>Acceptance run on a real LAN: macOS arm64 and Ubuntu x86_64, asks in both directions.</li>
+        <li>No forked Claude Code, no broker, no cloud relay.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------ 2 -->
+<section>
+  <span class="num">02 / ONE MACHINE</span>
+  <h2>How the board knows what every tab is doing</h2>
+  <p class="sub">There is no server. The board, the command line, your scripts and Claude
+  itself all go through one command, and everything it knows is files on disk.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1000 520" role="img" aria-label="Local architecture: callers go through the savannah work command, which drives iTerm2 through it2; a Claude Code hook writes status files the board reads.">
+    <defs>
+      <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#94a3ad"/>
+      </marker>
+    </defs>
+
+    <!-- callers -->
+    <text x="20" y="26" class="m dim" font-size="12" letter-spacing="1.5">WHO ASKS</text>
+    <rect class="box" x="20" y="40" width="210" height="64" rx="8" style="stroke:#d9a441"/>
+    <text x="36" y="66" font-size="15" font-weight="600">The board</text>
+    <text x="36" y="88" font-size="12.5" class="dim">Go, Bubble Tea: dash/</text>
+
+    <rect class="box" x="20" y="120" width="210" height="64" rx="8"/>
+    <text x="36" y="146" font-size="15" font-weight="600">Your scripts</text>
+    <text x="36" y="168" font-size="12.5" class="dim m">work new --if-absent --json</text>
+
+    <rect class="box" x="20" y="200" width="210" height="64" rx="8"/>
+    <text x="36" y="226" font-size="15" font-weight="600">A Claude (MCP)</text>
+    <text x="36" y="248" font-size="12.5" class="dim m">work_new, work_list, ...</text>
+
+    <!-- CLI -->
+    <text x="330" y="26" class="m dim" font-size="12" letter-spacing="1.5">ONE COMMAND</text>
+    <rect class="box" x="330" y="96" width="230" height="112" rx="8" style="stroke:#d9a441"/>
+    <text x="346" y="124" font-size="15" font-weight="600" class="m">savannah work ...</text>
+    <text x="346" y="148" font-size="12.5" class="dim">Python, standard library only</text>
+    <text x="346" y="168" font-size="12.5" class="dim">new, open, say, output, note,</text>
+    <text x="346" y="186" font-size="12.5" class="dim">move, scan, snapshot, rm</text>
+
+    <path class="wire" d="M230 72 C290 72 280 130 330 132" marker-end="url(#a)"/>
+    <path class="wire" d="M230 152 L330 152" marker-end="url(#a)"/>
+    <path class="wire" d="M230 232 C290 232 280 174 330 172" marker-end="url(#a)"/>
+
+    <!-- iTerm -->
+    <text x="670" y="26" class="m dim" font-size="12" letter-spacing="1.5">ITERM2</text>
+    <rect class="zone" x="660" y="40" width="320" height="230" rx="10"/>
+    <rect class="box" x="680" y="60" width="280" height="30" rx="6"/>
+    <text x="694" y="80" font-size="12.5" class="m">tab: fix-parser</text>
+    <rect class="box" x="680" y="96" width="280" height="84" rx="6" style="stroke:#6cc17a"/>
+    <text x="694" y="122" font-size="14" font-weight="600">Claude Code, interactive</text>
+    <text x="694" y="144" font-size="12.5" class="dim m">claude -n fix-parser</text>
+    <text x="694" y="164" font-size="12.5" class="dim">in &lt;repo&gt;/.savannah-worktrees/fix-parser</text>
+    <rect class="box" x="680" y="186" width="280" height="66" rx="6"/>
+    <text x="694" y="212" font-size="14" font-weight="600">Shell</text>
+    <text x="694" y="234" font-size="12.5" class="dim">the same worktree, branch work/fix-parser</text>
+
+    <path class="wire" d="M560 152 L660 152" marker-end="url(#a)"/>
+    <text x="578" y="142" font-size="12.5" class="m dim">it2</text>
+    <text x="570" y="172" font-size="11.5" class="dim">iTerm2's own</text>
+    <text x="570" y="187" font-size="11.5" class="dim">command</text>
+
+    <!-- files -->
+    <text x="20" y="300" class="m dim" font-size="12" letter-spacing="1.5">ON DISK: ~/.claude/savannah/</text>
+    <rect class="box" x="20" y="346" width="300" height="130" rx="8"/>
+    <text x="36" y="372" font-size="14" font-weight="600" class="m">work/&lt;name&gt;/record.json</text>
+    <text x="36" y="394" font-size="12.5" class="dim">name, title, repo, worktree, tab and</text>
+    <text x="36" y="412" font-size="12.5" class="dim">pane ids, kind (coding or review),</text>
+    <text x="36" y="430" font-size="12.5" class="dim">priority, plus notes.md beside it</text>
+    <text x="36" y="456" font-size="12" class="m" fill="#d9a441">written by: savannah work</text>
+
+    <rect class="box" x="350" y="346" width="300" height="130" rx="8"/>
+    <text x="366" y="372" font-size="14" font-weight="600" class="m">sessions/&lt;session id&gt;.json</text>
+    <text x="366" y="394" font-size="12.5" class="dim">state, last prompt, directory, pane,</text>
+    <text x="366" y="412" font-size="12.5" class="dim">transcript path: one file per live</text>
+    <text x="366" y="430" font-size="12.5" class="dim">Claude Code session</text>
+    <text x="366" y="456" font-size="12" class="m" fill="#6cc17a">written by: the Claude Code hook</text>
+
+    <rect class="box" x="680" y="346" width="300" height="130" rx="8"/>
+    <text x="696" y="372" font-size="14" font-weight="600" class="m">log/savannah.log</text>
+    <text x="696" y="394" font-size="12.5" class="dim">one log for every piece: each verb,</text>
+    <text x="696" y="412" font-size="12.5" class="dim">each it2 and git call, each hook</text>
+    <text x="696" y="430" font-size="12.5" class="dim">event</text>
+    <text x="696" y="456" font-size="12" class="m dim">rotates at 10 MB</text>
+
+    <!-- hook arrow -->
+    <path class="wire" d="M820 270 C820 312 560 300 520 346" marker-end="url(#a)" style="stroke:#6cc17a"/>
+    <text x="700" y="322" font-size="12" fill="#6cc17a">the hook fires on every Claude Code event</text>
+    <!-- record arrow -->
+    <path class="wire" d="M400 208 C400 270 300 290 290 346" marker-end="url(#a)" style="stroke:#d9a441"/>
+    <!-- board reads -->
+    <path class="wire" d="M12 72 C-6 200 -6 420 20 420" style="stroke-dasharray:4 4"/>
+    <text x="24" y="500" font-size="12.5" class="dim">The board joins the two: a session belongs to a record when it runs in that record's
+      directory (its pane first, else the newest session there).</text>
+  </svg>
+  </div>
+  <p class="caption">Each row on the board is a record joined, at read time, with the status file
+  of the live Claude Code session in that worktree.</p>
+
+  <div class="grid g3" style="margin-top:20px">
+    <div class="card">
+      <h3>What a row tells you</h3>
+      <p><span class="dot" style="background:var(--wait)"></span>waiting: blocked on a
+      permission prompt or your answer</p>
+      <p><span class="dot" style="background:var(--work)"></span>working</p>
+      <p><span class="dot" style="background:var(--ok)"></span>idle or done</p>
+    </div>
+    <div class="card">
+      <h3>Where a row sits</h3>
+      <p>Sections you order yourself: <span class="mono">NOW</span>, <span class="mono">ACTIVE</span>
+      and <span class="mono">LATER</span>. Code reviews get their own <span class="mono">REVIEWS</span>
+      section, and closed sessions go to <span class="mono">HISTORY</span>.</p>
+    </div>
+    <div class="card">
+      <h3>One key for each chore</h3>
+      <p><span class="mono">Ctrl-N</span> new task, <span class="mono">Enter</span> jump to its
+      tab or type into its Claude, <span class="mono">Ctrl-O</span> what it said,
+      <span class="mono">Ctrl-T</span> a note, <span class="mono">Ctrl-A</span> twice asks every
+      idle tab what it is doing.</p>
+    </div>
+  </div>
+
+  <h3 style="margin-top:28px">The same door for automation</h3>
+  <p class="sub">A script opens a review session with one repeatable call. It returns the
+  session that is already there instead of making a second, and it leaves the tab you are
+  on selected.</p>
+<pre>savannah work new pr-2353 --repo ~/ng/zfs --mode review --target 2353 \
+    --if-absent --background --json</pre>
+</section>
+
+<!-- ------------------------------------------------------------ 3 -->
+<section>
+  <span class="num">03 / TWO MACHINES</span>
+  <h2>The mesh, carried by song</h2>
+  <p class="sub">Stock Claude Code gets an <code>ask_peer</code> tool. When it calls it, the
+  question travels over song to another machine's daemon, which runs a headless Claude there
+  and streams the answer back.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1000 400" role="img" aria-label="Mesh architecture: Claude Code on machine A calls the peer MCP shim, which uses the savannah CLI to talk over the song wire to savannahd on machine B, which spawns headless Claude.">
+    <defs>
+      <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#5fb3d9"/>
+      </marker>
+      <marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#94a3ad"/>
+      </marker>
+    </defs>
+
+    <rect class="zone" x="20" y="34" width="330" height="310" rx="12"/>
+    <text x="36" y="26" class="m dim" font-size="12" letter-spacing="1.5">MACHINE A (macOS)</text>
+    <rect class="box" x="44" y="58" width="282" height="60" rx="8"/>
+    <text x="60" y="84" font-size="15" font-weight="600">Claude Code</text>
+    <text x="60" y="104" font-size="12.5" class="dim m">ask_peer("linux-box", "run ctest ...")</text>
+    <rect class="box" x="44" y="156" width="282" height="60" rx="8"/>
+    <text x="60" y="182" font-size="15" font-weight="600">peer shim</text>
+    <text x="60" y="202" font-size="12.5" class="dim">MCP server, Python standard library</text>
+    <rect class="box" x="44" y="254" width="282" height="60" rx="8" style="stroke:#5fb3d9"/>
+    <text x="60" y="280" font-size="15" font-weight="600" class="m">savannah</text>
+    <text x="60" y="300" font-size="12.5" class="dim">C++ CLI, a song client</text>
+    <path class="wire" d="M185 118 L185 156" marker-end="url(#c)"/>
+    <path class="wire" d="M185 216 L185 254" marker-end="url(#c)"/>
+
+    <rect class="zone" x="650" y="34" width="330" height="310" rx="12"/>
+    <text x="666" y="26" class="m dim" font-size="12" letter-spacing="1.5">MACHINE B (Linux)</text>
+    <rect class="box" x="674" y="254" width="282" height="60" rx="8" style="stroke:#5fb3d9"/>
+    <text x="690" y="280" font-size="15" font-weight="600" class="m">savannahd</text>
+    <text x="690" y="300" font-size="12.5" class="dim">C++20 daemon, a song service</text>
+    <rect class="box" x="674" y="156" width="282" height="60" rx="8"/>
+    <text x="690" y="182" font-size="15" font-weight="600">Supervised agent process</text>
+    <text x="690" y="202" font-size="12.5" class="dim">timeout, cancel, crash reported honestly</text>
+    <rect class="box" x="674" y="58" width="282" height="60" rx="8"/>
+    <text x="690" y="84" font-size="15" font-weight="600">Headless Claude</text>
+    <text x="690" y="104" font-size="12.5" class="dim m">claude -p, or a resumable task worker</text>
+    <path class="wire" d="M815 254 L815 216" marker-end="url(#c)"/>
+    <path class="wire" d="M815 156 L815 118" marker-end="url(#c)"/>
+
+    <!-- the wire -->
+    <path d="M326 276 L674 276" stroke="#5fb3d9" stroke-width="2.5" fill="none" marker-end="url(#b)"/>
+    <path d="M674 296 L326 296" stroke="#5fb3d9" stroke-width="2.5" fill="none" stroke-dasharray="7 5" marker-end="url(#b)"/>
+    <text x="500" y="262" font-size="14" font-weight="600" text-anchor="middle" fill="#5fb3d9">song wire over TCP</text>
+    <text x="500" y="318" font-size="12.5" text-anchor="middle" class="dim">streamed back: TEXT, TOOL_EVENT, RESULT</text>
+
+    <rect class="box" x="380" y="70" width="240" height="150" rx="8" style="stroke:#5fb3d9"/>
+    <text x="396" y="96" font-size="13" font-weight="600" fill="#5fb3d9">What song provides here</text>
+    <text x="396" y="120" font-size="12.5">Discovery: mDNS,</text>
+    <text x="396" y="137" font-size="12.5" class="m dim">_agent-song._tcp</text>
+    <text x="396" y="160" font-size="12.5">Authentication: HMAC-SHA256,</text>
+    <text x="396" y="177" font-size="12.5" class="dim">one shared key per mesh</text>
+    <text x="396" y="200" font-size="12.5">Streaming RPC from an IDL</text>
+
+    <text x="500" y="376" font-size="12.5" text-anchor="middle" class="dim">A client with no key or the wrong key is dropped before any dispatcher runs.</text>
+  </svg>
+  </div>
+  <p class="caption"><code>savannah ls</code> lists every node on the network,
+  <code>savannah ask &lt;name&gt;</code> asks one, <code>savannah task ...</code> runs persistent
+  headless workers, and <code>savannah mesh</code> is the board for them.</p>
+
+  <div class="note">
+    Stated limits of the mesh today: one ask at a time per node, cancel is a kill and not
+    cooperative, prompt out and text back with no file transfer, nothing migrates a session
+    between machines, and the traffic is authenticated but not encrypted. The README says to
+    treat the mesh as LAN-trust.
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------ 4 -->
+<section>
+  <span class="num">04 / THE SUBSTRATE</span>
+  <h2>Why song</h2>
+  <p class="sub">Song (Services Over Native Gateways) is a C++20 service framework: you describe
+  a service in an IDL file, <code>songc</code> generates type-safe C++ and Python code, and
+  services talk over pipes or TCP. Savannah's daemon is a song service. The figures below are
+  song's own, from its README.</p>
+
+  <div class="grid g4" style="margin-top:18px">
+    <div class="card song"><div class="stat">705<small>tests: 598 unit and 107 integration</small></div></div>
+    <div class="card song"><div class="stat">0<small>warnings allowed: <span class="mono">-Wall -Wextra -Werror</span> on clang and GCC</small></div></div>
+    <div class="card song"><div class="stat">16 B<small>fixed header on every message</small></div></div>
+    <div class="card song"><div class="stat">~31K<small>lines of C++20, no external dependencies for the core</small></div></div>
+  </div>
+
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card song">
+      <span class="tag song">Security, built in</span>
+      <h3>Two layers, both part of song</h3>
+      <ul>
+        <li><b style="color:var(--text)">HMAC-SHA256 authentication.</b> A tag on every message,
+          constant-time comparison, a wrapper over any transport. Platform crypto: CommonCrypto on
+          macOS, OpenSSL on Linux. This is what savannah uses today.</li>
+        <li><b style="color:var(--text)">TLS encryption.</b> Certificate or pre-shared-key mode, via
+          mbedTLS (an optional dependency; song builds without it). Savannah does not use it yet.</li>
+        <li>Size limits on every message (16 MB), and fuzz harnesses for the wire and buffer decoders.</li>
+      </ul>
+    </div>
+    <div class="card song">
+      <span class="tag song">Speed, measured</span>
+      <h3>Song's own numbers</h3>
+      <div class="tablewrap" style="border:0;background:none">
+      <table>
+        <tr><td>Buffer encode and decode</td><td class="n">12 ns</td></tr>
+        <tr><td>Pipe RPC round trip</td><td class="n">~6 us</td></tr>
+        <tr><td>TCP round trip, localhost</td><td class="n">~100-200 us</td></tr>
+        <tr><td>Service start (fork, exec, handshake)</td><td class="n">~100 ms</td></tr>
+      </table>
+      </div>
+      <p style="color:var(--muted);font-size:14px;margin-top:10px">Apple M4, release build, from
+      song's README. In savannah an ask is bounded by how long Claude takes, not by the wire.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------ 5 -->
+<section>
+  <span class="num">05 / WHERE THIS GOES</span>
+  <h2>Sessions on many machines, on one board</h2>
+  <p class="sub">The direction: the board that organises your Claude sessions on one Mac
+  organises them on every machine you use, with song carrying the traffic between them. Part of
+  that already exists and part does not. This section separates the two.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1000 330" role="img" aria-label="Future picture: one board showing sessions from several machines, each running savannahd, connected over song.">
+    <defs>
+      <marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#b08be0"/>
+      </marker>
+    </defs>
+    <rect class="box" x="360" y="24" width="280" height="96" rx="10" style="stroke:#d9a441"/>
+    <text x="500" y="52" font-size="16" font-weight="600" text-anchor="middle">One board</text>
+    <text x="500" y="76" font-size="12.5" text-anchor="middle" class="dim">every session, whichever machine it runs on</text>
+    <text x="500" y="100" font-size="12" text-anchor="middle" class="m" fill="#b08be0">not built yet</text>
+
+    <g>
+      <rect class="box" x="40" y="210" width="250" height="92" rx="10"/>
+      <text x="165" y="238" font-size="15" font-weight="600" text-anchor="middle">Your Mac</text>
+      <text x="165" y="260" font-size="12.5" text-anchor="middle" class="dim">interactive tabs: works today</text>
+      <text x="165" y="282" font-size="12.5" text-anchor="middle" class="m dim">savannahd</text>
+    </g>
+    <g>
+      <rect class="box" x="375" y="210" width="250" height="92" rx="10"/>
+      <text x="500" y="238" font-size="15" font-weight="600" text-anchor="middle">A Linux box on your LAN</text>
+      <text x="500" y="260" font-size="12.5" text-anchor="middle" class="dim">headless asks and tasks: works today</text>
+      <text x="500" y="282" font-size="12.5" text-anchor="middle" class="m dim">savannahd</text>
+    </g>
+    <g>
+      <rect class="box" x="710" y="210" width="250" height="92" rx="10" style="stroke-dasharray:6 5;stroke:#b08be0"/>
+      <text x="835" y="238" font-size="15" font-weight="600" text-anchor="middle">A machine somewhere else</text>
+      <text x="835" y="260" font-size="12.5" text-anchor="middle" class="dim">beyond the LAN: needs the work below</text>
+      <text x="835" y="282" font-size="12.5" text-anchor="middle" class="m dim">savannahd</text>
+    </g>
+    <path d="M430 120 C380 160 220 160 170 210" stroke="#5fb3d9" stroke-width="2" fill="none"/>
+    <path d="M500 120 L500 210" stroke="#5fb3d9" stroke-width="2" fill="none"/>
+    <path d="M570 120 C620 160 780 160 830 210" stroke="#b08be0" stroke-width="2" fill="none" stroke-dasharray="7 5" marker-end="url(#d)"/>
+    <text x="255" y="150" font-size="12.5" text-anchor="end" fill="#5fb3d9">song, HMAC</text>
+    <text x="745" y="150" font-size="12.5" fill="#b08be0">song over TLS</text>
+  </svg>
+  </div>
+
+  <div class="tablewrap" style="margin-top:8px">
+  <table>
+    <tr><th style="width:26%">To get there</th><th style="width:37%">Today</th><th>Still needed</th></tr>
+    <tr>
+      <td>Reach a Claude on another machine</td>
+      <td>Works on a LAN: mDNS discovery by name, or <code>--addr HOST:PORT</code> directly.</td>
+      <td>Nothing for a LAN. Beyond it, see the rows below.</td>
+    </tr>
+    <tr>
+      <td>See another machine's sessions on your board</td>
+      <td>The mesh board shows headless task workers per node. Interactive tabs are local only.</td>
+      <td>A way for a node to report its own work sessions, and a board that lists them. The
+      roadmap already names live status pushed through song's properties in place of polling.</td>
+    </tr>
+    <tr>
+      <td>Encryption on the wire</td>
+      <td>Savannah authenticates with HMAC and does not encrypt. Song's TLS transport exists and is tested.</td>
+      <td>Wire song's TLS (the design names TLS-PSK) into savannahd and the CLI. The design
+      marks this as required for anything beyond the LAN.</td>
+    </tr>
+    <tr>
+      <td>Find nodes outside the LAN</td>
+      <td>mDNS does not leave the local network. Song ships a registry service for other subnets.</td>
+      <td>Song's registry example has no ownership or authorization and binds loopback by
+      default; its README says a production registry needs both.</td>
+    </tr>
+    <tr>
+      <td>Get through routers and firewalls</td>
+      <td>Savannah is direct TCP between nodes, with no broker and no relay, by design.</td>
+      <td>Nodes must be able to reach each other: a VPN or an overlay network would give that
+      without changing the design. Nothing in the repository does this today.</td>
+    </tr>
+    <tr>
+      <td>Other terminals and systems</td>
+      <td>Work sessions need macOS and iTerm2.</td>
+      <td>A tmux terminal behind the existing terminal seam is on the roadmap.</td>
+    </tr>
+  </table>
+  </div>
+
+  <div class="note" style="margin-top:16px">
+    One honest caveat from song itself: its README places it at same-host and LAN-scoped
+    communication where you control both ends, and recommends gRPC for internet-facing services.
+    Its 8-byte HMAC tag is sized for that setting. Running savannah across the world means running
+    it over TLS between machines you own, not exposing a node to the open internet.
+  </div>
+</section>
+
+<footer>
+  Sources: this repository's <span class="mono">README.md</span>, <span class="mono">DESIGN.md</span>,
+  <span class="mono">work/README.md</span> and <span class="mono">dash/README.md</span>, and song's
+  <span class="mono">README.md</span>, as of 11/17/2026. Song's test counts and timings are its own
+  published figures. MIT License.
+</footer>
+
+</main>
+</body>
+</html>

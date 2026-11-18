@@ -535,6 +535,9 @@ while read -r n; do
 done
 ```
 
+The MCP tool `work_new` takes the same two as `if_absent` and `background`
+(both off unless asked for), so a Claude that opens tabs can be as careful.
+
 The review starts at once (`/code-review <n>` is typed into the new tab;
 `--prompt` replaces it, `--note` and `--title` set what the board shows).
 `work ls --json` reads every session's `state` back and `work output NAME`

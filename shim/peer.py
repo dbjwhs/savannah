@@ -346,6 +346,10 @@ def tool_work_new(args):
     cli += work_opt(args, "title", "--title")
     cli += work_opt(args, "mode", "--mode")
     cli += work_opt(args, "target", "--target")
+    if args.get("if_absent"):
+        cli += ["--if-absent"]
+    if args.get("background"):
+        cli += ["--background"]
     return ok_text(run_work(cli), "")
 
 
@@ -683,6 +687,12 @@ tool(
         "target": prop("string", "With mode review, what to review: a pull request (123, #123 or its "
                                  "URL, fetched from origin) or a branch; omit to review the repo's "
                                  "current changes in the repo itself"),
+        "if_absent": prop("boolean", "Return the session that is already there instead of failing: "
+                                     "one of this name, or (a review with a target) a review of the "
+                                     "same pull request or branch in the same repo under any name. "
+                                     "The record then has existed: true (false when this call made it)"),
+        "background": prop("boolean", "Leave the tab the owner is looking at selected instead of "
+                                      "showing the new one"),
     },
     ["name"],
     tool_work_new,

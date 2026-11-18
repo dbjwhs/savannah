@@ -226,6 +226,23 @@ def test_work_new(h):
                                       "no_worktree": True})
     check(r["result"]["isError"] is True, "work_new duplicate is error")
     check("already exists" in text_of(r), "work_new duplicate reason")
+    before = len(h.it2_calls())
+    r = h.shim.call_tool("work_new", {"name": "shim-demo", "repo": h.repo, "no_worktree": True,
+                                      "if_absent": True, "background": True})
+    check(r["result"]["isError"] is False, f"work_new if_absent on a taken name is not an error: {text_of(r)}")
+    again = json.loads(text_of(r))
+    check(again.get("existed") is True and again.get("claude_pane") == h.rec["claude_pane"],
+          f"work_new if_absent returns the session already there ({again})")
+    check(len(h.it2_calls()) == before, "work_new if_absent opened no tab")
+    r = h.shim.call_tool("work_new", {"name": "shim-bg", "repo": h.repo, "no_worktree": True,
+                                      "if_absent": True, "background": True})
+    made = json.loads(text_of(r))
+    check(r["result"]["isError"] is False and made.get("existed") is False, f"work_new if_absent makes a new one ({made})")
+    # (Showing it again is test_review's: the tab this world last showed is gone.)
+    check(any(c[:2] == ["session", "list"] and "--format" in c for c in h.it2_calls()[before:]),
+          "work_new background reaches the CLI: it asks what the window shows")
+    r = h.shim.call_tool("work_rm", {"name": "shim-bg", "force": True})
+    check(r["result"]["isError"] is False, "work_new background session removed")
     r = h.shim.call_tool("work_new", {"name": "t-0001", "repo": h.repo,
                                       "no_worktree": True})
     check(r["result"]["isError"] is True, "work_new reserved name is error")
