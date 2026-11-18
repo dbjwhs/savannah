@@ -17,10 +17,10 @@ Claude Code (A)                          Claude Code (B)
                     (song wire)
 ```
 
-**See it as pictures:** [`how-savannah-works.html`](how-savannah-works.html)
+**See it as pictures:** [How savannah works](https://dbjwhs.github.io/savannah/how-savannah-works.html)
 is a one-page visual tour (the board on one machine, the mesh over song, and
-what running across machines still needs). GitHub shows an HTML file as
-source, so open it from a checkout: `open how-savannah-works.html`.
+what running across machines still needs). The page is
+`how-savannah-works.html` in this repository, served by GitHub Pages.
 
 `DESIGN.md` is the source of truth for architecture and rationale.
 `CLAUDE.md` holds the working conventions and the pinned wire contracts.
