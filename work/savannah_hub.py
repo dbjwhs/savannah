@@ -30,7 +30,7 @@ HUB_SERVER = "peer"                # the mcpServers key the hub registers
 # Pre-approved in DIR/.claude/settings.json so the hub never stops at a
 # permission prompt for its own tools (headless runs cannot answer one).
 # Every work_* tool the shim serves (shim/peer.py; test_shim compares the two).
-HUB_WORK_TOOLS = ("new", "adopt", "list", "note", "notes", "say", "ask", "output", "shell", "jump", "open",
+HUB_WORK_TOOLS = ("new", "adopt", "list", "note", "notes", "say", "ask", "recap", "output", "shell", "jump", "open",
                   "move", "rename", "title", "status", "rm")
 HUB_ALLOW = [f"mcp__{HUB_SERVER}__work_{v}" for v in HUB_WORK_TOOLS] + ["Bash(sleep *)"]
 

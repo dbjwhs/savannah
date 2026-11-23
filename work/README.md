@@ -27,6 +27,9 @@ work say fix-parser "run the tests again"   # types into the Claude pane
 work say fix-parser -- --continue           # text starting with "-" goes after "--"
 work ask --all [-q TEXT] [--timeout S] [--no-wait] [--json]   # one question into every idle or done tab, the replies collected
 work ask fix-parser review-2353 -q "where are you?"            # or only these
+work ask --section now,active -q "where are you?"              # or the work sessions of board sections
+work recap [NAME...] [--section S[,S]] [--lines N] [--json]    # where each session stands, from disk (default: NOW)
+work recap --section now,active --ask                          # the same, after asking them for fresh summaries
 work sh fix-parser git status               # types into the shell pane
 work jump fix-parser [--shell]              # focus the pane
 work output fix-parser [--last N] [--json]  # what that Claude said: last N turns (prompt + reply)
@@ -293,6 +296,48 @@ the question and returns at once. Exit 0 whatever was asked or skipped;
 project, how: answered|timeout|sent, reply}], skipped: [{..., why}],
 failed: [{..., error}]}`. This costs one turn of each asked tab's own
 context, so the board asks twice (Ctrl-A, Ctrl-A) before running it.
+
+`--section S[,S]` asks the work sessions of those board sections instead
+of naming them: `now`, `active`, `reviews`, `later`, `history` or `all`
+(the same rule the board draws by: a closed session is in `history`, a
+review in `reviews`, the rest by `work move`). It never reaches a plain
+tab, it adds to any names given, and the skip rules are the same, so
+`work ask --section now -q "rebase on main"` is a broadcast to NOW that
+cannot land on a permission prompt.
+
+### Recap: where was I
+
+`savannah work recap` answers "what was I doing" after days away without
+calling any Claude. For each work session of the sections asked for
+(default `now`; `--section now,active`, `--section all`), and any named
+outright, it prints what is already on disk:
+
+- the name, title, branch, state and how long ago it was last active (the
+  time of the last turn in its transcript);
+- the summary its own Claude last gave to `work ask`, with its age;
+- the last note;
+- your last prompt and the last `--lines N` (default 12) lines of the
+  reply to it.
+
+A turn that is itself the answer to `work ask` is skipped when the summary
+already shows it, so the prompt and reply are the last piece of work.
+Nothing is typed into any tab, so it works for a session whose tab is
+closed (`--section history`) and costs nothing.
+
+`--ask` first runs `work ask` on the same sessions (`-q TEXT` and
+`--timeout S` as there; one turn of each session that is idle or done),
+then prints the recap with the fresh summaries and a line for each session
+that was skipped or did not answer in time.
+
+`--json` is `{sections, sessions: [{name, title, section, kind, branch,
+worktree, state, last_active, summary, summary_at, last_note, last_prompt,
+reply, reply_cut, turns_total}], ask?}`, `ask` being `work ask`'s value
+when `--ask` ran. Exit 1 for an unknown name or section.
+
+What it cannot do: a session with no transcript on disk shows only its
+record and notes; a compacted session's reply is whatever its last turn
+said; and the recap is only as good as what was written down, so a note
+(Ctrl-T) before you leave is still the best line in it.
 
 This is savannah's answer to "ask all my Claudes what they are doing".
 Claude Code has cross-session messaging of its own (`ListAgents` and
@@ -845,6 +890,7 @@ only the ones listed before it and none of them `savannah_work.py`:
 | `savannah_snapshot.py` | `snapshot`, `snapshots`, `restore` |
 | `savannah_autoname.py` | `autoname` |
 | `savannah_ask.py` | `ask` |
+| `savannah_recap.py` | `recap` |
 | `savannah_scan.py` | `scan`: Claude Code's session registry, for tabs with no status file |
 
 ## Tests

@@ -39,6 +39,7 @@ PRIORITIES = ("now", "active", "later")   # the board's sections, top first; ran
 DEFAULT_PRIORITY = "active"        # where a new session lands, and how a record that names none reads
 KINDS = ("coding", "review")       # what a session is for; a review sits in the board's REVIEWS section
 DEFAULT_KIND = "coding"            # how a record that names none reads (every record before kinds existed)
+SECTIONS = ("now", "active", "reviews", "later", "history")   # the board's sections, top first (section_of)
 
 
 # --------------------------------------------------------------------------
@@ -245,6 +246,31 @@ def load_record(name):
 def save_record(rec):
     rec["updated"] = int(time.time())
     atomic_write(record_path(rec["name"]), rec)
+
+
+def section_of(rec, live):
+    """The board section a work session sits in (dash/order.go sectionOf):
+    history when its tab is closed (no live Claude session), reviews for a
+    review whatever its priority, else its priority."""
+    if not live:
+        return "history"
+    if rec.get("kind") == "review":
+        return "reviews"
+    return rec.get("priority") if rec.get("priority") in PRIORITIES else DEFAULT_PRIORITY
+
+
+def parse_sections(text):
+    """'now,active' -> ["now", "active"], in board order, each once; 'all'
+    is every section. UserError names a word that is not a section."""
+    words = [w.strip().lower() for w in (text or "").split(",") if w.strip()]
+    if not words:
+        raise UserError("--section wants one or more of: " + ", ".join(SECTIONS) + ", all")
+    if "all" in words:
+        return list(SECTIONS)
+    for w in words:
+        if w not in SECTIONS:
+            raise UserError(f"no section called {w!r} (the sections: " + ", ".join(SECTIONS) + ", all)")
+    return [sec for sec in SECTIONS if sec in words]
 
 
 def list_records():

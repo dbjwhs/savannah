@@ -298,6 +298,8 @@ Details and the storage layout are in `work/README.md` and `dash/README.md`.
 | `savannah work note fix-parser "flaky on nested arrays"` | Append a note. |
 | `savannah work say fix-parser "run ctest -R test_json and summarize"` | Type into the Claude pane. |
 | `savannah work output fix-parser --last 2` | What that Claude said: the last two turns, prompt and reply. |
+| `savannah work recap` | Back after a few days: where each session in NOW stands, read from disk (Ctrl-Q on the board). `--section now,active` picks sections; `--ask` asks them for fresh summaries first. |
+| `savannah work ask --section now -q "rebase on main when you are idle"` | One line typed into every session of a section that is safe to interrupt, the replies collected (`--all`: every tab; Ctrl-A on the board). |
 | `savannah work open fix-parser` | Focus the tab, or make it again (`claude --continue`) after an iTerm2 restart. |
 | `savannah work adopt old-tab --session <claude session id>` | A tab you opened by hand becomes a work session (the board does this from Ctrl-R or Ctrl-T). |
 | `savannah work move fix-parser --later` | The board's LATER section (Shift-Down on the board); `--active` and `--rank N` order it. |
@@ -347,6 +349,8 @@ path at read time.
 | Enter | Open or focus the row's tab. With text typed, send that text to its Claude pane. |
 | Ctrl-N | The new-session dialog: name, repo from the remembered folder, prompt, worktree or not, its own window or not. Mode `review` opens a code review instead (see below). |
 | Ctrl-O | Show what that Claude said. |
+| Ctrl-Q | Recap the row's section on one screen: each session's summary, last note, your last prompt and the end of its last reply. Free: nothing is typed and no Claude is called. On that screen `1` `2` `3` show NOW, ACTIVE or both, and `a` asks those sessions for fresh summaries. |
+| Ctrl-A twice | Ask every idle or done tab what it is doing, and keep each reply as that session's summary. |
 | Ctrl-T | Take a note. |
 | Ctrl-R | Give it a title: free text, capitals and spaces, shown in place of the name. The name stays the identifier; `work rename` changes that. |
 | Ctrl-X twice | Remove it. |
@@ -415,7 +419,8 @@ The same verbs are MCP tools in the shim, so a Claude Code session can open
 a tab for you, type a line into it, and read the reply back:
 
 `work_new`, `work_adopt`, `work_list`, `work_note`, `work_notes`,
-`work_say`, `work_output`, `work_shell`, `work_jump`, `work_open`,
+`work_say`, `work_ask`, `work_recap`, `work_output`, `work_shell`,
+`work_jump`, `work_open`,
 `work_move`, `work_rename`, `work_title`, `work_status`, `work_rm`.
 
 `savannah hub DIR` sets such a coordinating session up:

@@ -181,7 +181,7 @@ func (m model) rowPrompt(width, room int) string {
 // anything else.
 func (m model) helpLine(width int) string {
 	parts := []string{"Shift-up/down move", "Enter say", "^P now", "^K find", "^N new", "^R name", "^G group", "^F fade", "^B open", "^O out",
-		"^A ask", "^T note", "^S snap", "^L log", "^D attach", "^Y review", "^U scan", "^X rm", "^C quit"}
+		"^A ask", "^Q recap", "^T note", "^S snap", "^L log", "^D attach", "^Y review", "^U scan", "^X rm", "^C quit"}
 	if m.mesh.on {
 		parts[1] = "Enter say/send"
 		parts = append(parts[:2], append([]string{"Tab view"}, parts[2:]...)...)

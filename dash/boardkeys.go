@@ -96,6 +96,8 @@ func (m model) updateBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.pressOutput()
 	case tea.KeyCtrlP:
 		return m.pressNow()
+	case tea.KeyCtrlQ:
+		return m.pressRecap()
 	case tea.KeyCtrlR:
 		return m.startNaming()
 	case tea.KeyCtrlS:

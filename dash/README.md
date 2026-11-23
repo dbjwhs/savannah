@@ -20,6 +20,11 @@ gives you one key for each thing you used to do by hand:
   into the tab's Claude instead.
 - **Ctrl-O** shows what that Claude said last (the last five turns of its
   transcript), refreshed while you read.
+- **Ctrl-Q** recaps the highlighted row's section on one screen (`work
+  recap`): each session's summary, last note, your last prompt and the
+  end of its last reply, read from disk, so nothing is typed and no
+  Claude is called. There `1`, `2`, `3` show NOW, ACTIVE or both, `r`
+  reads again and `a` asks those sessions for fresh summaries first.
 - **Ctrl-A, Ctrl-A** asks every idle or done tab what it is doing (`work
   ask --all`): the rows turn yellow and back to green as each answers,
   then the replies open as one screen, and each work session keeps its
@@ -577,6 +582,8 @@ The exact command behind each key, so the board and the shell agree:
 | (STATE, WHAT, panel, header) | `<work dir>/<name>/status.json`, written by `savannah work status <name> -- <text>` from inside the tab |
 | (WORK column of an unnamed tab) | `it2 session list --json` every 5 s, for the tab titles |
 | Ctrl-O | `savannah work output <name> --last 5` (every 2 s) |
+| Ctrl-Q (and `1` `2` `3` `r` on the recap screen) | `savannah work recap --section <the row's section> --json` |
+| `a` on the recap screen | `savannah work recap --section <those sections> --json --ask` (waits up to 120 s for the replies) |
 | Ctrl-A, Ctrl-A (or `a` on the replies screen) | `savannah work ask --all --json` (waits up to 120 s for the replies) |
 | (detail panel) | `savannah work output <name> --last 1` (on selection, and on each hook update of that row) |
 | Ctrl-X, Ctrl-X | `savannah work rm <name>` |
@@ -635,6 +642,10 @@ file under its path has been swapped. Nothing here is stdlib-external:
   read against the lines the board draws now, so a row that moved in
   the tick between the frame and the click can take the click meant
   for its neighbour.
+- Ctrl-Q shows what is on disk: a session nobody asked has no summary, and
+  a session with no transcript shows its record and notes only. `a` on that
+  screen keeps the screen up while the CLI waits, so you do not see the
+  rows change colour as you do with Ctrl-A.
 - Ctrl-A asks only the tabs whose hook state is idle or done. A Claude at
   a question of its own (no Notification fires for AskUserQuestion) reads
   as done and is asked anyway; the board cannot see inside the tab. The

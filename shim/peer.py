@@ -21,8 +21,11 @@
 #   work_notes(name)                -> read those notes
 #   work_say(name, text)            -> type into that tab's interactive Claude pane
 #   work_output(name, last?)        -> the last N turns (prompt + reply) of that tab
-#   work_ask(question?, names?, all?, timeout?) -> one question typed into every tab that is
-#                                      idle or done, the replies collected (one turn per tab)
+#   work_ask(question?, names?, section?, all?, timeout?) -> one question typed into every
+#                                      tab that is idle or done (the named ones, a board
+#                                      section's, or all), the replies collected (one turn per tab)
+#   work_recap(names?, section?, lines?) -> where each session stands, read from disk
+#                                      (nothing typed, no Claude called)
 #   work_shell(name, cmd)           -> type into that tab's shell pane
 #   work_jump(name, shell?)         -> focus the tab
 #   work_open(name, shell?)         -> focus the tab, or reopen it when it is gone
@@ -376,12 +379,40 @@ def tool_work_say(args):
     return ok_text(run_work(["say", work_name(args), "--", text]))
 
 
+def section_arg(args):
+    """The optional `section` argument: board sections, comma separated
+    (the CLI checks the words)."""
+    section = args.get("section")
+    if section is None:
+        return ""
+    if not isinstance(section, str) or not section.strip():
+        raise RuntimeError("section must be a non-empty string, e.g. \"now\" or \"now,active\"")
+    return section.strip()
+
+
+def tool_work_recap(args):
+    names = args.get("names") or []
+    if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names):
+        raise RuntimeError("names must be a list of work session names")
+    cli = ["recap"] + [n.strip() for n in names]
+    section = section_arg(args)
+    if section:
+        cli += ["--section", section]
+    lines = int_arg(args, "lines", "lines must be a positive integer", minimum=1)
+    if lines is not None:
+        cli += ["--lines", str(lines)]
+    return ok_text(run_work(cli), "nothing to recap")
+
+
 def tool_work_ask(args):
     names = args.get("names") or []
     if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names):
         raise RuntimeError("names must be a list of work session names")
     cli = ["ask"] + [n.strip() for n in names]
-    if args.get("all", not names) is True or not names:
+    section = section_arg(args)
+    if section:
+        cli += ["--section", section]
+    if args.get("all", not names and not section) is True or not (names or section):
         cli.append("--all")
     question = args.get("question")
     if question is not None:
@@ -790,11 +821,37 @@ tool(
         "question": prop("string", "What to ask (default: a three-line status question)"),
         "names": {"type": "array", "items": {"type": "string"},
                   "description": "Work session names to ask; omit with all=true"},
-        "all": prop("boolean", "Every live tab, plain tabs too (default true when names is empty)"),
+        "section": prop("string", "Ask the work sessions of these board sections instead of (or as "
+                                  "well as) naming them: now, active, reviews, later, history, all; "
+                                  "comma separated, e.g. \"now,active\""),
+        "all": prop("boolean", "Every live tab, plain tabs too (default true when names and section "
+                               "are both empty)"),
         "timeout": prop("integer", "Seconds to wait for the replies (default 120)", minimum=1),
     },
     [],
     tool_work_ask,
+)
+tool(
+    "work_recap",
+    (
+        "Where each local work session stands, read from disk: title, "
+        "branch, state, when it was last active, the summary its own Claude "
+        "last gave (work_ask), the last note, the owner's last prompt and "
+        "the end of Claude's last reply. Nothing is typed into any tab and "
+        "no Claude is called, so it is free and works for a closed tab. "
+        "Pick sessions by name and/or by board section (default: the NOW "
+        "section). For fresh summaries call work_ask with the same section "
+        "first."
+    ),
+    {
+        "names": {"type": "array", "items": {"type": "string"},
+                  "description": "Work session names to recap"},
+        "section": prop("string", "Board sections, comma separated: now, active, reviews, later, "
+                                  "history, all (default now when no names are given)"),
+        "lines": prop("integer", "Lines of the last reply shown per session (default 12)", minimum=1),
+    },
+    [],
+    tool_work_recap,
 )
 tool(
     "work_shell",

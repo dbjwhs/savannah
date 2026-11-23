@@ -8,7 +8,8 @@
 # Targets are the tabs whose hook state is idle or done (never working or
 # waiting, never the asking session); the wait is on each asked tab's hook
 # file, the reply is read from its transcript, and a work session's reply
-# is kept as its summary and in its notes.
+# is kept as its summary and in its notes. --section asks the work sessions
+# of one or more board sections (now, active, ...) instead of naming them.
 #
 # Imports: the standard library, savannah_log, savannah_core,
 # savannah_terminal, savannah_sessions and savannah_transcript.
@@ -19,8 +20,8 @@ import subprocess
 import time
 
 from savannah_log import log_info, log_verbose, log_warn
-from savannah_core import (append_note, display_path, first_line, list_records, load_record, save_record,
-                           usage_error, UserError)
+from savannah_core import (append_note, display_path, first_line, list_records, load_record, parse_sections,
+                           save_record, section_of, usage_error, UserError)
 from savannah_terminal import make_terminal
 from savannah_sessions import hook_pane, join_session, load_hook_sessions, unclaimed_sessions
 from savannah_transcript import transcript_for, transcript_turns
@@ -235,34 +236,59 @@ def print_ask(asked, skipped, failed, timeout):
         print(f"failed {e['name'] or e['session_id']}: {e['error']}")
 
 
+def section_names(sections, hooks, records):
+    """The work sessions sitting in those board sections, in section order,
+    then rank, then name (the board's order)."""
+    rows = []
+    for rec in records:
+        sec = section_of(rec, join_session(rec, hooks) is not None)
+        if sec in sections:
+            rows.append((sections.index(sec), rec.get("rank") or 0, rec["name"]))
+    return [name for _, _, name in sorted(rows)]
+
+
+def run_ask(names, all_tabs, question, timeout, no_wait, hooks=None, records=None):
+    """The whole ask: pick the targets, type the question, wait, collect.
+    -> the value `ask --json` prints."""
+    hooks = load_hook_sessions() if hooks is None else hooks
+    records = list_records() if records is None else records
+    targets, skipped = ask_targets(names, all_tabs, hooks, records)
+    asked, failed = ask_send(make_terminal(""), targets, question)
+    log_info("ask", asked=len(asked), skipped=len(skipped), failed=len(failed), wait=not no_wait,
+             timeout=timeout)
+    log_verbose("ask question", text=question[:300])
+    waited = 0.0
+    if asked and not no_wait:
+        waited = ask_wait(asked, question, timeout)
+    out_asked = ask_collect(asked, question, no_wait)
+    log_info("ask done", asked=len(asked), answered=sum(1 for e in out_asked if e["how"] == "answered"),
+             waited=waited)
+    return {"question": question, "timeout": timeout, "waited": waited, "asked": out_asked,
+            "skipped": skipped, "failed": failed}
+
+
 def cmd_ask(a):
     """Type one question into every tab that is safe to interrupt (idle or
     done; never a working or waiting one, never the asking session), wait
     for the replies (each tab's Claude answers in its own context, the
     hook says when it has stopped), keep each work session's reply as a
-    note and as its summary, print them all. --no-wait types and returns; --timeout caps
-    the wait. Exit 0 whatever was asked or skipped; the output says."""
+    note and as its summary, print them all. --section picks the work
+    sessions of those board sections. --no-wait types and returns; --timeout
+    caps the wait. Exit 0 whatever was asked or skipped; the output says."""
     question = (a.question or "").strip() or ASK_DEFAULT
-    if not a.name and not a.all:
-        return usage_error("ask", "name the work sessions to ask, or --all for every live tab")
+    if not a.name and not a.all and not a.section:
+        return usage_error("ask", "name the work sessions to ask, --section now (or active, ...) "
+                                  "for a board section, or --all for every live tab")
     if a.timeout < 1:
         return usage_error("ask", "--timeout wants a positive number of seconds")
     hooks = load_hook_sessions()
     records = list_records()
-    targets, skipped = ask_targets(a.name, a.all, hooks, records)
-    asked, failed = ask_send(make_terminal(""), targets, question)
-    log_info("ask", asked=len(asked), skipped=len(skipped), failed=len(failed), wait=not a.no_wait,
-             timeout=a.timeout)
-    log_verbose("ask question", text=question[:300])
-    waited = 0.0
-    if asked and not a.no_wait:
-        waited = ask_wait(asked, question, a.timeout)
-    out_asked = ask_collect(asked, question, a.no_wait)
-    log_info("ask done", asked=len(asked), answered=sum(1 for e in out_asked if e["how"] == "answered"),
-             waited=waited)
+    names = list(a.name)
+    if a.section:
+        names += [n for n in section_names(parse_sections(a.section), hooks, records) if n not in names]
+    out = run_ask(names, a.all, question, a.timeout, a.no_wait, hooks, records)
     if a.json:
-        print(json.dumps({"question": question, "timeout": a.timeout, "waited": waited, "asked": out_asked,
-                          "skipped": skipped, "failed": failed}))
+        print(json.dumps(out))
     else:
-        print_ask(out_asked, skipped, failed, a.timeout)
+        print_ask(out["asked"], out["skipped"], out["failed"], a.timeout)
     return 0

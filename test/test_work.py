@@ -1133,7 +1133,7 @@ def test_ask(h):
     check(h.sw.normalize_hook({"state": "waiting", "notify_type": "idle_prompt", "message": "x"}) == {"state": "idle", "notify_type": "idle_prompt", "message": ""}
           and h.sw.normalize_hook({"state": "waiting", "notify_type": "permission_prompt", "message": "x"})["state"] == "waiting",
           "normalize_hook: an old hook's waiting-for-the-nudge file is idle, a permission prompt stays waiting")
-    check(h.run(["ask"]).returncode == 2, "ask with neither names nor --all is a usage error")
+    check(h.run(["ask"]).returncode == 2, "ask with no names, no --section and no --all is a usage error")
     check(h.run(["ask", "--all", "--timeout", "0"]).returncode == 2, "ask --timeout 0 is a usage error")
 
     # The run: the question goes to ask-a and ask-p only; the replies land
@@ -1220,6 +1220,120 @@ def test_ask(h):
             os.remove(os.path.join(h.sessions, sid + ".json"))
         except OSError:
             pass
+
+
+def test_recap(h):
+    """recap: where each session of a board section stands, from disk; and
+    ask --section. rc-a is a live (done) work session with a summary, a
+    note and a transcript; rc-b is a record whose tab is gone; rc-p is a
+    plain idle tab."""
+    rc_dir = os.path.join(h.tmp, "recap-dirs")
+    summary = "Reviewing the parser.\nNext: the tests."
+    for sid in ("rc-a", "rc-b", "rc-p"):
+        d = os.path.join(rc_dir, sid)
+        os.makedirs(d)
+        with open(os.path.join(h.sessions, sid + ".json"), "w") as f:
+            json.dump({"session_id": sid, "project": d, "state": "idle" if sid == "rc-p" else "done",
+                       "iterm_session_id": "w0t0p0:" + sid.upper(), "updated": int(time.time()),
+                       "last_prompt": "earlier", "transcript_path": os.path.join(h.tmp, sid + ".jsonl")}, f)
+    h.run_json(["adopt", "rc-a", "--session=rc-a", "--json"])
+    h.run_json(["adopt", "rc-b", "--session=rc-b", "--json"])
+    os.remove(os.path.join(h.sessions, "rc-b.json"))
+    write_transcript(os.path.join(h.tmp, "rc-a.jsonl"), [("earlier", "ok"), ("What are you doing?", summary)])
+    rec = h.record("rc-a")
+    rec.update({"summary": summary, "summary_at": int(time.time()) - 90})
+    with open(os.path.join(h.workroot, "rc-a", "record.json"), "w") as f:
+        json.dump(rec, f)
+    h.run(["note", "rc-a", "Reviewing the parser."])
+    r = h.sw.savannah_recap
+    check(r.human_age(5) == "5s" and r.human_age(125) == "2m" and r.human_age(7300) == "2h"
+          and r.human_age(4 * 86400 + 5) == "4d" and r.human_age(-3) == "0s", "human_age: one unit")
+    check(r.tail_lines("a\nb\nc\n\n", 2) == ("b\nc", 1) and r.tail_lines("", 3) == ("", 0)
+          and r.tail_lines("a", 3) == ("a", 0), "tail_lines: the last lines and how many were cut")
+    check(r.iso_epoch("1970-01-01T00:01:00.000Z") == 60 and r.iso_epoch("") == 0 and r.iso_epoch("junk") == 0,
+          "iso_epoch")
+    turns = [{"prompt": "do it", "text": "done it"}, {"prompt": "what?", "text": " the summary\n"}]
+    check(r.last_work_turn(turns, "the summary")["prompt"] == "do it"
+          and r.last_work_turn(turns, "")["prompt"] == "what?"
+          and r.last_work_turn(turns[1:], "the summary")["prompt"] == "what?"
+          and r.last_work_turn([], "x") is None,
+          "last_work_turn: the newest turn that is not the summary's own answer")
+    check(h.sw.savannah_core.parse_sections("active, NOW") == ["now", "active"]
+          and h.sw.savannah_core.parse_sections("all") == list(h.sw.savannah_core.SECTIONS),
+          "parse_sections: board order, all")
+    check(h.sw.savannah_core.section_of({"priority": "now", "kind": "coding"}, True) == "now"
+          and h.sw.savannah_core.section_of({"priority": "now", "kind": "review"}, True) == "reviews"
+          and h.sw.savannah_core.section_of({"priority": "now"}, False) == "history"
+          and h.sw.savannah_core.section_of({"priority": "odd"}, True) == "active",
+          "section_of: the board's rule")
+    check(h.run(["recap", "--lines", "0"]).returncode == 2, "recap --lines 0 is a usage error")
+    p = h.run(["recap", "--section", "nowhere", "--json"])
+    check(p.returncode == 1 and "no section called" in json.loads(p.stdout).get("error", ""),
+          f"recap of an unknown section is refused ({p.stdout!r})")
+    check(h.run(["recap", "no-such-session"]).returncode == 1, "recap of an unknown name is refused")
+
+    # Nothing sits in NOW until a move puts it there.
+    j = h.run_json(["recap", "--json"])
+    check(j.get("sections") == ["now"] and "rc-a" not in [e["name"] for e in j.get("sessions", [])],
+          f"recap defaults to NOW ({j.get('sections')})")
+    p = h.run(["recap"])
+    check(p.returncode == 0 and (j.get("sessions") or "(no work sessions in NOW)" in p.stdout),
+          f"an empty section says so ({p.stdout!r})")
+    h.run_json(["move", "rc-a", "--now", "--json"])
+    h.clear_log(keep_state=True)
+    j = h.run_json(["recap", "--json"])
+    e = next((x for x in j.get("sessions", []) if x["name"] == "rc-a"), {})
+    check(e.get("section") == "now" and e.get("state") == "done"
+          and e.get("summary") == "Reviewing the parser.\nNext: the tests." and isinstance(e.get("summary_at"), int),
+          f"recap carries the section, the state and the summary ({e})")
+    check(e.get("last_prompt") == "earlier" and e.get("reply") == "ok" and e.get("reply_cut") == 0
+          and e.get("turns_total") == 2,
+          f"the last prompt and reply are the last work turn, not the ask the summary shows ({e})")
+    check(e.get("last_note") == "Reviewing the parser." and e.get("last_active") == r.iso_epoch("2026-11-09T10:00:05.000Z"),
+          f"recap carries the last note and when the session was last active ({e})")
+    check(not [c for c in h.calls() if c[:2] == ["session", "send"]], "recap types into no pane")
+    p = h.run(["recap"])
+    check(p.returncode == 0 and p.stdout.startswith("NOW (") and "## rc-a" in p.stdout
+          and "summary (" in p.stdout and "  Next: the tests." in p.stdout and "note: Reviewing the parser." in p.stdout
+          and "you: earlier" in p.stdout and "claude:\n  ok" in p.stdout and "last active" in p.stdout,
+          f"recap's human output ({p.stdout!r})")
+
+    # A closed session is recapped too (HISTORY), and one named outright.
+    j = h.run_json(["recap", "--section", "history", "--json"])
+    eb = next((x for x in j.get("sessions", []) if x["name"] == "rc-b"), {})
+    check(eb.get("section") == "history" and eb.get("state") == "offline" and eb.get("turns_total") == 0,
+          f"a session whose tab is gone is recapped from disk ({eb})")
+    j = h.run_json(["recap", "rc-b", "--json"])
+    check([x["name"] for x in j.get("sessions", [])] == ["rc-b"] and j.get("sections") == [],
+          f"a named session is recapped alone ({j.get('sections')})")
+    j = h.run_json(["recap", "rc-b", "--section", "now,history", "--json"])
+    names = [x["name"] for x in j.get("sessions", [])]
+    check(names[0] == "rc-b" and "rc-a" in names and names.count("rc-b") == 1,
+          f"names first, then the sections, each session once ({names})")
+
+    # ask --section: the work sessions of that section only, by the same
+    # skip rules; recap --ask asks, waits, then recaps.
+    h.clear_log(keep_state=True)
+    j = h.run_json(["ask", "--section", "now", "-q", "Where are we?", "--no-wait", "--json"])
+    check([x["name"] for x in j.get("asked", [])] == ["rc-a"] and j.get("skipped") == [],
+          f"ask --section now asks the sessions in NOW and no plain tab ({j})")
+    sends = [c for c in h.calls() if c[:2] == ["session", "send"]]
+    check({c[c.index("--session") + 1] for c in sends} == {"RC-A"}, f"typed into that section's panes only ({sends})")
+    j = h.run_json(["ask", "--section", "history", "--no-wait", "--json"])
+    check(j.get("asked") == [] and "rc-b" in [x["name"] for x in j.get("skipped", [])],
+          f"ask --section history reports closed sessions as skipped ({j})")
+    j = h.run_json(["recap", "--ask", "-q", "Where are we?", "--timeout", "1", "--json"])
+    a1 = ((j.get("ask") or {}).get("asked") or [{}])[0]
+    check(a1.get("name") == "rc-a" and a1.get("how") == "timeout"
+          and "rc-a" in [x["name"] for x in j.get("sessions", [])],
+          f"recap --ask asks the section, then recaps it ({j.get('ask')})")
+    p = h.run(["recap", "--ask", "-q", "Where are we?", "--timeout", "1"])
+    check("asked 1, 0 answered" in p.stdout and "no reply yet from rc-a (timeout)" in p.stdout,
+          f"recap --ask says who did not answer ({p.stdout[-300:]!r})")
+    for n in ("rc-a", "rc-b"):
+        check(h.run(["rm", n]).returncode == 0, f"rm {n}")
+    os.remove(os.path.join(h.sessions, "rc-a.json"))
+    os.remove(os.path.join(h.sessions, "rc-p.json"))
 
 
 def test_move(h):
@@ -2116,6 +2230,7 @@ SECTIONS = (
     test_adopt,
     test_autoname,
     test_ask,
+    test_recap,
     test_move,
     test_rename,
     test_status,

@@ -336,9 +336,31 @@ def test_work_ask(h):
     r = h.shim.call_tool("work_ask", {"names": ["shim-demo"], "question": "What are you doing?", "timeout": 1})
     check(r["result"]["isError"] is False and "## shim-demo" in text_of(r) and "no reply within 1" in text_of(r),
           f"work_ask asks a done tab, waits, reports the timeout ({text_of(r)!r})")
-    for bad in ({"names": "shim-demo"}, {"question": ""}, {"timeout": 0}, {"timeout": "5"}):
+    for bad in ({"names": "shim-demo"}, {"question": ""}, {"timeout": 0}, {"timeout": "5"}, {"section": ""},
+                {"section": "nowhere"}):
         r = h.shim.call_tool("work_ask", bad)
         check(r["result"]["isError"] is True, f"work_ask {bad} is an error")
+    # A section instead of names: only that section's work sessions are
+    # asked (never every tab), and work_recap reads the same section from
+    # disk without typing anything.
+    r = h.shim.call_tool("work_ask", {"section": "now", "timeout": 1})
+    check(r["result"]["isError"] is False and "shim-demo" not in text_of(r),
+          f"work_ask section=now asks nothing while NOW is empty ({text_of(r)!r})")
+    h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "now"})
+    r = h.shim.call_tool("work_ask", {"section": "now", "question": "What are you doing?", "timeout": 1})
+    check(r["result"]["isError"] is False and "## shim-demo" in text_of(r),
+          f"work_ask section=now asks the session in NOW ({text_of(r)!r})")
+    sends = len([c for c in h.it2_calls() if c[:2] == ["session", "send"]])
+    r = h.shim.call_tool("work_recap", {})
+    check(r["result"]["isError"] is False and text_of(r).startswith("NOW (1)") and "## shim-demo" in text_of(r),
+          f"work_recap defaults to NOW ({text_of(r)!r})")
+    r = h.shim.call_tool("work_recap", {"names": ["shim-demo"], "section": "active", "lines": 3})
+    check(r["result"]["isError"] is False and "## shim-demo" in text_of(r), f"work_recap by name ({text_of(r)!r})")
+    check(len([c for c in h.it2_calls() if c[:2] == ["session", "send"]]) == sends, "work_recap types into no pane")
+    for bad in ({"names": "shim-demo"}, {"section": "nowhere"}, {"lines": 0}):
+        r = h.shim.call_tool("work_recap", bad)
+        check(r["result"]["isError"] is True, f"work_recap {bad} is an error")
+    h.shim.call_tool("work_move", {"name": "shim-demo", "priority": "active"})
     r = h.shim.call_tool("work_output", {"name": "shim-flat"})
     check(r["result"]["isError"] is True, "work_output of a session with no transcript is an error")
 
@@ -723,7 +745,7 @@ def test_mcp_lifecycle(shim, peer):
                     "task_list", "task_new", "task_output", "task_rm",
                     "task_send", "task_status", "work_adopt", "work_ask", "work_jump",
                     "work_list", "work_move", "work_new", "work_note", "work_notes",
-                    "work_open", "work_output", "work_rename", "work_rm", "work_say",
+                    "work_open", "work_output", "work_recap", "work_rename", "work_rm", "work_say",
                     "work_shell", "work_status", "work_title"], "tool names")
     for t in r["result"]["tools"]:
         check("inputSchema" in t and "description" in t,

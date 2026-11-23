@@ -102,12 +102,13 @@ type model struct {
 	lg         logState          // the log view (modeLog, logview.go)
 	snap       snapState         // the snapshot screen (modeSnapshot, snapshot.go)
 	ask        askState          // Ctrl-A: one question to every tab (modeAsk, ask.go)
+	recap      recapState        // Ctrl-Q: where a section's sessions stand (modeRecap, recap.go)
 	sessTicks  int               // sessions reads so far (the snapshot hint waits for the first)
 
 	// The screens (screens, below). vp is the one viewport the four
 	// scrolling screens share (the worker view, output, log, ask): only one
 	// is up at a time, and each makes it anew on entry.
-	mode  int            // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk
+	mode  int            // modeBoard | modeView | modeOutput | modeNew | modeLog | modeSnapshot | modeAsk | modeRecap
 	click clickState     // the last mouse press, for the double click (mouse.go)
 	vp    viewport.Model // the screen in front's scrolling body
 	tail  tailState      // the full-screen worker view (modeView, view.go)
@@ -331,6 +332,7 @@ var screens = [...]screen{
 	modeLog:      {keys: model.updateLogKeys, view: model.viewLog, resize: (*model).refreshLog},
 	modeSnapshot: {keys: model.updateSnapshotKeys, view: model.viewSnapshot},
 	modeAsk:      {keys: model.updateAskKeys, view: model.viewAsk, resize: (*model).refreshAsk},
+	modeRecap:    {keys: model.updateRecapKeys, view: model.viewRecap, resize: (*model).refreshRecap},
 }
 
 // Update hands each message to its owner: a command's result to the file
@@ -360,6 +362,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateAutoname(msg)
 	case askMsg:
 		return m.updateAsk(msg)
+	case recapMsg:
+		return m.updateRecap(msg)
 	case openMsg:
 		return m.updateOpen(msg)
 	case fetchTick:

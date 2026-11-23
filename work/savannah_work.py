@@ -51,6 +51,17 @@
 #   note <name> <text...>     (or text on stdin)
 #   notes <name>
 #   say <name> <text...>      type into the Claude pane
+#   ask [<name>...] [--section S[,S]] [--all] [-q TEXT]
+#                             one question typed into every named tab, every
+#                             work session of those board sections (now,
+#                             active, reviews, later, history, all), or every
+#                             live tab, that is safe to interrupt; the replies
+#                             collected, each kept as that session's summary
+#   recap [<name>...] [--section S[,S]] [--ask] [--lines N]
+#                             where each session stands, from disk (no Claude
+#                             is called): title, branch, last active, summary,
+#                             last note, your last prompt, the end of the last
+#                             reply. Default section: now. --ask asks first
 #   sh <name> <cmd...>        type into the shell pane
 #   jump <name> [--shell]     focus the Claude pane (or shell pane)
 #   open <name> [--shell]     focus the tab, or open it again when it is gone
@@ -98,7 +109,7 @@
 #
 # Exit codes: 0 success, 1 user error (unknown name, git refused, pane gone),
 # 2 bad usage. --json on ls/new/open/attach/detach/repos/note/output/hub/move/
-# rename/status emits one JSON value on stdout; on exit 1 that value is
+# rename/status/ask/recap emits one JSON value on stdout; on exit 1 that value is
 # {"error": <the stderr message>, "code": <word>} (codes: exists, repo,
 # target, git, terminal, else error). Exit 2 prints usage on stderr only.
 #
@@ -140,6 +151,7 @@
 #   savannah_snapshot    snapshot, snapshots, restore
 #   savannah_autoname    autoname
 #   savannah_ask         ask
+#   savannah_recap       recap
 # Names the tests reach on this module are imported here by name (the
 # re-export block below). A test that patches a function patches it on the
 # module that owns it (savannah_core.atomic_write,
@@ -196,6 +208,8 @@ from savannah_snapshot import cmd_restore, cmd_snapshot, cmd_snapshots  # noqa: 
 from savannah_autoname import cmd_autoname  # noqa: E402
 import savannah_ask  # noqa: E402
 from savannah_ask import cmd_ask  # noqa: E402
+import savannah_recap  # noqa: E402
+from savannah_recap import cmd_recap  # noqa: E402
 import savannah_scan  # noqa: E402,F401
 from savannah_scan import cmd_scan  # noqa: E402
 
@@ -1071,13 +1085,30 @@ def build_parser():
          "type one question into every tab that is safe to interrupt (idle or "
          "done, never working or waiting), wait for the replies, keep each work "
          "session's as its summary",
-         arg("name", nargs="*", help="work sessions to ask (or --all)"),
+         arg("name", nargs="*", help="work sessions to ask (or --section, or --all)"),
+         arg("--section", default="", metavar="S[,S]",
+             help="the work sessions of these board sections: " + ", ".join(savannah_core.SECTIONS) + ", all"),
          flag("--all", "every live Claude Code tab, plain tabs too"),
          arg("-q", "--question", default="", metavar="TEXT",
              help="the question (default: what are you working on, where are you, what is next)"),
          arg("--timeout", type=float, default=savannah_ask.ASK_TIMEOUT, metavar="SECONDS",
              help=f"how long to wait for the replies (default {savannah_ask.ASK_TIMEOUT})"),
          flag("--no-wait", "type the question and return at once"))
+    verb("recap", cmd_recap,
+         "where each session stands, read from disk (nothing is typed, no Claude "
+         "is called): title, branch, last active, its summary, the last note, "
+         "your last prompt and the end of Claude's last reply",
+         arg("name", nargs="*", help="work sessions to recap (and/or --section)"),
+         arg("--section", default="", metavar="S[,S]",
+             help="the work sessions of these board sections: " + ", ".join(savannah_core.SECTIONS)
+                  + f", all (default with no name: {savannah_recap.RECAP_SECTIONS})"),
+         arg("--lines", type=int, default=savannah_recap.RECAP_LINES, metavar="N",
+             help=f"lines of the last reply shown (default {savannah_recap.RECAP_LINES})"),
+         flag("--ask", "first ask the ones that are safe to interrupt for a fresh summary "
+                       "and wait (one turn of each)"),
+         arg("-q", "--question", default="", metavar="TEXT", help="with --ask, the question (default: ask's)"),
+         arg("--timeout", type=float, default=savannah_ask.ASK_TIMEOUT, metavar="SECONDS",
+             help=f"with --ask, how long to wait (default {savannah_ask.ASK_TIMEOUT})"))
     verb("sh", cmd_sh, f"type a command into the shell pane {dash_hint}",
          name, arg("cmd", nargs="+"), json=False)
     verb("jump", cmd_jump, "focus the Claude pane (or --shell)", name, flag("--shell"), json=False)
