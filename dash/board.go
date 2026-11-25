@@ -328,29 +328,38 @@ func shortStamp(stamp, today string) string {
 }
 
 // noteLines renders entries for a column w wide, oldest first: the stamp
-// (dim), then the body wrapped beside and under it. Every line fits in w
-// visible runes, which padTo relies on.
+// (dim), then the body wrapped beside and under it. The stamps share one
+// column, as wide as the widest, a shorter one (today's, time only) set
+// against its right edge, so every body starts in the same place and a
+// short stamp never reads as one cut off. Every line fits in w visible
+// runes, which padTo relies on.
 func noteLines(entries []noteEntry, w int, today string) []string {
+	stamps := make([]string, len(entries))
+	col := 0
+	for i, e := range entries {
+		stamps[i] = shortStamp(e.stamp, today)
+		col = max(col, runeLen(stamps[i]))
+	}
+	indent := ""
+	if col > 0 {
+		indent = strings.Repeat(" ", col+2)
+	}
 	var out []string
-	for _, e := range entries {
-		stamp := shortStamp(e.stamp, today)
-		indent := ""
-		if stamp != "" {
-			indent = strings.Repeat(" ", runeLen(stamp)+2)
-		}
+	for i, e := range entries {
+		stamp := strings.Repeat(" ", col-runeLen(stamps[i])) + helpStyle.Render(stamps[i])
 		first := true
 		for _, ln := range strings.Split(e.body, "\n") {
 			for _, piece := range wrapWords(ln, w-runeLen(indent)) {
-				if first && stamp != "" {
-					out = append(out, helpStyle.Render(stamp)+"  "+piece)
+				if first && col > 0 {
+					out = append(out, stamp+"  "+piece)
 				} else {
 					out = append(out, indent+piece)
 				}
 				first = false
 			}
 		}
-		if first && stamp != "" { // an entry with an empty body
-			out = append(out, helpStyle.Render(stamp))
+		if first && stamps[i] != "" { // an entry with an empty body
+			out = append(out, stamp)
 		}
 	}
 	return out

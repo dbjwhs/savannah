@@ -444,3 +444,23 @@ func TestPanelLinesExactHeight(t *testing.T) {
 		t.Errorf("one-column panel:\n%s", joined)
 	}
 }
+
+// Today's note shows its time only, set against the right edge of the stamp
+// column: every body starts in the same column, so the short stamp does not
+// read as one with its date cut off.
+func TestNoteLinesShareOneStampColumn(t *testing.T) {
+	entries := []noteEntry{
+		{stamp: "2026-11-24 11:01", body: "yesterday"},
+		{stamp: "2026-11-25 11:21", body: "today wraps onto a second line here"},
+	}
+	got := noteLines(entries, 30, "2026-11-25") // no colour in a test run
+	want := []string{
+		"11-24 11:01  yesterday",
+		"      11:21  today wraps onto",
+		"             a second line",
+		"             here",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("noteLines:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
