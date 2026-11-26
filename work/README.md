@@ -404,7 +404,8 @@ no transcript of that id falls back to `--continue`, then to a fresh
 `claude`)
 
 1. into the session's own pane, when it is still in `it2 session list` and
-   only a shell runs on its tty (`ps`);
+   a shell is what the keyboard reaches on its tty (`ps`: no other process
+   in the terminal's foreground group);
 2. else into a pane that sits at a shell whose working directory (`lsof`)
    is the session's directory and that no record, no running Claude and no
    earlier step of this run holds: iTerm2 reopened the tab under a new id.
@@ -420,12 +421,15 @@ later event was written.
 
 Skipped, each with its reason in the output: `running`; a file that names
 no process; a directory that is gone; a pane where something other than a
-shell runs (`its pane is busy (vim runs there)`); a pane that now runs
+shell is in the foreground (`its pane is busy (vim runs there)`; a
+background process such as a prompt theme's `gitstatusd` does not count); a pane that now runs
 another Claude session; an older file on a pane a newer session was
 recovered into; the pane the command itself runs in; a plain tab whose
 conversation is not on disk (`--continue` would load some other tab's);
-and a session last active longer ago than `--within` (default `7d`; `90m`,
-`72h`, `all`), which is the leftover of an older crash. Naming a session
+and a session whose pane is gone and that was last active longer ago than
+`--within` (default `7d`; `90m`, `72h`, `all`), which is the leftover of an
+older crash (a pane iTerm2 brought back says the tab was open, however long
+it had sat idle, so step 1 has no age limit). Naming a session
 (a work session's name, a session id, or the first six or more characters
 of one) recovers only those and lifts the age limit for them. A name that
 matches nothing is exit 1.
@@ -445,8 +449,9 @@ whose status file is gone (it ended properly, or was dismissed with Ctrl-X);
 recover a work session that was already closed before the crash (that is
 `work open`). When the process table cannot be read, or a pane's tty has no
 process in it, what runs in that pane is not known and it is typed into as
-if idle. Whether iTerm2 hands a restored pane its old id after a real
-reboot is not confirmed (step 2 exists for the case that it does not); when
+if idle. iTerm2 handed restored panes their old ids after the one real
+reboot this was run against (11/26/2026; step 2 exists for the case that it
+does not); when
 neither step 1 nor step 2 finds a pane, the new tab stands beside the empty
 one iTerm2 restored. A session in a directory that now holds another
 checkout resumes there all the same. Tested by `test/test_recover.py`

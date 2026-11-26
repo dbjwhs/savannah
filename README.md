@@ -404,12 +404,12 @@ in its own pane when iTerm2 brought the tab back, else in a pane sitting
 idle in its directory, else in a new tab. `--dry-run` (c on the screen)
 shows the plan and touches nothing. What it does not do: it never types
 into a pane where something other than a shell runs, never touches a
-session whose Claude runs, leaves a session last active over 7 days ago
-alone unless you name it (`--within` changes that), and cannot bring back a
-turn that was running when the machine went down. Whether iTerm2 keeps a
-pane's id across a real reboot has not been confirmed here; when it does
-not, the idle pane in the session's directory is used, and when there is
-none you get a new tab beside the one iTerm2 restored.
+session whose Claude runs, leaves a session whose pane is gone and that was
+last active over 7 days ago alone unless you name it (`--within` changes
+that), and cannot bring back a turn that was running when the machine went
+down. When iTerm2 reopens a tab under a new pane id, the idle pane in the
+session's directory is used, and when there is none you get a new tab
+beside the one iTerm2 restored.
 
 Every key is a `savannah work ...` subprocess, so the board and the CLI
 never disagree. The dash is a Go program: `cmake --build build --target

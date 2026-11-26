@@ -27,9 +27,10 @@
 # something other than a shell runs, close anything, or recover a session
 # twice (the status file is stamped `recovered`/`recovered_pane`, and the
 # stamp holds while that pane lives and no newer event has been written).
-# A session last active longer ago than --within (7 days) is a leftover of
-# an older crash, not of this one, and is listed, not recovered, unless it
-# is named.
+# A session whose pane is gone and that was last active longer ago than
+# --within (7 days) is a leftover of an older crash, not of this one, and is
+# listed, not recovered, unless it is named. A pane iTerm2 brought back
+# says the tab was open, however long it had sat idle.
 #
 # Imports: the standard library, savannah_log, savannah_core,
 # savannah_terminal, savannah_sessions, savannah_tabs, savannah_snapshot and
@@ -106,10 +107,12 @@ def claude_state(h, info=None):
 
 
 def tty_table():
-    """{"/dev/ttys003": [(pid, command name), ...]} for every process with a
-    controlling terminal, in ps order; {} when ps cannot be run."""
+    """{"/dev/ttys003": [(pid, command name, foreground), ...]} for every
+    process with a controlling terminal, in ps order; {} when ps cannot be
+    run. foreground = the process is in its terminal's foreground process
+    group (the "+" in ps's state): what the keyboard reaches."""
     try:
-        p = subprocess.run(["ps", "-axo", "tty=,pid=,comm="], capture_output=True, text=True,
+        p = subprocess.run(["ps", "-axo", "tty=,pid=,stat=,comm="], capture_output=True, text=True,
                            env=dict(os.environ, LC_ALL="C"))
     except OSError:
         return {}
@@ -117,28 +120,32 @@ def tty_table():
     if p.returncode != 0:
         return out
     for line in p.stdout.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) < 3 or parts[0].startswith("?") or not parts[1].isdigit():
+        parts = line.split(None, 3)
+        if len(parts) < 4 or parts[0].startswith("?") or not parts[1].isdigit():
             continue
-        out.setdefault("/dev/" + parts[0], []).append((int(parts[1]), parts[2].strip()))
+        out.setdefault("/dev/" + parts[0], []).append((int(parts[1]), parts[3].strip(), "+" in parts[2]))
     return out
 
 
 def pane_states(panes, table):
     """What runs in each pane, by its tty: {pane id: {"busy": the name of the
-    first process that is not a shell ("" when only shells run), "shell": the
-    pid of its innermost shell (0 when none)}}. A pane whose tty has no
-    process in the table (or no tty) is left out: nothing is known of it."""
+    first foreground process that is not a shell ("" when the keyboard
+    reaches a shell), "shell": the pid of its innermost shell (0 when
+    none)}}. A background process is not what the pane runs: a prompt
+    theme's helper (gitstatusd) or a job sent to the background leaves the
+    shell at its prompt. A pane whose tty has no process in the table (or no
+    tty) is left out: nothing is known of it."""
     out = {}
     for s in panes:
         pane, tty = s.get("id"), s.get("tty")
         if not isinstance(pane, str) or not isinstance(tty, str) or not table.get(tty):
             continue
         busy, shell = "", 0
-        for pid, comm in table[tty]:
+        for pid, comm, foreground in table[tty]:
             base = os.path.basename(comm).lstrip("-")
             if base not in SHELLS:
-                busy = busy or base
+                if foreground:
+                    busy = busy or base
             elif base != "login":
                 shell = pid
         out[pane] = {"busy": busy, "shell": shell}
@@ -339,10 +346,6 @@ def recover_one(run, rec, h, named):
     worktree = (rec or {}).get("worktree") or project
     if not os.path.isdir(worktree):
         return run.skip(rec, h, "directory gone")
-    age = run.now - coerce_int(h.get("updated"), 0)
-    if run.within and not named and age > run.within:
-        return run.skip(rec, h, f"last active {age_text(age)} ago, older than --within {age_text(run.within)} "
-                                "(name it to recover it anyway)")
     entry = {"session_id": sid, "transcript_path": h.get("transcript_path")}
     how, howtext = restore_how(entry, rec or {"worktree": project}, run.hooks if rec else [])
     if rec is None and how != "resume":
@@ -354,6 +357,13 @@ def recover_one(run, rec, h, named):
     if why_not:
         return run.skip(rec, h, why_not)
     where = "its pane"
+    age = run.now - coerce_int(h.get("updated"), 0)
+    if not pane and run.within and not named and age > run.within:
+        # Its pane is gone, so nothing says it was open when the machine
+        # went down: the leftover of an older crash. A pane iTerm2 brought
+        # back is that evidence, whatever the age.
+        return run.skip(rec, h, f"its pane is gone and it was last active {age_text(age)} ago, older than "
+                                f"--within {age_text(run.within)} (name it to recover it anyway)")
     if not pane:
         pane = run.idle_pane_in(worktree, rec["name"] if rec else "")
         where = "the pane open in its directory" if pane else "a new tab"

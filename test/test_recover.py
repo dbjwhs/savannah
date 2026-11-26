@@ -54,6 +54,7 @@ class RecoverHarness(Harness):
         self.dirs = {}                # label -> directory (test_world)
         self.ids = {}                 # work session name -> its `new --json` (test_world)
         self.plain_pane = ""          # the pane of the plain tab iTerm2 brought back (test_world)
+        self.idle_pane = ""           # the pane of the tab that had sat idle for weeks (test_world)
 
     def sleeper(self):
         p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
@@ -160,15 +161,17 @@ def test_units(h):
     panes = [{"id": "P1", "tty": "/dev/ttys001"}, {"id": "P2", "tty": "/dev/ttys002"},
              {"id": "P3", "tty": "/dev/ttys003"}, {"id": "P4"}, {"id": "P5", "tty": "/dev/ttys005"}]
     states = rc.pane_states(panes, {
-        "/dev/ttys001": [(10, "login"), (11, "-zsh")],
-        "/dev/ttys002": [(20, "login"), (21, "-zsh"), (22, "claude")],
-        "/dev/ttys003": [(30, "/bin/bash"), (31, "/usr/bin/vim"), (32, "/bin/zsh")],
+        "/dev/ttys001": [(10, "login", False), (11, "-zsh", True), (12, "gitstatusd-darwin-arm64", False)],
+        "/dev/ttys002": [(20, "login", False), (21, "-zsh", False), (22, "claude", True)],
+        "/dev/ttys003": [(30, "/bin/bash", False), (31, "/usr/bin/vim", True), (32, "/bin/zsh", False)],
     })
     check(states == {"P1": {"busy": "", "shell": 11}, "P2": {"busy": "claude", "shell": 21},
                      "P3": {"busy": "vim", "shell": 32}},
-          f"pane_states: only shells is idle, the innermost shell is kept, an unknown tty is left out ({states})")
+          f"pane_states: a shell in the foreground is idle whatever runs behind it (a prompt helper), "
+          f"the innermost shell is kept, an unknown tty is left out ({states})")
     table = rc.tty_table()
-    check(isinstance(table, dict) and all(k.startswith("/dev/") for k in table), "tty_table reads ps")
+    check(isinstance(table, dict) and all(k.startswith("/dev/") for k in table)
+          and all(len(e) == 3 and isinstance(e[2], bool) for v in table.values() for e in v), "tty_table reads ps")
     check(rc.shell_cwd(2 ** 22 + 4321) == "", "shell_cwd of no process is empty")
 
 
@@ -193,7 +196,8 @@ def test_world(h):
     #   s-plain    its pane is back                            -> typed into its pane
     #   s-gone     its pane is gone                            -> a new single-pane tab
     #   s-running  its Claude runs (a sleeper)                 -> left alone
-    #   s-old      last active 30 days ago                     -> skipped (--within)
+    #   s-old      pane gone, last active 30 days ago          -> skipped (--within)
+    #   s-idle     last active 40 days ago, but its pane is back -> typed into its pane
     #   s-nopid    its file names no process                   -> skipped
     #   s-notr     no conversation on disk                     -> skipped
     #   s-nodir    its directory is gone                       -> skipped
@@ -203,10 +207,11 @@ def test_world(h):
         h.ids[n] = h.run_json(["new", n, "--no-worktree", "--repo", h.dir(n), "--json"])
     plain = h.run_json(["new", "plainish", "--no-worktree", "--repo", h.dir("plain"), "--json"])
     held = h.run_json(["new", "heldish", "--no-worktree", "--repo", h.dir("running"), "--json"])
-    for n in ("plainish", "heldish"):
+    idle = h.run_json(["new", "idleish", "--no-worktree", "--repo", h.dir("idle"), "--json"])
+    for n in ("plainish", "heldish", "idleish"):
         shutil.rmtree(os.path.join(h.workroot, n))   # the tabs stay in the fake's world, recordless
-    h.plain_pane = plain["claude_pane"]
-    for pane in (plain["shell_pane"], held["shell_pane"], h.ids["beta"]["claude_pane"],
+    h.plain_pane, h.idle_pane = plain["claude_pane"], idle["claude_pane"]
+    for pane in (plain["shell_pane"], held["shell_pane"], idle["shell_pane"], h.ids["beta"]["claude_pane"],
                  h.ids["beta"]["shell_pane"], h.ids["gamma"]["claude_pane"], h.ids["gamma"]["shell_pane"]):
         h.it2("session", "close", "--session", pane, "--force")
     h.hook("s-alpha", h.dirs["alpha"], h.ids["alpha"]["claude_pane"])
@@ -215,6 +220,7 @@ def test_world(h):
     h.hook("s-gone", h.dir("gone"), "PANE-NOT-LISTED", age=200)
     h.hook("s-running", h.dirs["running"], held["claude_pane"], pid=h.sleeper(), age=-30)
     h.hook("s-old", h.dir("old"), "PANE-NOT-LISTED-2", age=30 * 86400)
+    h.hook("s-idle", h.dirs["idle"], h.idle_pane, age=40 * 86400)
     h.hook("s-nopid", h.dir("nopid"), "PANE-NOT-LISTED-3", pid=0)
     h.hook("s-notr", h.dir("notr"), "PANE-NOT-LISTED-4", transcript=False)
     h.hook("s-nodir", os.path.join(h.tmp, "d-never-made"), "PANE-NOT-LISTED-5")
@@ -233,7 +239,10 @@ def expected_skips(h):
 
 def check_outcome(h, got, label):
     done = {r["session_id"]: r for r in got["recovered"]}
-    check(sorted(done) == ["s-alpha", "s-beta", "s-gone", "s-plain"], f"{label}: the four dead sessions ({sorted(done)})")
+    check(sorted(done) == ["s-alpha", "s-beta", "s-gone", "s-idle", "s-plain"],
+          f"{label}: the five dead sessions ({sorted(done)})")
+    check(done["s-idle"]["where"] == "pane" and done["s-idle"]["pane"] == h.idle_pane,
+          f"{label}: a tab that sat idle for weeks is recovered when its pane is back ({done.get('s-idle')})")
     check(done["s-alpha"]["name"] == "alpha" and done["s-alpha"]["where"] == "pane"
           and done["s-alpha"]["pane"] == h.ids["alpha"]["claude_pane"] and done["s-alpha"]["how"] == "resume",
           f"{label}: alpha in its own pane ({done.get('s-alpha')})")
@@ -267,7 +276,7 @@ def test_dry_run(h):
           and f"would recover {h.shown('gone')} (s-gone) in a new tab" in p.stdout,
           f"the plan as lines ({p.stdout!r})")
     check("skipped " + h.shown("old") in p.stdout and "s-running" not in p.stdout
-          and "recover plan: 4 recovered (2 in a pane that was open, 2 in a new tab), 1 running and left alone, "
+          and "recover plan: 5 recovered (3 in a pane that was open, 2 in a new tab), 1 running and left alone, "
               "6 skipped, 0 failed (nothing touched)" in p.stdout,
           f"skips have a line each, a running session only counts ({p.stdout!r})")
 
@@ -284,7 +293,8 @@ def test_recover(h):
           f"alpha's Claude is typed into its own pane, named and resumed ({sent})")
     check((plain, f"cd {h.dirs['plain']} && claude --resume s-plain") in sent,
           f"the plain tab's Claude is typed into its pane with no name ({sent})")
-    check(len(sent) == 2, f"nothing else is typed anywhere ({sent})")
+    check((h.idle_pane, f"cd {h.dirs['idle']} && claude --resume s-idle") in sent and len(sent) == 3,
+          f"nothing else is typed anywhere ({sent})")
     for pane in (alpha, plain):
         check(h.called(["session", "send", "--session", pane, "--"], "\r") >= 0, f"Enter follows the text in {pane}")
     runs = [c[-1] for c in h.calls() if c[:2] == ["session", "run"]]
@@ -320,7 +330,7 @@ def test_twice(h):
     got = h.run_json(["recover", "--json"])
     skipped = {s["session_id"]: s["why"] for s in got["skipped"]}
     check(got["recovered"] == [] and all("already recovered" in skipped.get(sid, "")
-                                         for sid in ("s-alpha", "s-beta", "s-plain", "s-gone")),
+                                         for sid in ("s-alpha", "s-beta", "s-plain", "s-gone", "s-idle")),
           f"nothing is recovered twice ({got})")
     check("newer session" in skipped.get("s-stale", ""),
           f"an older file on a pane recovered earlier is still not that pane's session ({skipped.get('s-stale')!r})")
@@ -343,9 +353,13 @@ def test_named(h):
           and got["skipped"] == [], f"a named session is recovered whatever its age ({got})")
     got = h.run_json(["recover", "--dry-run", "--json", "--within", "all"])
     check("s-old" in [r["session_id"] for r in got["recovered"]], "--within all lifts the age limit")
+    h.hook("s-recent", h.dir("recent"), "PANE-NOT-LISTED-8", age=300)
     got = h.run_json(["recover", "--dry-run", "--json", "--within", "1m"])
-    check("s-under" in {s["session_id"] for s in got["skipped"] if "older than --within 1m" in s["why"]},
+    check("s-recent" in {s["session_id"] for s in got["skipped"] if "older than --within 1m" in s["why"]},
           f"--within narrows it ({got['skipped']})")
+    got = h.run_json(["recover", "--dry-run", "--json"])
+    check("s-recent" in [r["session_id"] for r in got["recovered"]], "which the default would have recovered")
+    os.remove(os.path.join(h.sessions, "s-recent.json"))
     got = h.run_json(["recover", "--dry-run", "--json", "s-runn"])
     check(got["recovered"] == [] and [s["why"] for s in got["skipped"]] == ["running"],
           f"the start of a session id selects it; a running one is still left alone ({got})")
@@ -369,13 +383,13 @@ def test_busy_and_own_pane(h):
     try:
         h.clear_log(keep_state=True)
         rc, out = h.in_process(["recover", "--json", "s-busy"],
-                               table={"/dev/ttys101": [(50, "login"), (51, "-zsh"), (52, "vim")]})
+                               table={"/dev/ttys101": [(50, "login", False), (51, "-zsh", False), (52, "vim", True)]})
         got = json.loads(out)
         check(rc == 0 and got["recovered"] == [] and "its pane is busy (vim runs there)" in got["skipped"][0]["why"],
               f"a pane where something other than a shell runs is never typed into ({got})")
         check(h.sent() == [], "nothing was typed")
         rc, out = h.in_process(["recover", "--dry-run", "--json", "s-busy"],
-                               table={"/dev/ttys101": [(50, "login"), (51, "-zsh")]})
+                               table={"/dev/ttys101": [(50, "login", False), (51, "-zsh", True), (53, "gitstatusd", False)]})
         got = json.loads(out)
         check(got["recovered"] and got["recovered"][0]["pane"] == pane and got["recovered"][0]["where"] == "pane",
               f"the same pane at a shell prompt is the place ({got})")
@@ -411,8 +425,9 @@ def test_reopened_under_new_ids(h):
     h.hook("s-moved", d, was["claude_pane"])
     h.hook("s-moved-plain", h.dir("roam"), "PANE-NOT-LISTED-9", age=90)   # elsewhere's shell sits in roam
     ttys = {upper: "/dev/ttys201", lower: "/dev/ttys202", other["shell_pane"]: "/dev/ttys203"}
-    table = {"/dev/ttys201": [(60, "login"), (61, "-zsh")], "/dev/ttys202": [(70, "login"), (71, "-zsh")],
-             "/dev/ttys203": [(80, "login"), (81, "-zsh")]}
+    table = {"/dev/ttys201": [(60, "login", False), (61, "-zsh", True)],
+             "/dev/ttys202": [(70, "login", False), (71, "-zsh", True)],
+             "/dev/ttys203": [(80, "login", False), (81, "-zsh", True)]}
     cwds = {61: d, 71: d, 81: h.dirs["roam"]}
     real_sessions = h.sw.ITerm.sessions
     h.sw.ITerm.sessions = lambda self: [dict(s, tty=ttys.get(s["id"], s["tty"])) for s in real_sessions(self)]
