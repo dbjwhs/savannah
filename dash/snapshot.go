@@ -6,7 +6,8 @@
 // remakes the tabs that are gone and resumes each Claude conversation
 // (`claude --resume <session id>`, Claude Code's own state being its
 // transcript). The screen shows what is open now, what the latest snapshot
-// holds, and three keys: s save, d dry run, r restore. A restore takes
+// holds, and the keys: s save, d dry run, r restore, and for the crash
+// nobody planned for, c check and v recover (recover.go). A restore takes
 // about two seconds per tab (it2), so it runs in the background and its
 // result lines land on the screen when it is done.
 //
@@ -287,6 +288,14 @@ func (m model) updateSnapshotKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			action("restore", "dry", true)
 			m.snap.busy, m.snap.lines = "planning...", nil
 			return m, m.restoreCmd(true)
+		case "c":
+			action("recover", "dry", true)
+			m.snap.busy, m.snap.lines = "checking...", nil
+			return m, m.recoverCmd(true, false)
+		case "v":
+			action("recover")
+			m.snap.busy, m.snap.lines = "recovering (about two seconds per new tab)...", nil
+			return m, m.recoverCmd(false, false)
 		case "r":
 			if len(m.snap.rows) == 0 {
 				m.snap.lines = []string{warnStyle.Render("no snapshot yet: s saves one")}
@@ -344,12 +353,17 @@ func (m model) viewSnapshot() string {
 	b.WriteString("  " + headerStyle.Render("r") + "  restore the latest: remake each tab that is gone, in its worktree, with\n")
 	b.WriteString("     `claude --resume` on its conversation; what is still open is left alone.\n")
 	b.WriteString("  " + headerStyle.Render("d") + "  dry run: show what r would do, touch nothing.\n\n")
+	b.WriteString("  After a reboot or a crash nobody planned for (no snapshot needed):\n")
+	b.WriteString("  " + headerStyle.Render("v") + "  recover: start again every Claude that went down, on its own conversation\n")
+	b.WriteString("     (`claude --resume`), in its own pane when iTerm2 brought the tab back, else in\n")
+	b.WriteString("     a new tab; a running Claude and a pane busy with something else are left alone.\n")
+	b.WriteString("  " + headerStyle.Render("c") + "  check: show what v would do, touch nothing.\n\n")
 	if m.snap.busy != "" {
 		b.WriteString("  " + m.snap.busy + "\n")
 	}
 	for _, ln := range m.snap.lines {
 		b.WriteString("  " + fit(ln, m.width-2) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("s save   d dry run   r restore   Esc back   Ctrl-C quit"))
+	b.WriteString("\n" + helpStyle.Render("s save   d dry run   r restore   c check   v recover   Esc back   Ctrl-C quit"))
 	return b.String()
 }

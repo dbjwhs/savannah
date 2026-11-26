@@ -93,6 +93,12 @@
 #                             session (tab order, Claude session id) and every
 #                             other open Claude Code tab
 #   snapshots                 the saved snapshots, newest first
+#   recover [NAME|SESSION_ID...] [--dry-run] [--within DUR]
+#                             after a reboot or a crash: start again every
+#                             recorded Claude Code session whose Claude is
+#                             gone (claude --resume <id>), in its own pane
+#                             when iTerm2 brought the tab back, else in a new
+#                             tab; no snapshot needed (savannah_recover.py)
 #   restore [STAMP|latest] [--dry-run] [--no-plain]
 #                             put the tabs back: remake each work session whose
 #                             tab is gone (claude -n <name> --resume <id>, else
@@ -149,6 +155,7 @@
 #   savannah_tabs        claude_command, reclaim_pane, remake_tab, adopt_session
 #   savannah_hub         repos, hub
 #   savannah_snapshot    snapshot, snapshots, restore
+#   savannah_recover     recover
 #   savannah_autoname    autoname
 #   savannah_ask         ask
 #   savannah_recap       recap
@@ -212,6 +219,8 @@ import savannah_recap  # noqa: E402
 from savannah_recap import cmd_recap  # noqa: E402
 import savannah_scan  # noqa: E402,F401
 from savannah_scan import cmd_scan  # noqa: E402
+import savannah_recover  # noqa: E402,F401
+from savannah_recover import cmd_recover  # noqa: E402
 
 # Re-exports: names this file does not use itself but the tests (and
 # test_shim's HUB_ALLOW check) reach as attributes of this module.
@@ -1212,6 +1221,18 @@ def build_parser():
          "file from the hook: lost, or started before the hook) in Claude Code's "
          "own session registry and put them on the board",
          flag("--dry-run", "list them, write nothing"))
+    verb("recover", cmd_recover,
+         "after a reboot, a crash or a forced update: start again every "
+         "recorded Claude Code session whose Claude is gone (claude --resume "
+         "its conversation), in its own pane when iTerm2 brought the tab back, "
+         "else an idle pane in its directory, else a new tab; needs no "
+         "snapshot, never touches a running session or a busy pane",
+         arg("sessions", nargs="*", metavar="NAME|SESSION_ID",
+             help="only these (a named one is recovered whatever its age)"),
+         flag("--dry-run", "print the plan, touch nothing"),
+         arg("--within", default=savannah_recover.WITHIN_DEFAULT, metavar="DUR",
+             help="leave a session last active longer ago than this (90m, 72h, 7d; "
+                  f"default {savannah_recover.WITHIN_DEFAULT}; all = no limit)"))
     verb("hub", cmd_hub,
          "register the peer shim in DIR/.mcp.json, add a starter "
          "CLAUDE.md, launch claude there (the coordinating session)",

@@ -309,6 +309,7 @@ Details and the storage layout are in `work/README.md` and `dash/README.md`.
 | `savannah work ls` | NAME, TITLE, BRANCH, STATE, STATUS, LAST PROMPT, LAST NOTE. |
 | `savannah work snapshot --note "before reboot"` | Every session's tab, worktree and Claude conversation id to a file (Ctrl-S on the board). |
 | `savannah work restore` | After the relaunch: the missing tabs back, each Claude resumed (`--dry-run` shows the plan). |
+| `savannah work recover` | After a reboot or a crash nobody planned for: every Claude that went down is started again on its own conversation, no snapshot needed (`--dry-run` shows the plan; Ctrl-S then v on the board). |
 | `savannah work log --level debug` | Savannah's log at normal, debug or verbose (Ctrl-L on the board); `--follow` tails it. |
 | `savannah mesh` | The mesh board (workers on every node), what a bare `savannah` used to be. |
 
@@ -357,7 +358,7 @@ path at read time.
 | Ctrl-D | Move its tab into the board's window, or out into a window of its own (`work attach`, `work detach`). |
 | Ctrl-Y | Mark an existing session as a review. |
 | Shift-Up, Shift-Down | Move a session one row, or over the line between sections at the ends. |
-| Ctrl-S | The snapshot screen. |
+| Ctrl-S | The snapshot and recover screen. |
 | Ctrl-L | Read savannah's log. |
 
 **Names.** Wherever a name is asked for you may type words: "Fix the
@@ -391,6 +392,24 @@ Claude's last reply.
 tab, worktree and Claude conversation id (`work snapshot`). Once iTerm2 is
 back it remakes the tabs that are gone, with each Claude resumed on its
 conversation (`work restore`; a dry run first if you like).
+
+**Recover.** A forced update, a crash or a dead battery does not wait for a
+snapshot. Savannah's hook already records, for every open Claude Code tab,
+which conversation it holds, where, in which iTerm2 pane and under which
+process, and it removes that record only when the session ends properly. So
+after the machine comes back, `savannah work recover` (or Ctrl-S then v;
+the board says so on its status line when it starts and finds Claudes
+gone) starts each one again with `claude --resume` on its own conversation:
+in its own pane when iTerm2 brought the tab back, else in a pane sitting
+idle in its directory, else in a new tab. `--dry-run` (c on the screen)
+shows the plan and touches nothing. What it does not do: it never types
+into a pane where something other than a shell runs, never touches a
+session whose Claude runs, leaves a session last active over 7 days ago
+alone unless you name it (`--within` changes that), and cannot bring back a
+turn that was running when the machine went down. Whether iTerm2 keeps a
+pane's id across a real reboot has not been confirmed here; when it does
+not, the idle pane in the session's directory is used, and when there is
+none you get a new tab beside the one iTerm2 restored.
 
 Every key is a `savannah work ...` subprocess, so the board and the CLI
 never disagree. The dash is a Go program: `cmake --build build --target

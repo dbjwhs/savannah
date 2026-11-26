@@ -168,6 +168,9 @@ if(Python3_Interpreter_FOUND)
     # scan: Claude Code's session registry against sleeper processes.
     py_test(test_scan 60 ${SRC}/work/savannah_work.py
             ${SRC}/tools/fake_it2.py)
+    # recover: dead hook sessions started again, against the fake it2.
+    py_test(test_recover 120 ${SRC}/work/savannah_work.py
+            ${SRC}/tools/fake_it2.py)
     # review mode against the fake it2 and throwaway git repos.
     py_test(test_review 120 ${SRC}/work/savannah_work.py
             ${SRC}/tools/fake_it2.py)

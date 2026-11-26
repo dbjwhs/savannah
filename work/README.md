@@ -57,6 +57,7 @@ work repos [DIR] [--json]                   # the folder of repos the board offe
 work snapshot [--note T] [--json]           # save the layout (every work session and open Claude Code tab) before a reboot
 work snapshots [--json]                     # the saved snapshots, newest first
 work restore [STAMP|latest] [--dry-run] [--no-plain] [--json]   # put the tabs back, each claude resuming its conversation
+work recover [NAME|SESSION_ID...] [--dry-run] [--within DUR] [--json]   # after a crash or reboot: start every Claude that went down again, no snapshot needed
 work hub [DIR] [--no-launch] [--json]       # optional: make DIR the hub, a Claude session that opens tabs for you
 ```
 
@@ -383,6 +384,75 @@ whose reply has not arrived yet prints `(no reply yet)`. `--json` gives
 `{name, transcript_path, source ("hook" or "projects"), turns_total,
 turns:[{prompt, text, asked, answered}]}`. Exit 1 until that Claude has
 started (there is no transcript to read).
+
+### Recover
+
+A forced update, a crash or a power loss takes every Claude down without a
+snapshot. `work recover` needs none. The hook writes a status file per
+Claude Code session on every event and removes it on SessionEnd, so a file
+whose process is gone is a session that was open when the machine went
+down, and the file names its conversation (`session_id`), directory, iTerm2
+pane and process id.
+
+`recover [NAME|SESSION_ID...] [--dry-run] [--within DUR] [--json]` walks
+those files, newest event first. A session whose Claude runs is left alone:
+the pid is alive and the process started before the file's last event (a
+process that started later is another one that was handed the same pid,
+which is what a reboot does). For each one whose Claude is gone it types
+`cd <dir> && claude [-n NAME] --resume <session_id>` (a work session with
+no transcript of that id falls back to `--continue`, then to a fresh
+`claude`)
+
+1. into the session's own pane, when it is still in `it2 session list` and
+   only a shell runs on its tty (`ps`);
+2. else into a pane that sits at a shell whose working directory (`lsof`)
+   is the session's directory and that no record, no running Claude and no
+   earlier step of this run holds: iTerm2 reopened the tab under a new id.
+   A work record is pointed at that pane, and at the tab's other idle shell
+   there as its shell pane;
+3. else into a new tab: tab and split for a work session (`remake_tab`), a
+   single pane for a plain tab.
+
+The status file is then stamped `recovered` and `recovered_pane`, so a
+second `recover` before the new Claude has fired an event skips it
+(`already recovered`); the stamp stops holding once the pane is gone or a
+later event was written.
+
+Skipped, each with its reason in the output: `running`; a file that names
+no process; a directory that is gone; a pane where something other than a
+shell runs (`its pane is busy (vim runs there)`); a pane that now runs
+another Claude session; an older file on a pane a newer session was
+recovered into; the pane the command itself runs in; a plain tab whose
+conversation is not on disk (`--continue` would load some other tab's);
+and a session last active longer ago than `--within` (default `7d`; `90m`,
+`72h`, `all`), which is the leftover of an older crash. Naming a session
+(a work session's name, a session id, or the first six or more characters
+of one) recovers only those and lifts the age limit for them. A name that
+matches nothing is exit 1.
+
+`--dry-run` prints the plan (`would recover NAME in its pane (resume
+<id>)`, `... in the pane open in its directory`, `... in a new tab`) and
+touches nothing. The last line counts: `recover: N recovered (K in a pane
+that was open, M in a new tab), R running and left alone, S skipped, F
+failed`. `--json` gives `{dry_run, within, recovered: [{name, session_id,
+project, how, where ("pane"|"tab"), pane, tab_id}], skipped: [{name,
+session_id, project, why}], failed: [{name, session_id, project, error}]}`.
+Exit 1 when a session failed; the rest still ran. Nothing is ever closed.
+
+What recover cannot do: bring back a turn that was running when the machine
+went down (the last finished turn is what `--resume` loads); find a session
+whose status file is gone (it ended properly, or was dismissed with Ctrl-X);
+recover a work session that was already closed before the crash (that is
+`work open`). When the process table cannot be read, or a pane's tty has no
+process in it, what runs in that pane is not known and it is typed into as
+if idle. Whether iTerm2 hands a restored pane its old id after a real
+reboot is not confirmed (step 2 exists for the case that it does not); when
+neither step 1 nor step 2 finds a pane, the new tab stands beside the empty
+one iTerm2 restored. A session in a directory that now holds another
+checkout resumes there all the same. Tested by `test/test_recover.py`
+against the fake it2, with exited and sleeping processes for the pids and
+the process table handed in for the busy and new-id cases; never against a
+real reboot.
 
 ### Snapshot and restore
 

@@ -301,7 +301,7 @@ func (m model) sectionCounts() (sessions, tasks int) {
 
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink, fetchTickCmd(), readSessionsCmd(), titlesCmd(), titleTickCmd(),
-		m.snapshotsCmd()}
+		m.snapshotsCmd(), m.recoverCmd(true, true)}
 	if m.mesh.on {
 		if m.mesh.pin == "" {
 			cmds = append(cmds, m.discoverCmd(), discoverTickCmd())
@@ -352,6 +352,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateLog(msg)
 	case snapshotsMsg, snapshotDoneMsg, restoreDoneMsg:
 		return m.updateSnapshot(msg)
+	case recoverDoneMsg:
+		return m.updateRecover(msg)
 	case nodesMsg, tasksMsg, taskDoneMsg, discoverTick:
 		return m.updateMesh(msg)
 	case jumpMsg, dismissMsg:
